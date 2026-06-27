@@ -22,6 +22,10 @@ dev = [
     "ruff>=0.14.0",
 ]
 
+[build-system]
+requires = ["uv_build>=0.11.25,<0.12"]
+build-backend = "uv_build"
+
 [tool.basedpyright]
 typeCheckingMode = "all"
 pythonVersion = "3.13"
