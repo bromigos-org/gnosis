@@ -7,8 +7,34 @@
 - `GET /health` returns service status.
 - `POST /v1/messages` records a scoped message for extraction into memory.
 - `POST /v1/context` retrieves scoped memory context for a query.
+- `POST /v1/events` and `POST /v1/events/batch` ingest scoped structured events such as Discord messages, topology updates, reactions, links, and attachment metadata.
+- `POST /v1/graph/context` returns scoped graph facts for a query.
+- `POST /v1/skills` lists reviewed skill context for one tenant and agent.
+- `POST /v1/skills/proposals` stores a proposed skill for human review.
+- `POST /v1/skills/usage` records usage only for approved reviewed skills.
 
 All non-health endpoints require `Authorization: Bearer <AGENTS_MEMORY_TOKEN>`.
+
+## Discord memory scope and privacy
+
+- `agents-memory` is policy-scoped first. Clients must send tenant, agent, session, user, and visibility metadata on every message, event, or query.
+- PC Principal uses tenant `bromigos` and agent `pc-principal` by default, so recall stays inside that tenant and agent boundary.
+- Visibility is enforced in the backend. `private_user` stays tied to the matching user, `channel` stays tied to the matching guild and channel, `guild` stays inside that guild, `agent_shared` stays within the same agent, and `global` is the only broad scope.
+- Channel-scoped graph recall does not cross into sibling channels. This prevents cross-channel graph recall even when two channels live in the same guild.
+- Topology deletes and renames are preserved as tombstones or event history, not hard-deleted facts. That keeps the audit trail while still reflecting current state.
+
+## Reviewed skill workflow
+
+- Skills are not self-modifying executable behavior. The intended workflow is observe, propose, ask for approval, save an approved reviewed skill, then expose that approved record as non-executable context.
+- `list_skills` only returns approved skills whose metadata marks them as reviewed.
+- Proposals are stored for review, but they are not returned as runnable context.
+- Usage recording is rejected for unapproved skills, with the backend returning `skill is not approved`.
+
+## Attachments and Discord event posture
+
+- The current Discord rollout is metadata-first. PC Principal sends attachment filename, content type, size, dimensions, spoiler status, and sanitized URLs, plus sanitized link discoveries.
+- Attachment bytes are not copied by default. If an operator later enables a copy policy in PC Principal, that is a separate rollout decision from the default memory service behavior.
+- RustFS is only relevant for a future intentional copy path. The current shared-memory contract assumes metadata-only attachment ingestion.
 
 ## Local development
 
@@ -31,3 +57,5 @@ uv run pytest
 - `MEMORY_EMBEDDING`: embedding model alias.
 
 The first API layer is intentionally small: agents pass scope metadata with every request, and future backend adapters enforce that scope before touching graph/vector memory.
+
+For operators, keep the deployment path GitOps-only. Update the calling service's Helm values or manifests in Git, push to the tracked branch, and let ArgoCD reconcile. Don't bypass tracked services with manual cluster apply steps or manual chart install or upgrade steps.
