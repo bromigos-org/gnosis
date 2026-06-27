@@ -99,6 +99,113 @@ def test_write_message_when_scope_is_outside_policy() -> None:
     assert backend.messages == []
 
 
+def test_write_event_when_token_is_missing() -> None:
+    # Given: an app with protected event endpoints.
+    client = TestClient(create_app(settings_factory=_settings))
+
+    # When: a client writes a client event without credentials.
+    response = client.post("/v1/events", json=_client_event_payload())
+
+    # Then: the API rejects the request.
+    assert response.status_code == 401
+
+
+def test_write_event_when_scope_is_outside_policy() -> None:
+    # Given: an app configured for the bromigos tenant.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a caller tries to write a client event into another tenant.
+    response = client.post(
+        "/v1/events",
+        headers=_auth_header(),
+        json=_client_event_payload(scope=_scope_payload(tenant_id="evil-corp")),
+    )
+
+    # Then: the API rejects the request before reaching the backend.
+    assert response.status_code == 403
+    assert backend.events == []
+
+
+def test_write_event_when_backend_returns_duplicate() -> None:
+    # Given: an app with a fake memory backend that has already seen the event.
+    backend = RecordingBackend(duplicate_event_ids={"discord-message-999"})
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a client writes the same event again.
+    response = client.post(
+        "/v1/events",
+        headers=_auth_header(),
+        json=_client_event_payload(),
+    )
+
+    # Then: the idempotent backend result is passed through unchanged.
+    assert response.status_code == 200
+    assert response.json() == {
+        "event_id": "discord-message-999",
+        "status": "duplicate",
+        "reason": None,
+    }
+
+
+def test_write_event_batch_when_one_event_fails_policy() -> None:
+    # Given: an app with a fake memory backend.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: one event is valid and one event targets another tenant.
+    response = client.post(
+        "/v1/events/batch",
+        headers=_auth_header(),
+        json={
+            "events": [
+                _client_event_payload(),
+                _client_event_payload(
+                    event_type="reaction_added",
+                    scope=_scope_payload(tenant_id="evil-corp"),
+                    subject={"id": "reaction-1", "type": "reaction"},
+                ),
+            ],
+        },
+    )
+
+    # Then: the batch returns per-event results instead of a 500.
+    assert response.status_code == 200
+    assert response.json() == {
+        "results": [
+            {
+                "event_id": "discord-message-999",
+                "status": "accepted",
+                "reason": None,
+            },
+            {
+                "event_id": "discord-message-999",
+                "status": "rejected",
+                "reason": "scope is not authorized for this token",
+            },
+        ],
+    }
+    assert [event.tenant_id for event in backend.events] == ["bromigos"]
+
+
+def test_get_graph_context_when_request_is_scoped() -> None:
+    # Given: an app with a fake memory backend.
+    backend = RecordingBackend(context="graph facts")
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a client requests graph context with scope metadata.
+    response = client.post(
+        "/v1/graph/context",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(), "query": "what matters?", "limit": 4},
+    )
+
+    # Then: the scoped graph context is returned.
+    assert response.status_code == 200
+    assert response.json() == {"context": "graph facts", "facts": []}
+    assert backend.graph_context_requests[0].scope.agent_id == "pc-principal"
+
+
 def test_get_context_when_request_is_scoped() -> None:
     # Given: an app with a fake memory backend.
     backend = RecordingBackend(context="remembered facts")
@@ -256,6 +363,8 @@ class RecordingBackend:
     messages: list[MessageWriteRequest] = field(default_factory=list)
     context_requests: list[ContextRequest] = field(default_factory=list)
     events: list[ClientEvent] = field(default_factory=list)
+    graph_context_requests: list[GraphContextRequest] = field(default_factory=list)
+    duplicate_event_ids: set[str] = field(default_factory=set)
     skill_usages: list[SkillUsage] = field(default_factory=list)
 
     async def add_message(self, request: MessageWriteRequest) -> MessageWriteResponse:
@@ -268,6 +377,11 @@ class RecordingBackend:
 
     async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
         self.events.append(event)
+        if event.event_id in self.duplicate_event_ids:
+            return EventIngestResult(
+                event_id=event.event_id,
+                status=EventIngestStatus.DUPLICATE,
+            )
         return EventIngestResult(
             event_id=event.event_id,
             status=EventIngestStatus.ACCEPTED,
@@ -284,13 +398,7 @@ class RecordingBackend:
         self,
         request: GraphContextRequest,
     ) -> GraphContextResponse:
-        self.context_requests.append(
-            ContextRequest(
-                scope=request.scope,
-                query=request.query,
-                limit=request.limit,
-            ),
-        )
+        self.graph_context_requests.append(request)
         return GraphContextResponse(context=self.context)
 
     async def list_skills(self, scope: MemoryScope) -> list[SkillRecord]:
