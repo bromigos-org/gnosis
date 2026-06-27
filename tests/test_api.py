@@ -18,14 +18,23 @@ from agents_memory.backend import Neo4jAgentMemoryBackend
 from agents_memory.main import create_app
 from agents_memory.models import (
     ClientEvent,
+    ClientEventBatchRequest,
+    ClientEventBatchResponse,
     ClientEventType,
     ContextRequest,
     ContextResponse,
+    EventIngestResult,
+    EventIngestStatus,
+    GraphContextRequest,
+    GraphContextResponse,
+    MemoryScope,
     MemoryVisibility,
     MessageWriteRequest,
     MessageWriteResponse,
+    SkillProposal,
     SkillRecord,
     SkillStatus,
+    SkillUsage,
     default_event_visibility,
     default_skill_visibility,
 )
@@ -178,7 +187,7 @@ def test_client_event_model_rejects_unknown_fields() -> None:
 
     # When / Then: the contract rejects the extra field at the boundary.
     with pytest.raises(ValidationError):
-        ClientEvent.model_validate(payload)
+        _ = ClientEvent.model_validate(payload)
 
 
 def test_client_event_model_rejects_malformed_enum() -> None:
@@ -188,7 +197,7 @@ def test_client_event_model_rejects_malformed_enum() -> None:
 
     # When / Then: enum validation rejects the malformed value.
     with pytest.raises(ValidationError):
-        ClientEvent.model_validate(payload)
+        _ = ClientEvent.model_validate(payload)
 
 
 def test_existing_message_and_context_models_still_serialize() -> None:
@@ -246,6 +255,8 @@ class RecordingBackend:
     context: str = ""
     messages: list[MessageWriteRequest] = field(default_factory=list)
     context_requests: list[ContextRequest] = field(default_factory=list)
+    events: list[ClientEvent] = field(default_factory=list)
+    skill_usages: list[SkillUsage] = field(default_factory=list)
 
     async def add_message(self, request: MessageWriteRequest) -> MessageWriteResponse:
         self.messages.append(request)
@@ -254,6 +265,56 @@ class RecordingBackend:
     async def get_context(self, request: ContextRequest) -> ContextResponse:
         self.context_requests.append(request)
         return ContextResponse(context=self.context)
+
+    async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
+        self.events.append(event)
+        return EventIngestResult(
+            event_id=event.event_id,
+            status=EventIngestStatus.ACCEPTED,
+        )
+
+    async def ingest_events(
+        self,
+        request: ClientEventBatchRequest,
+    ) -> ClientEventBatchResponse:
+        results = [await self.ingest_event(event) for event in request.events]
+        return ClientEventBatchResponse(results=results)
+
+    async def get_graph_context(
+        self,
+        request: GraphContextRequest,
+    ) -> GraphContextResponse:
+        self.context_requests.append(
+            ContextRequest(
+                scope=request.scope,
+                query=request.query,
+                limit=request.limit,
+            ),
+        )
+        return GraphContextResponse(context=self.context)
+
+    async def list_skills(self, scope: MemoryScope) -> list[SkillRecord]:
+        _ = scope
+        return []
+
+    async def propose_skill(self, proposal: SkillProposal) -> SkillRecord:
+        return SkillRecord(
+            skill_id=proposal.proposal_id,
+            tenant_id=proposal.tenant_id,
+            agent_id=proposal.agent_id,
+            name=proposal.name,
+            description=proposal.description,
+            status=SkillStatus.PROPOSED,
+            scope=proposal.scope,
+            metadata=proposal.metadata,
+        )
+
+    async def record_skill_usage(self, usage: SkillUsage) -> EventIngestResult:
+        self.skill_usages.append(usage)
+        return EventIngestResult(
+            event_id=usage.skill_id,
+            status=EventIngestStatus.ACCEPTED,
+        )
 
 
 @dataclass(frozen=True, slots=True)

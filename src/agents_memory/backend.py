@@ -7,14 +7,32 @@ from neo4j_agent_memory.llm.adapters.litellm import (
 )
 from pydantic import SecretStr
 
+from agents_memory.graph_probe import (
+    DirectNeo4jProbe,
+    StructuredGraphStore,
+    direct_neo4j_driver_factory,
+)
 from agents_memory.models import (
+    ClientEvent,
+    ClientEventBatchRequest,
+    ClientEventBatchResponse,
     ContextRequest,
     ContextResponse,
+    EventIngestResult,
+    EventIngestStatus,
+    GraphContextRequest,
+    GraphContextResponse,
     MemoryScope,
     MessageWriteRequest,
     MessageWriteResponse,
+    SkillProposal,
+    SkillRecord,
+    SkillStatus,
+    SkillUsage,
 )
 from agents_memory.settings import Settings
+
+_STRUCTURED_GRAPH_UNIMPLEMENTED = "structured graph persistence seam pending"
 
 
 class MemoryBackend(Protocol):
@@ -22,8 +40,19 @@ class MemoryBackend(Protocol):
         self,
         request: MessageWriteRequest,
     ) -> MessageWriteResponse: ...
-
     async def get_context(self, request: ContextRequest) -> ContextResponse: ...
+    async def ingest_event(self, event: ClientEvent) -> EventIngestResult: ...
+    async def ingest_events(
+        self,
+        request: ClientEventBatchRequest,
+    ) -> ClientEventBatchResponse: ...
+    async def get_graph_context(
+        self,
+        request: GraphContextRequest,
+    ) -> GraphContextResponse: ...
+    async def list_skills(self, scope: MemoryScope) -> list[SkillRecord]: ...
+    async def propose_skill(self, proposal: SkillProposal) -> SkillRecord: ...
+    async def record_skill_usage(self, usage: SkillUsage) -> EventIngestResult: ...
 
 
 class MemoryClientFactory(Protocol):
@@ -67,12 +96,9 @@ class LongTermMemory(Protocol):
 class MemoryClientContext(Protocol):
     @property
     def short_term(self) -> ShortTermMemory: ...
-
     @property
     def long_term(self) -> LongTermMemory: ...
-
     async def __aenter__(self) -> Self: ...
-
     async def __aexit__(
         self,
         exc_type: object,
@@ -81,24 +107,18 @@ class MemoryClientContext(Protocol):
     ) -> None: ...
 
 
-class ScopedMemoryBackend:
-    async def add_message(self, request: MessageWriteRequest) -> MessageWriteResponse:
-        _ = request
-        return MessageWriteResponse(accepted=True)
-
-    async def get_context(self, request: ContextRequest) -> ContextResponse:
-        _ = request
-        return ContextResponse(context="")
-
-
 class Neo4jAgentMemoryBackend:
     def __init__(
         self,
         settings: Settings,
         memory_client_factory: MemoryClientFactory | None = None,
+        graph_store: StructuredGraphStore | None = None,
     ) -> None:
         self._settings: MemorySettings = _build_memory_settings(settings)
         self._memory_client_factory: MemoryClientFactory | None = memory_client_factory
+        self._graph_store: StructuredGraphStore = graph_store or DirectNeo4jProbe(
+            driver_factory=direct_neo4j_driver_factory(settings),
+        )
 
     async def add_message(self, request: MessageWriteRequest) -> MessageWriteResponse:
         metadata = _scope_metadata(request.scope)
@@ -130,6 +150,44 @@ class Neo4jAgentMemoryBackend:
             )
         return ContextResponse(context=context)
 
+    async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
+        await self._graph_store.require_available()
+        return _structured_graph_pending(event.event_id)
+
+    async def ingest_events(
+        self,
+        request: ClientEventBatchRequest,
+    ) -> ClientEventBatchResponse:
+        results = [await self.ingest_event(event) for event in request.events]
+        return ClientEventBatchResponse(results=results)
+
+    async def get_graph_context(
+        self,
+        request: GraphContextRequest,
+    ) -> GraphContextResponse:
+        await self._graph_store.require_available()
+        context = await self.get_context(
+            ContextRequest(
+                scope=request.scope,
+                query=request.query,
+                limit=request.limit,
+            ),
+        )
+        return GraphContextResponse(context=context.context)
+
+    async def list_skills(self, scope: MemoryScope) -> list[SkillRecord]:
+        _ = scope
+        await self._graph_store.require_available()
+        return []
+
+    async def propose_skill(self, proposal: SkillProposal) -> SkillRecord:
+        await self._graph_store.require_available()
+        return _proposed_skill_record(proposal)
+
+    async def record_skill_usage(self, usage: SkillUsage) -> EventIngestResult:
+        await self._graph_store.require_available()
+        return _structured_graph_pending(usage.skill_id)
+
     def _memory_client(self) -> MemoryClientContext:
         if self._memory_client_factory is not None:
             return self._memory_client_factory(self._settings)
@@ -156,6 +214,27 @@ def _build_memory_settings(settings: Settings) -> MemorySettings:
             api_key=settings.litellm_api_key,
         ),
         memory=MemoryConfig(multi_tenant=True),
+    )
+
+
+def _structured_graph_pending(event_id: str) -> EventIngestResult:
+    return EventIngestResult(
+        event_id=event_id,
+        status=EventIngestStatus.FAILED,
+        reason=_STRUCTURED_GRAPH_UNIMPLEMENTED,
+    )
+
+
+def _proposed_skill_record(proposal: SkillProposal) -> SkillRecord:
+    return SkillRecord(
+        skill_id=proposal.proposal_id,
+        tenant_id=proposal.tenant_id,
+        agent_id=proposal.agent_id,
+        name=proposal.name,
+        description=proposal.description,
+        status=SkillStatus.PROPOSED,
+        scope=proposal.scope,
+        metadata=proposal.metadata,
     )
 
 
