@@ -19,11 +19,8 @@ class Settings(BaseSettings):
     litellm_base_url: str = Field(default="", min_length=1)
     litellm_api_key: str = Field(default="", min_length=1)
     memory_llm: str = Field(default="openai/gemma4", min_length=1)
-    memory_embedding: str = Field(
-        default="openai/copilot-text-embedding-3-small",
-        min_length=1,
-    )
-    memory_embedding_dimensions: int = Field(default=1536, gt=0)
+    memory_embedding: str = Field(default="local-bge-m3", min_length=1)
+    memory_embedding_dimensions: int = Field(default=1024, gt=0)
 
 
 def load_settings() -> Settings:

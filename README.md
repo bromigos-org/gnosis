@@ -54,7 +54,10 @@ uv run pytest
 - `LITELLM_BASE_URL`: OpenAI-compatible LiteLLM endpoint.
 - `LITELLM_API_KEY`: LiteLLM master key or service token.
 - `MEMORY_LLM`: extraction/reasoning model alias.
-- `MEMORY_EMBEDDING`: embedding model alias.
+- `MEMORY_EMBEDDING`: embedding model alias. Homelab deployments use the local-only LiteLLM alias `local-bge-m3`, backed by `BAAI/bge-m3` with 1024 dimensions through an in-cluster OpenAI-compatible `/v1` endpoint.
+- `MEMORY_EMBEDDING_DIMENSIONS`: embedding vector dimensions. This must match the selected embedding model; `local-bge-m3` uses `1024`.
+
+Neo4j agent memory embeddings must stay behind LiteLLM. Do not point PC Principal or `agents-memory` directly at an embedding runtime, and do not use OpenAI/Copilot aliases for memory embeddings. Before rolling out `local-bge-m3`, ensure the local embedding runtime serves `BAAI/bge-m3` at the in-cluster endpoint configured in the homelab LiteLLM wrapper chart.
 
 The first API layer is intentionally small: agents pass scope metadata with every request, and future backend adapters enforce that scope before touching graph/vector memory.
 
