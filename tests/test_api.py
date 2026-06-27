@@ -3,6 +3,7 @@ from os import environ
 from typing import Self
 
 import pytest
+from pydantic import ValidationError
 
 environ["AGENTS_MEMORY_TOKEN"] = "test-token"
 environ["NEO4J_URI"] = "bolt://neo4j.neo4j.svc.cluster.local:7687"
@@ -16,10 +17,17 @@ from neo4j_agent_memory import MemorySettings
 from agents_memory.backend import Neo4jAgentMemoryBackend
 from agents_memory.main import create_app
 from agents_memory.models import (
+    ClientEvent,
+    ClientEventType,
     ContextRequest,
     ContextResponse,
+    MemoryVisibility,
     MessageWriteRequest,
     MessageWriteResponse,
+    SkillRecord,
+    SkillStatus,
+    default_event_visibility,
+    default_skill_visibility,
 )
 from agents_memory.settings import Settings
 
@@ -146,6 +154,91 @@ async def test_neo4j_backend_context_uses_scoped_short_term_only() -> None:
         fake_client.short_term.context_queries[0].metadata_filters["user_id"] == "789"
     )
     assert fake_client.long_term.context_queries == []
+
+
+def test_client_event_model_accepts_discord_message() -> None:
+    # Given: a Discord message event with the canonical client envelope.
+    payload = _client_event_payload()
+
+    # When: the event crosses the API model boundary.
+    event = ClientEvent.model_validate(payload)
+
+    # Then: Pydantic parses strict enums, nested context, and arbitrary payload JSON.
+    assert event.source_client == "discord"
+    assert event.event_type == ClientEventType.MESSAGE_CREATED
+    assert event.discord is not None
+    assert event.discord.message_id == "message-999"
+    assert event.payload["content"] == "remember this"
+
+
+def test_client_event_model_rejects_unknown_fields() -> None:
+    # Given: a client event containing an undeclared future field.
+    payload = _client_event_payload()
+    payload["unknown"] = "not allowed"
+
+    # When / Then: the contract rejects the extra field at the boundary.
+    with pytest.raises(ValidationError):
+        ClientEvent.model_validate(payload)
+
+
+def test_client_event_model_rejects_malformed_enum() -> None:
+    # Given: a client event with an unsupported event type.
+    payload = _client_event_payload()
+    payload["event_type"] = "message_created_by_typo"
+
+    # When / Then: enum validation rejects the malformed value.
+    with pytest.raises(ValidationError):
+        ClientEvent.model_validate(payload)
+
+
+def test_existing_message_and_context_models_still_serialize() -> None:
+    # Given: deployed message and context models.
+    message = MessageWriteRequest.model_validate(_message_payload())
+    context = ContextRequest.model_validate(
+        {"scope": _scope_payload(), "query": "what matters?", "limit": 4},
+    )
+
+    # When: current clients serialize them.
+    message_payload = message.model_dump(mode="json")
+    context_payload = context.model_dump(mode="json")
+
+    # Then: existing wire shapes remain unchanged.
+    assert message_payload == _message_payload()
+    assert context_payload == {
+        "scope": _scope_payload(),
+        "query": "what matters?",
+        "limit": 4,
+    }
+
+
+def test_privacy_defaults_match_discord_scope_policy() -> None:
+    # Given: representative DM, channel, topology, and skill records.
+    dm_event = ClientEvent.model_validate(
+        _client_event_payload(scope=_scope_payload(guild_id=None, channel_id=None)),
+    )
+    channel_event = ClientEvent.model_validate(_client_event_payload())
+    topology_event = ClientEvent.model_validate(
+        _client_event_payload(
+            event_type="channel_updated",
+            subject={"id": "456", "type": "channel"},
+        ),
+    )
+    skill = SkillRecord(
+        skill_id="skill-1",
+        tenant_id="bromigos",
+        agent_id="pc-principal",
+        name="Summarize channel",
+        description="Summarizes visible Discord channel context for review.",
+        status=SkillStatus.APPROVED,
+    )
+
+    # When / Then: default helpers keep privacy scoped by surface.
+    assert default_event_visibility(dm_event) == MemoryVisibility.PRIVATE_USER
+    assert default_event_visibility(channel_event) == MemoryVisibility.CHANNEL
+    assert default_event_visibility(topology_event) == MemoryVisibility.GUILD
+    assert skill.scope == MemoryVisibility.AGENT_SHARED
+    assert default_skill_visibility() == MemoryVisibility.AGENT_SHARED
+    assert default_skill_visibility(MemoryVisibility.GLOBAL) == MemoryVisibility.GLOBAL
 
 
 @dataclass(slots=True)
@@ -276,17 +369,25 @@ def _auth_header() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
 
 
-def _scope_payload(*, tenant_id: str = "bromigos") -> dict[str, str]:
-    return {
+def _scope_payload(
+    *,
+    tenant_id: str = "bromigos",
+    guild_id: str | None = "123",
+    channel_id: str | None = "456",
+) -> dict[str, str]:
+    payload = {
         "tenant_id": tenant_id,
         "space_id": "discord",
         "agent_id": "pc-principal",
         "session_id": "guild:123:channel:456",
         "user_id": "789",
-        "guild_id": "123",
-        "channel_id": "456",
         "visibility": "channel",
     }
+    if guild_id is not None:
+        payload["guild_id"] = guild_id
+    if channel_id is not None:
+        payload["channel_id"] = channel_id
+    return payload
 
 
 def _message_payload(
@@ -297,4 +398,38 @@ def _message_payload(
         "scope": scope or _scope_payload(),
         "role": "user",
         "content": "remember this",
+    }
+
+
+def _client_event_payload(
+    *,
+    scope: dict[str, str] | None = None,
+    event_type: str = "message_created",
+    subject: dict[str, str] | None = None,
+) -> dict[str, object]:
+    return {
+        "tenant_id": "bromigos",
+        "source_client": "discord",
+        "agent_id": "pc-principal",
+        "event_id": "discord-message-999",
+        "event_type": event_type,
+        "occurred_at": "2026-06-27T01:02:03Z",
+        "observed_at": "2026-06-27T01:02:04Z",
+        "idempotency_key": "discord:message:message-999:create",
+        "scope": scope or _scope_payload(),
+        "actor": {
+            "id": "789",
+            "display_name": "cartman",
+            "is_bot": False,
+        },
+        "subject": subject or {"id": "message-999", "type": "message"},
+        "payload": {
+            "content": "remember this",
+            "payload_version": 1,
+        },
+        "discord": {
+            "guild_id": "123",
+            "channel_id": "456",
+            "message_id": "message-999",
+        },
     }
