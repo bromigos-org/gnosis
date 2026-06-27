@@ -3,7 +3,17 @@ from typing import TYPE_CHECKING, Protocol, Self, override
 
 from neo4j.exceptions import Neo4jError
 
+from agents_memory.models import (
+    ClientEvent,
+    EventIngestResult,
+    GraphContextRequest,
+    GraphContextResponse,
+    JsonValue,
+)
 from agents_memory.settings import Settings
+
+type CypherParameters = dict[str, JsonValue]
+type CypherRow = dict[str, JsonValue]
 
 if TYPE_CHECKING:
 
@@ -22,6 +32,22 @@ else:
 
 class AsyncNeo4jDriver(Protocol):
     async def verify_connectivity(self) -> None: ...
+    async def execute_query(
+        self,
+        query: str,
+        parameters: CypherParameters,
+    ) -> list[CypherRow]: ...
+    async def __aenter__(self) -> Self: ...
+    async def __aexit__(
+        self,
+        exc_type: object,
+        exc_val: object,
+        exc_tb: object,
+    ) -> None: ...
+
+
+class ConnectivityNeo4jDriver(Protocol):
+    async def verify_connectivity(self) -> None: ...
     async def __aenter__(self) -> Self: ...
     async def __aexit__(
         self,
@@ -33,6 +59,11 @@ class AsyncNeo4jDriver(Protocol):
 
 class AsyncNeo4jRawDriver(Protocol):
     async def verify_connectivity(self) -> None: ...
+    async def execute_query(
+        self,
+        query_: str,
+        parameters_: CypherParameters,
+    ) -> tuple[list[CypherRow], object, object]: ...
     async def close(self) -> None: ...
 
 
@@ -40,8 +71,17 @@ class DirectNeo4jDriverFactory(Protocol):
     def __call__(self) -> AsyncNeo4jDriver: ...
 
 
+class ConnectivityNeo4jDriverFactory(Protocol):
+    def __call__(self) -> ConnectivityNeo4jDriver: ...
+
+
 class StructuredGraphStore(Protocol):
     async def require_available(self) -> None: ...
+    async def ingest_event(self, event: ClientEvent) -> EventIngestResult: ...
+    async def get_context(
+        self,
+        request: GraphContextRequest,
+    ) -> GraphContextResponse: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +95,7 @@ class GraphPersistenceUnavailableError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class DirectNeo4jProbe:
-    driver_factory: DirectNeo4jDriverFactory
+    driver_factory: ConnectivityNeo4jDriverFactory
 
     async def require_available(self) -> None:
         try:
@@ -71,6 +111,14 @@ class DirectNeo4jDriverContext:
 
     async def verify_connectivity(self) -> None:
         await self.driver.verify_connectivity()
+
+    async def execute_query(
+        self,
+        query: str,
+        parameters: CypherParameters,
+    ) -> list[CypherRow]:
+        records, _, _ = await self.driver.execute_query(query, parameters)
+        return records
 
     async def __aenter__(self) -> Self:
         return self
