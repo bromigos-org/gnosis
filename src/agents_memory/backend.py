@@ -16,7 +16,6 @@ from agents_memory.models import (
     ContextRequest,
     ContextResponse,
     EventIngestResult,
-    EventIngestStatus,
     GraphContextRequest,
     GraphContextResponse,
     MemoryScope,
@@ -28,6 +27,7 @@ from agents_memory.models import (
     SkillUsage,
 )
 from agents_memory.settings import Settings
+from agents_memory.skill_registry import InMemorySkillRegistry, SkillRegistry
 
 
 class MemoryBackend(Protocol):
@@ -108,6 +108,7 @@ class Neo4jAgentMemoryBackend:
         settings: Settings,
         memory_client_factory: MemoryClientFactory | None = None,
         graph_store: StructuredGraphStore | None = None,
+        skill_registry: SkillRegistry | None = None,
     ) -> None:
         self._settings: MemorySettings = _build_memory_settings(settings)
         self._memory_client_factory: MemoryClientFactory | None = memory_client_factory
@@ -116,6 +117,7 @@ class Neo4jAgentMemoryBackend:
                 driver_factory=direct_neo4j_driver_factory(settings),
             ),
         )
+        self._skill_registry: SkillRegistry = skill_registry or InMemorySkillRegistry()
 
     async def add_message(self, request: MessageWriteRequest) -> MessageWriteResponse:
         metadata = _scope_metadata(request.scope)
@@ -164,20 +166,16 @@ class Neo4jAgentMemoryBackend:
         return await self._graph_store.get_context(request)
 
     async def list_skills(self, request: SkillListRequest) -> SkillListResponse:
-        _ = request
         await self._graph_store.require_available()
-        return SkillListResponse()
+        return await self._skill_registry.list_skills(request)
 
     async def propose_skill(self, proposal: SkillProposal) -> SkillProposal:
         await self._graph_store.require_available()
-        return proposal
+        return await self._skill_registry.propose_skill(proposal)
 
     async def record_skill_usage(self, usage: SkillUsage) -> EventIngestResult:
         await self._graph_store.require_available()
-        return EventIngestResult(
-            event_id=usage.skill_id,
-            status=EventIngestStatus.ACCEPTED,
-        )
+        return await self._skill_registry.record_skill_usage(usage)
 
     def _memory_client(self) -> MemoryClientContext:
         if self._memory_client_factory is not None:
