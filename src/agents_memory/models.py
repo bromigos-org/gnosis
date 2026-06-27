@@ -102,6 +102,15 @@ class ContextResponse(ContractModel):
     context: str
 
 
+class SkillListRequest(ContractModel):
+    tenant_id: str = Field(min_length=1)
+    agent_id: str = Field(min_length=1)
+
+
+class SkillListResponse(ContractModel):
+    skills: list["SkillRecord"] = Field(default_factory=list)
+
+
 class ClientEventActor(ContractModel):
     id: str = Field(min_length=1)
     display_name: str | None = Field(default=None, min_length=1)

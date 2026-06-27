@@ -27,10 +27,11 @@ from agents_memory.models import (
     EventIngestStatus,
     GraphContextRequest,
     GraphContextResponse,
-    MemoryScope,
     MemoryVisibility,
     MessageWriteRequest,
     MessageWriteResponse,
+    SkillListRequest,
+    SkillListResponse,
     SkillProposal,
     SkillRecord,
     SkillStatus,
@@ -99,6 +100,46 @@ def test_write_message_when_scope_is_outside_policy() -> None:
     assert backend.messages == []
 
 
+def test_existing_message_write_contract_still_works() -> None:
+    # Given: the deployed message write endpoint and response shape.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: an existing client writes a scoped mention-memory message.
+    response = client.post(
+        "/v1/messages",
+        headers=_auth_header(),
+        json=_message_payload(),
+    )
+
+    # Then: the legacy wire contract stays accepted-only and tenant scoped.
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True}
+    assert backend.messages == [MessageWriteRequest.model_validate(_message_payload())]
+
+
+def test_existing_context_contract_still_works() -> None:
+    # Given: the deployed context endpoint and response shape.
+    backend = RecordingBackend(context="remembered facts")
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: an existing client requests mention-memory context.
+    response = client.post(
+        "/v1/context",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(), "query": "what matters?", "limit": 4},
+    )
+
+    # Then: the legacy wire contract stays context-only and tenant scoped.
+    assert response.status_code == 200
+    assert response.json() == {"context": "remembered facts"}
+    assert backend.context_requests == [
+        ContextRequest.model_validate(
+            {"scope": _scope_payload(), "query": "what matters?", "limit": 4},
+        ),
+    ]
+
+
 def test_write_event_when_token_is_missing() -> None:
     # Given: an app with protected event endpoints.
     client = TestClient(create_app(settings_factory=_settings))
@@ -107,6 +148,17 @@ def test_write_event_when_token_is_missing() -> None:
     response = client.post("/v1/events", json=_client_event_payload())
 
     # Then: the API rejects the request.
+    assert response.status_code == 401
+
+
+def test_new_event_endpoint_requires_auth() -> None:
+    # Given: the structured event endpoint is protected.
+    client = TestClient(create_app(settings_factory=_settings))
+
+    # When: a client omits the bearer token.
+    response = client.post("/v1/events", json=_client_event_payload())
+
+    # Then: the API rejects the request before persistence.
     assert response.status_code == 401
 
 
@@ -146,6 +198,21 @@ def test_write_event_when_backend_returns_duplicate() -> None:
         "status": "duplicate",
         "reason": None,
     }
+
+
+def test_write_event_when_payload_has_unknown_field() -> None:
+    # Given: a structured event request with an undeclared top-level field.
+    payload = _client_event_payload()
+    payload["extra"] = "reject me"
+    client = TestClient(
+        create_app(settings_factory=_settings, backend=RecordingBackend()),
+    )
+
+    # When: the malformed payload crosses the FastAPI/Pydantic boundary.
+    response = client.post("/v1/events", headers=_auth_header(), json=payload)
+
+    # Then: model strictness rejects unknown fields.
+    assert response.status_code == 422
 
 
 def test_write_event_batch_when_one_event_fails_policy() -> None:
@@ -204,6 +271,124 @@ def test_get_graph_context_when_request_is_scoped() -> None:
     assert response.status_code == 200
     assert response.json() == {"context": "graph facts", "facts": []}
     assert backend.graph_context_requests[0].scope.agent_id == "pc-principal"
+
+
+def test_get_graph_context_when_payload_has_unknown_field() -> None:
+    # Given: a graph context request with an undeclared field.
+    client = TestClient(
+        create_app(settings_factory=_settings, backend=RecordingBackend()),
+    )
+
+    # When: the malformed payload crosses the API boundary.
+    response = client.post(
+        "/v1/graph/context",
+        headers=_auth_header(),
+        json={
+            "scope": _scope_payload(),
+            "query": "what matters?",
+            "limit": 4,
+            "extra": "reject me",
+        },
+    )
+
+    # Then: model strictness rejects unknown fields.
+    assert response.status_code == 422
+
+
+def test_skill_endpoints_when_requests_are_scoped() -> None:
+    # Given: an app with a fake skill-capable backend.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a client lists, proposes, and records skill usage.
+    list_response = client.post(
+        "/v1/skills",
+        headers=_auth_header(),
+        json={"tenant_id": "bromigos", "agent_id": "pc-principal"},
+    )
+    proposal_response = client.post(
+        "/v1/skills/proposals",
+        headers=_auth_header(),
+        json=_skill_proposal_payload(),
+    )
+    usage_response = client.post(
+        "/v1/skills/usage",
+        headers=_auth_header(),
+        json=_skill_usage_payload(),
+    )
+
+    # Then: each endpoint returns the deployed typed success contract.
+    assert list_response.status_code == 200
+    assert list_response.json() == {
+        "skills": [
+            {
+                "skill_id": "skill-1",
+                "tenant_id": "bromigos",
+                "agent_id": "pc-principal",
+                "name": "Summarize",
+                "description": "Summarize channels",
+                "status": "approved",
+                "scope": "agent_shared",
+                "metadata": {"reviewed": True},
+            },
+        ],
+    }
+    assert proposal_response.status_code == 200
+    assert proposal_response.json() == _skill_proposal_payload()
+    assert usage_response.status_code == 200
+    assert usage_response.json() == {"accepted": True}
+
+
+def test_skill_endpoint_when_token_is_missing() -> None:
+    # Given: protected skill endpoints.
+    client = TestClient(
+        create_app(settings_factory=_settings, backend=RecordingBackend()),
+    )
+
+    # When: a client lists skills without credentials.
+    response = client.post(
+        "/v1/skills",
+        json={"tenant_id": "bromigos", "agent_id": "pc-principal"},
+    )
+
+    # Then: bearer auth is required.
+    assert response.status_code == 401
+
+
+def test_skill_endpoint_when_tenant_is_outside_policy() -> None:
+    # Given: an app configured for the bromigos tenant.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a caller lists skills for another tenant.
+    response = client.post(
+        "/v1/skills",
+        headers=_auth_header(),
+        json={"tenant_id": "evil-corp", "agent_id": "pc-principal"},
+    )
+
+    # Then: the API rejects the request before reaching the backend.
+    assert response.status_code == 403
+    assert backend.skill_list_requests == []
+
+
+def test_skill_endpoint_when_payload_has_unknown_field() -> None:
+    # Given: a skill proposal with an undeclared field.
+    payload = _skill_proposal_payload()
+    payload["unknown"] = "reject me"
+    client = TestClient(
+        create_app(settings_factory=_settings, backend=RecordingBackend()),
+    )
+
+    # When: the malformed payload crosses the API boundary.
+    response = client.post(
+        "/v1/skills/proposals",
+        headers=_auth_header(),
+        json=payload,
+    )
+
+    # Then: model strictness rejects unknown fields.
+    assert response.status_code == 422
 
 
 def test_get_context_when_request_is_scoped() -> None:
@@ -366,6 +551,7 @@ class RecordingBackend:
     graph_context_requests: list[GraphContextRequest] = field(default_factory=list)
     duplicate_event_ids: set[str] = field(default_factory=set)
     skill_usages: list[SkillUsage] = field(default_factory=list)
+    skill_list_requests: list[SkillListRequest] = field(default_factory=list)
 
     async def add_message(self, request: MessageWriteRequest) -> MessageWriteResponse:
         self.messages.append(request)
@@ -401,21 +587,24 @@ class RecordingBackend:
         self.graph_context_requests.append(request)
         return GraphContextResponse(context=self.context)
 
-    async def list_skills(self, scope: MemoryScope) -> list[SkillRecord]:
-        _ = scope
-        return []
-
-    async def propose_skill(self, proposal: SkillProposal) -> SkillRecord:
-        return SkillRecord(
-            skill_id=proposal.proposal_id,
-            tenant_id=proposal.tenant_id,
-            agent_id=proposal.agent_id,
-            name=proposal.name,
-            description=proposal.description,
-            status=SkillStatus.PROPOSED,
-            scope=proposal.scope,
-            metadata=proposal.metadata,
+    async def list_skills(self, request: SkillListRequest) -> SkillListResponse:
+        self.skill_list_requests.append(request)
+        return SkillListResponse(
+            skills=[
+                SkillRecord(
+                    skill_id="skill-1",
+                    tenant_id=request.tenant_id,
+                    agent_id=request.agent_id,
+                    name="Summarize",
+                    description="Summarize channels",
+                    status=SkillStatus.APPROVED,
+                    metadata={"reviewed": True},
+                ),
+            ],
         )
+
+    async def propose_skill(self, proposal: SkillProposal) -> SkillProposal:
+        return proposal
 
     async def record_skill_usage(self, usage: SkillUsage) -> EventIngestResult:
         self.skill_usages.append(usage)
@@ -601,4 +790,29 @@ def _client_event_payload(
             "channel_id": "456",
             "message_id": "message-999",
         },
+    }
+
+
+def _skill_proposal_payload() -> dict[str, object]:
+    return {
+        "proposal_id": "proposal-1",
+        "tenant_id": "bromigos",
+        "agent_id": "pc-principal",
+        "proposed_by": "789",
+        "name": "Summarize",
+        "description": "Summarize channels",
+        "scope": "agent_shared",
+        "metadata": {"source": "test"},
+    }
+
+
+def _skill_usage_payload() -> dict[str, object]:
+    return {
+        "skill_id": "skill-1",
+        "tenant_id": "bromigos",
+        "agent_id": "pc-principal",
+        "used_by": "789",
+        "used_at": "2026-06-27T01:02:05Z",
+        "scope": "agent_shared",
+        "metadata": {"outcome": "ok"},
     }

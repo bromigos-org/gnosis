@@ -22,9 +22,9 @@ from agents_memory.models import (
     MemoryVisibility,
     MessageWriteRequest,
     MessageWriteResponse,
+    SkillListRequest,
+    SkillListResponse,
     SkillProposal,
-    SkillRecord,
-    SkillStatus,
     SkillUsage,
     SourceClient,
 )
@@ -98,21 +98,12 @@ class RecordingBackend:
         _ = request
         return GraphContextResponse(context="fake graph context")
 
-    async def list_skills(self, scope: MemoryScope) -> list[SkillRecord]:
-        _ = scope
-        return []
+    async def list_skills(self, request: SkillListRequest) -> SkillListResponse:
+        _ = request
+        return SkillListResponse()
 
-    async def propose_skill(self, proposal: SkillProposal) -> SkillRecord:
-        return SkillRecord(
-            skill_id=proposal.proposal_id,
-            tenant_id=proposal.tenant_id,
-            agent_id=proposal.agent_id,
-            name=proposal.name,
-            description=proposal.description,
-            status=SkillStatus.PROPOSED,
-            scope=proposal.scope,
-            metadata=proposal.metadata,
-        )
+    async def propose_skill(self, proposal: SkillProposal) -> SkillProposal:
+        return proposal
 
     async def record_skill_usage(self, usage: SkillUsage) -> EventIngestResult:
         return EventIngestResult(

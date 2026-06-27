@@ -18,6 +18,10 @@ from agents_memory.models import (
     HealthResponse,
     MessageWriteRequest,
     MessageWriteResponse,
+    SkillListRequest,
+    SkillListResponse,
+    SkillProposal,
+    SkillUsage,
 )
 from agents_memory.settings import Settings, load_settings
 
@@ -39,6 +43,7 @@ def create_app(
     _register_message_routes(app, authenticator, get_backend)
     _register_event_routes(app, authenticator, get_backend)
     _register_context_routes(app, authenticator, get_backend)
+    _register_skill_routes(app, authenticator, get_backend)
 
     return app
 
@@ -149,6 +154,48 @@ def _register_context_routes(
     ) -> GraphContextResponse:
         authenticator.require_scope(request.scope)
         return await memory.get_graph_context(request)
+
+
+def _register_skill_routes(
+    app: FastAPI,
+    authenticator: Authenticator,
+    get_backend: Callable[[], MemoryBackend],
+) -> None:
+    @app.post(
+        "/v1/skills",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def list_skills(
+        request: SkillListRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> SkillListResponse:
+        authenticator.require_tenant(request.tenant_id)
+        return await memory.list_skills(request)
+
+    @app.post(
+        "/v1/skills/proposals",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def propose_skill(
+        request: SkillProposal,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> SkillProposal:
+        authenticator.require_tenant(request.tenant_id)
+        return await memory.propose_skill(request)
+
+    @app.post(
+        "/v1/skills/usage",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def record_skill_usage(
+        request: SkillUsage,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> MessageWriteResponse:
+        authenticator.require_tenant(request.tenant_id)
+        result = await memory.record_skill_usage(request)
+        return MessageWriteResponse(
+            accepted=result.status is EventIngestStatus.ACCEPTED,
+        )
 
 
 app = create_app()

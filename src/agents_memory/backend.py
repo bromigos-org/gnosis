@@ -22,9 +22,9 @@ from agents_memory.models import (
     MemoryScope,
     MessageWriteRequest,
     MessageWriteResponse,
+    SkillListRequest,
+    SkillListResponse,
     SkillProposal,
-    SkillRecord,
-    SkillStatus,
     SkillUsage,
 )
 from agents_memory.settings import Settings
@@ -45,8 +45,8 @@ class MemoryBackend(Protocol):
         self,
         request: GraphContextRequest,
     ) -> GraphContextResponse: ...
-    async def list_skills(self, scope: MemoryScope) -> list[SkillRecord]: ...
-    async def propose_skill(self, proposal: SkillProposal) -> SkillRecord: ...
+    async def list_skills(self, request: SkillListRequest) -> SkillListResponse: ...
+    async def propose_skill(self, proposal: SkillProposal) -> SkillProposal: ...
     async def record_skill_usage(self, usage: SkillUsage) -> EventIngestResult: ...
 
 
@@ -163,14 +163,14 @@ class Neo4jAgentMemoryBackend:
     ) -> GraphContextResponse:
         return await self._graph_store.get_context(request)
 
-    async def list_skills(self, scope: MemoryScope) -> list[SkillRecord]:
-        _ = scope
+    async def list_skills(self, request: SkillListRequest) -> SkillListResponse:
+        _ = request
         await self._graph_store.require_available()
-        return []
+        return SkillListResponse()
 
-    async def propose_skill(self, proposal: SkillProposal) -> SkillRecord:
+    async def propose_skill(self, proposal: SkillProposal) -> SkillProposal:
         await self._graph_store.require_available()
-        return _proposed_skill_record(proposal)
+        return proposal
 
     async def record_skill_usage(self, usage: SkillUsage) -> EventIngestResult:
         await self._graph_store.require_available()
@@ -205,19 +205,6 @@ def _build_memory_settings(settings: Settings) -> MemorySettings:
             api_key=settings.litellm_api_key,
         ),
         memory=MemoryConfig(multi_tenant=True),
-    )
-
-
-def _proposed_skill_record(proposal: SkillProposal) -> SkillRecord:
-    return SkillRecord(
-        skill_id=proposal.proposal_id,
-        tenant_id=proposal.tenant_id,
-        agent_id=proposal.agent_id,
-        name=proposal.name,
-        description=proposal.description,
-        status=SkillStatus.PROPOSED,
-        scope=proposal.scope,
-        metadata=proposal.metadata,
     )
 
 

@@ -40,6 +40,13 @@ class Authenticator:
                 detail="scope is not authorized for this token",
             )
 
+    def require_tenant(self, tenant_id: str) -> None:
+        if not compare_digest(tenant_id, self.tenant_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="scope is not authorized for this token",
+            )
+
 
 def build_authenticator(settings: Settings) -> Authenticator:
     return Authenticator(
