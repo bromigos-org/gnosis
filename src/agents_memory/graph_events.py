@@ -32,8 +32,9 @@ class PlannedGraphEvent:
 
 def plan_event(event: ClientEvent) -> PlannedGraphEvent:
     node_type = node_type_for(event)
+    node_raw_id = _node_raw_id(event)
     node = GraphNode(
-        id=_node_id(event.tenant_id, node_type, event.subject.id),
+        id=_node_id(event.tenant_id, node_type, node_raw_id),
         node_type=node_type,
         scope=event.scope,
         summary=_summary(event, node_type),
@@ -63,6 +64,10 @@ def node_type_for(event: ClientEvent) -> str:  # noqa: C901, PLR0911
             | ClientEventType.CHANNEL_UPDATED
             | ClientEventType.CHANNEL_DELETED
         ):
+            if event.subject.type == "category":
+                return "category"
+            if _string_payload(event.payload, "channel_type") == "category":
+                return "category"
             return event.subject.type
         case (
             ClientEventType.THREAD_CREATED
@@ -76,7 +81,12 @@ def node_type_for(event: ClientEvent) -> str:  # noqa: C901, PLR0911
             | ClientEventType.ROLE_DELETED
         ):
             return "role"
-        case ClientEventType.MEMBER_UPDATED:
+        case (
+            ClientEventType.MEMBER_UPDATED
+            | ClientEventType.USER_DISCOVERED
+            | ClientEventType.MEMBER_ROLE_ASSIGNED
+            | ClientEventType.MEMBER_ROLE_UNASSIGNED
+        ):
             return "user"
         case ClientEventType.ATTACHMENT_DISCOVERED:
             return "attachment"
@@ -145,15 +155,9 @@ def _semantic_node_ids(event: ClientEvent) -> tuple[str, ...]:
         _node_id(event.tenant_id, "agent", event.agent_id),
         _node_id(event.tenant_id, "client", event.source_client.value),
     ]
-    scope = event.scope
-    if scope.guild_id is not None:
-        ids.append(_node_id(event.tenant_id, "guild", scope.guild_id))
-    if scope.channel_id is not None:
-        ids.append(_node_id(event.tenant_id, "channel", scope.channel_id))
-    if event.discord is not None and event.discord.thread_id is not None:
-        ids.append(_node_id(event.tenant_id, "thread", event.discord.thread_id))
-    if event.actor.id != "":
-        ids.append(_node_id(event.tenant_id, "user", event.actor.id))
+    _append_topology_ids(ids, event)
+    _append_actor_ids(ids, event)
+    _append_role_ids(ids, event)
     message_id = _message_id(event)
     if message_id != "":
         ids.append(_node_id(event.tenant_id, "message", message_id))
@@ -165,6 +169,15 @@ def _semantic_node_ids(event: ClientEvent) -> tuple[str, ...]:
 
 
 def _append_scoped_ids(ids: list[str], event: ClientEvent) -> None:
+    _append_topology_ids(ids, event)
+    _append_actor_ids(ids, event)
+    _append_role_ids(ids, event)
+    match event.source_client:
+        case SourceClient.DISCORD:
+            pass
+
+
+def _append_topology_ids(ids: list[str], event: ClientEvent) -> None:
     scope = event.scope
     if scope.guild_id is not None:
         ids.append(_node_id(event.tenant_id, "guild", scope.guild_id))
@@ -172,18 +185,45 @@ def _append_scoped_ids(ids: list[str], event: ClientEvent) -> None:
         ids.append(_node_id(event.tenant_id, "channel", scope.channel_id))
     if event.discord is not None and event.discord.thread_id is not None:
         ids.append(_node_id(event.tenant_id, "thread", event.discord.thread_id))
-    category_id = _string_payload(event.payload, "category_id")
+    category_id = _category_id(event)
     if category_id != "":
         ids.append(_node_id(event.tenant_id, "category", category_id))
-    if event.actor.id != "":
-        ids.append(_node_id(event.tenant_id, "user", event.actor.id))
-    match event.source_client:
-        case SourceClient.DISCORD:
-            pass
+
+
+def _append_actor_ids(ids: list[str], event: ClientEvent) -> None:
+    user_id = _user_id(event)
+    if user_id != "":
+        ids.append(_node_id(event.tenant_id, "user", user_id))
+        if _is_bot_user(event):
+            ids.append(_node_id(event.tenant_id, "bot", user_id))
+
+
+def _append_role_ids(ids: list[str], event: ClientEvent) -> None:
+    role_id = _role_id(event)
+    if role_id != "":
+        ids.append(_node_id(event.tenant_id, "role", role_id))
+    member_user_id = _member_user_id(event)
+    if member_user_id != "":
+        ids.append(_node_id(event.tenant_id, "user", member_user_id))
+    ids.extend(
+        _node_id(event.tenant_id, "role", role_id) for role_id in _role_ids(event)
+    )
 
 
 def _node_id(tenant_id: str, node_type: str, raw_id: str) -> str:
     return f"tenant:{tenant_id}:{node_type}:{raw_id}"
+
+
+def _node_raw_id(event: ClientEvent) -> str:
+    match event.event_type:
+        case (
+            ClientEventType.MEMBER_ROLE_ASSIGNED
+            | ClientEventType.MEMBER_ROLE_UNASSIGNED
+        ):
+            member_user_id = _member_user_id(event)
+            return member_user_id or event.subject.id
+        case _:
+            return event.subject.id
 
 
 def _message_id(event: ClientEvent) -> str:
@@ -192,6 +232,78 @@ def _message_id(event: ClientEvent) -> str:
     if event.discord is not None and event.discord.message_id is not None:
         return event.discord.message_id
     return _string_payload(event.payload, "message_id")
+
+
+def _category_id(event: ClientEvent) -> str:
+    if node_type_for(event) == "category":
+        return event.subject.id
+    category_id = _string_payload(event.payload, "category_id")
+    if category_id != "":
+        return category_id
+    if event.event_type in {
+        ClientEventType.CHANNEL_CREATED,
+        ClientEventType.CHANNEL_UPDATED,
+        ClientEventType.CHANNEL_DELETED,
+    }:
+        return event.subject.parent_id or ""
+    return ""
+
+
+def _role_id(event: ClientEvent) -> str:
+    if node_type_for(event) == "role":
+        return event.subject.id
+    return _string_payload(event.payload, "role_id")
+
+
+def _member_user_id(event: ClientEvent) -> str:
+    match event.event_type:
+        case ClientEventType.MEMBER_UPDATED:
+            user_id = _string_payload(event.payload, "user_id")
+            return user_id or event.subject.id
+        case (
+            ClientEventType.MEMBER_ROLE_ASSIGNED
+            | ClientEventType.MEMBER_ROLE_UNASSIGNED
+        ):
+            user_id = _string_payload(event.payload, "user_id")
+            member_id = _string_payload(event.payload, "member_id")
+            return user_id or member_id or event.subject.parent_id or ""
+        case _:
+            return ""
+
+
+def _role_ids(event: ClientEvent) -> tuple[str, ...]:
+    match event.event_type:
+        case ClientEventType.MEMBER_ROLE_ASSIGNED:
+            role_id = _role_id(event)
+            if role_id != "":
+                return (role_id,)
+            return ()
+        case _:
+            value = event.payload.get("roles", [])
+            if isinstance(value, list):
+                return tuple(
+                    item for item in value if isinstance(item, str) and item != ""
+                )
+            return ()
+
+
+def _user_id(event: ClientEvent) -> str:
+    if event.event_type == ClientEventType.USER_DISCOVERED:
+        user_id = _string_payload(event.payload, "user_id")
+        return user_id or event.subject.id
+    return event.actor.id
+
+
+def _is_bot_user(event: ClientEvent) -> bool:
+    if event.actor.is_bot:
+        return True
+    is_bot = event.payload.get("is_bot", False)
+    if is_bot is True:
+        return True
+    return (
+        event.subject.type == "bot"
+        or _string_payload(event.payload, "user_type") == "bot"
+    )
 
 
 def _scope_allows(request: MemoryScope, candidate: MemoryScope) -> bool:
@@ -242,6 +354,9 @@ def is_delete_event(event_type: ClientEventType) -> bool:
             | ClientEventType.ROLE_CREATED
             | ClientEventType.ROLE_UPDATED
             | ClientEventType.MEMBER_UPDATED
+            | ClientEventType.USER_DISCOVERED
+            | ClientEventType.MEMBER_ROLE_ASSIGNED
+            | ClientEventType.MEMBER_ROLE_UNASSIGNED
             | ClientEventType.ATTACHMENT_DISCOVERED
             | ClientEventType.LINK_DISCOVERED
             | ClientEventType.TOPIC_UPDATED

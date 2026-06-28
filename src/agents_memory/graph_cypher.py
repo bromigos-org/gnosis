@@ -2,7 +2,7 @@ import json
 from collections.abc import Sequence
 
 from agents_memory.graph_events import PlannedGraphEvent
-from agents_memory.models import GraphContextRequest, JsonValue
+from agents_memory.models import ClientEventType, GraphContextRequest, JsonValue
 
 type CypherParameters = dict[str, JsonValue]
 
@@ -13,6 +13,12 @@ def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:
     attachment_id = (
         event.event.subject.id if event.node.node_type == "attachment" else None
     )
+    category_id = _category_id(event)
+    role_id = _role_id(event)
+    member_user_id = _member_user_id(event)
+    member_role_ids = _member_role_ids(event)
+    user_id = _user_id(event)
+    is_bot_user = _is_bot_user(event)
     return {
         "event_id": event.event.event_id,
         "event_type": event.event.event_type.value,
@@ -62,7 +68,7 @@ def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:
             "thread",
             event.event.discord.thread_id if event.event.discord is not None else None,
         ),
-        "user_node_id": _node_id(event.event.tenant_id, "user", event.event.actor.id),
+        "user_node_id": _node_id(event.event.tenant_id, "user", user_id),
         "message_node_id": _optional_node_id(
             event.event.tenant_id,
             "message",
@@ -74,11 +80,32 @@ def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:
             "attachment",
             attachment_id,
         ),
+        "category_node_id": _optional_node_id(
+            event.event.tenant_id,
+            "category",
+            category_id,
+        ),
+        "role_node_id": _optional_node_id(event.event.tenant_id, "role", role_id),
+        "member_user_node_id": _optional_node_id(
+            event.event.tenant_id,
+            "user",
+            member_user_id,
+        ),
+        "member_role_node_ids": [
+            _node_id(event.event.tenant_id, "role", member_role_id)
+            for member_role_id in member_role_ids
+        ],
         "subject_node_id": event.node.id,
         "subject_node_type": event.node.node_type,
         "actor_id": event.event.actor.id,
-        "actor_display_name": event.event.actor.display_name,
-        "actor_is_bot": event.event.actor.is_bot,
+        "actor_display_name": _display_name(event),
+        "actor_is_bot": is_bot_user,
+        "user_identity_id": user_id,
+        "category_id": category_id,
+        "category_name": _string_payload(event.event.payload, "name"),
+        "role_id": role_id,
+        "role_name": _string_payload(event.event.payload, "name"),
+        "member_user_id": member_user_id,
         "source_client": event.event.source_client.value,
         "message_id": message_id,
         "message_content": _string_payload(event.event.payload, "content"),
@@ -89,8 +116,23 @@ def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:
         "has_thread": event.event.discord is not None
         and event.event.discord.thread_id is not None,
         "has_message": message_id is not None,
+        "has_message_subject": event.node.node_type == "message"
+        and message_id is not None,
         "has_link": link_id is not None,
         "has_attachment": attachment_id is not None,
+        "has_category": category_id is not None,
+        "has_category_subject": event.node.node_type == "category"
+        and category_id is not None,
+        "has_channel_category": event.node.node_type == "channel"
+        and category_id is not None,
+        "has_role": role_id is not None,
+        "has_member_user": member_user_id is not None,
+        "has_member_roles": bool(member_role_ids),
+        "has_user_identity": user_id != "",
+        "is_member_role_assignment": event.event.event_type
+        == ClientEventType.MEMBER_ROLE_ASSIGNED,
+        "is_member_role_unassignment": event.event.event_type
+        == ClientEventType.MEMBER_ROLE_UNASSIGNED,
     }
 
 
@@ -161,18 +203,28 @@ FOREACH (_ IN CASE WHEN $has_thread THEN [1] ELSE [] END |
     th.channel_id = $channel_id, th.kind = 'thread', th.updated_at = datetime()
   MERGE (e)-[:AFFECTS]->(th)
 )
-FOREACH (_ IN CASE WHEN $actor_id <> '' THEN [1] ELSE [] END |
+FOREACH (_ IN CASE WHEN $has_user_identity THEN [1] ELSE [] END |
   MERGE (u:User {id: $user_node_id})
-  SET u.tenant_id = $tenant_id, u.user_id = $actor_id,
+  SET u.tenant_id = $tenant_id, u.user_id = $user_identity_id,
     u.display_name = $actor_display_name, u.is_bot = $actor_is_bot,
     u.updated_at = datetime()
   MERGE (e)-[:AFFECTS]->(u)
 )
-FOREACH (_ IN CASE WHEN $has_message THEN [1] ELSE [] END |
+FOREACH (_ IN CASE WHEN $has_user_identity AND $actor_is_bot THEN [1] ELSE [] END |
+  MERGE (u:User {id: $user_node_id})
+  SET u:Bot
+)
+FOREACH (_ IN CASE WHEN $has_message_subject THEN [1] ELSE [] END |
   MERGE (m:Message {id: $message_node_id})
   SET m.tenant_id = $tenant_id, m.message_id = $message_id,
     m.summary = $summary, m.content = $message_content,
     m.deleted = $deleted, m.updated_at = datetime()
+  MERGE (e)-[:AFFECTS]->(m)
+)
+FOREACH (_ IN CASE WHEN $has_message AND NOT $has_message_subject THEN [1] ELSE [] END |
+  MERGE (m:Message {id: $message_node_id})
+  SET m.tenant_id = $tenant_id, m.message_id = $message_id,
+    m.updated_at = datetime()
   MERGE (e)-[:AFFECTS]->(m)
 )
 FOREACH (_ IN CASE WHEN $has_message AND $actor_id <> '' THEN [1] ELSE [] END |
@@ -206,6 +258,55 @@ FOREACH (_ IN CASE WHEN $has_attachment AND $has_message THEN [1] ELSE [] END |
   MERGE (m:Message {id: $message_node_id})
   MERGE (att)-[:ATTACHED_TO]->(m)
 )
+FOREACH (_ IN CASE WHEN $has_category THEN [1] ELSE [] END |
+  MERGE (cat:Category {id: $category_node_id})
+  SET cat.tenant_id = $tenant_id, cat.guild_id = $guild_id,
+    cat.category_id = $category_id, cat.name = $category_name,
+    cat.updated_at = datetime()
+  MERGE (e)-[:AFFECTS]->(cat)
+)
+FOREACH (_ IN CASE WHEN $has_category AND $has_guild THEN [1] ELSE [] END |
+  MERGE (cat:Category {id: $category_node_id})
+  MERGE (g:Guild {id: $guild_node_id})
+  MERGE (cat)-[:IN_GUILD]->(g)
+)
+FOREACH (_ IN CASE WHEN $has_channel_category THEN [1] ELSE [] END |
+  MERGE (ch:Channel {id: $channel_node_id})
+  MERGE (cat:Category {id: $category_node_id})
+  MERGE (ch)-[:IN_CATEGORY]->(cat)
+)
+FOREACH (_ IN CASE WHEN $has_role THEN [1] ELSE [] END |
+  MERGE (r:Role {id: $role_node_id})
+  SET r.tenant_id = $tenant_id, r.guild_id = $guild_id,
+    r.role_id = $role_id, r.name = $role_name, r.deleted = $deleted,
+    r.updated_at = datetime()
+  MERGE (e)-[:AFFECTS]->(r)
+)
+FOREACH (_ IN CASE WHEN $has_role AND $has_guild THEN [1] ELSE [] END |
+  MERGE (g:Guild {id: $guild_node_id})
+  MERGE (r:Role {id: $role_node_id})
+  MERGE (g)-[:OWNS_ROLE]->(r)
+)
+FOREACH (_ IN CASE WHEN $has_member_user THEN [1] ELSE [] END |
+  MERGE (member:User {id: $member_user_node_id})
+  SET member.tenant_id = $tenant_id, member.user_id = $member_user_id,
+    member.updated_at = datetime()
+  MERGE (e)-[:AFFECTS]->(member)
+)
+FOREACH (member_role_node_id IN $member_role_node_ids |
+  MERGE (member:User {id: $member_user_node_id})
+  MERGE (role:Role {id: member_role_node_id})
+  MERGE (member)-[:HAS_ROLE]->(role)
+  MERGE (e)-[:AFFECTS]->(role)
+)
+WITH e, duplicate
+OPTIONAL MATCH (:User {id: $member_user_node_id})-[current_role:HAS_ROLE]->(
+  :Role {id: $role_node_id}
+)
+FOREACH (_ IN CASE
+  WHEN $is_member_role_unassignment AND current_role IS NOT NULL THEN [1]
+  ELSE []
+END | DELETE current_role)
 RETURN duplicate AS duplicate
 """
 
@@ -249,8 +350,100 @@ def _message_id(event: PlannedGraphEvent) -> str | None:
     return None
 
 
+def _category_id(event: PlannedGraphEvent) -> str | None:
+    if event.node.node_type == "category":
+        return event.event.subject.id
+    value = event.event.payload.get("category_id", event.event.subject.parent_id)
+    if isinstance(value, str) and value != "":
+        if event.event.event_type not in {
+            ClientEventType.CHANNEL_CREATED,
+            ClientEventType.CHANNEL_UPDATED,
+            ClientEventType.CHANNEL_DELETED,
+        }:
+            return None
+        return value
+    return None
+
+
+def _role_id(event: PlannedGraphEvent) -> str | None:
+    if event.node.node_type == "role":
+        return event.event.subject.id
+    value = event.event.payload.get("role_id")
+    if isinstance(value, str) and value != "":
+        return value
+    return None
+
+
+def _member_user_id(event: PlannedGraphEvent) -> str | None:
+    match event.event.event_type:
+        case ClientEventType.MEMBER_UPDATED:
+            value = event.event.payload.get("user_id", event.event.subject.id)
+            if isinstance(value, str) and value != "":
+                return value
+        case (
+            ClientEventType.MEMBER_ROLE_ASSIGNED
+            | ClientEventType.MEMBER_ROLE_UNASSIGNED
+        ):
+            value = event.event.payload.get(
+                "user_id", event.event.payload.get("member_id")
+            )
+            if isinstance(value, str) and value != "":
+                return value
+            if event.event.subject.parent_id is not None:
+                return event.event.subject.parent_id
+        case _:
+            return None
+    return None
+
+
+def _member_role_ids(event: PlannedGraphEvent) -> list[str]:
+    match event.event.event_type:
+        case ClientEventType.MEMBER_ROLE_ASSIGNED:
+            role_id = _role_id(event)
+            if role_id is not None:
+                return [role_id]
+            return []
+        case ClientEventType.MEMBER_ROLE_UNASSIGNED:
+            return []
+        case _:
+            return _string_list_payload(event.event.payload, "roles")
+
+
+def _user_id(event: PlannedGraphEvent) -> str:
+    if event.event.event_type == ClientEventType.USER_DISCOVERED:
+        value = event.event.payload.get("user_id")
+        if isinstance(value, str) and value != "":
+            return value
+        return event.event.subject.id
+    return event.event.actor.id
+
+
+def _display_name(event: PlannedGraphEvent) -> str | None:
+    value = event.event.payload.get("display_name")
+    if isinstance(value, str) and value != "":
+        return value
+    return event.event.actor.display_name
+
+
+def _is_bot_user(event: PlannedGraphEvent) -> bool:
+    if event.event.actor.is_bot:
+        return True
+    is_bot = event.event.payload.get("is_bot", False)
+    if is_bot is True:
+        return True
+    user_type = event.event.payload.get("user_type", event.event.subject.type)
+    return user_type == "bot"
+
+
 def _string_payload(payload: dict[str, JsonValue], key: str) -> str:
     value = payload.get(key, "")
     if isinstance(value, str):
         return value
     return ""
+
+
+def _string_list_payload(payload: dict[str, JsonValue], key: str) -> list[str]:
+    value = payload.get(key, [])
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item != ""]
+    return []
