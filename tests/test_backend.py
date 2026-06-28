@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Self
 
 import pytest
 
+from agents_memory.backend import litellm_embedding_model
 from agents_memory.graph_probe import DirectNeo4jProbe, GraphPersistenceUnavailableError
 from agents_memory.models import (
     ClientEvent,
@@ -31,6 +32,29 @@ from agents_memory.models import (
 
 if TYPE_CHECKING:
     from agents_memory.backend import MemoryBackend
+
+
+def test_litellm_embedding_model_when_embedding_alias_is_bare() -> None:
+    # Given: homelab config uses a bare LiteLLM proxy alias for memory embeddings.
+    model = "local-qwen3-embedding-0.6b"
+
+    # When: the model is prepared for the LiteLLM SDK provider.
+    sdk_model = litellm_embedding_model(model)
+
+    # Then: only the SDK-facing model is provider-qualified.
+    assert model == "local-qwen3-embedding-0.6b"
+    assert sdk_model == "openai/local-qwen3-embedding-0.6b"
+
+
+def test_litellm_embedding_model_when_embedding_alias_is_qualified() -> None:
+    # Given: a caller already supplied a LiteLLM provider-qualified embedding model.
+    model = "openai/local-qwen3-embedding-0.6b"
+
+    # When: the model is prepared for the LiteLLM SDK provider.
+    sdk_model = litellm_embedding_model(model)
+
+    # Then: the configured provider prefix is preserved without double-prefixing.
+    assert sdk_model == "openai/local-qwen3-embedding-0.6b"
 
 
 @pytest.mark.anyio

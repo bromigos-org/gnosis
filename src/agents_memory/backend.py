@@ -197,13 +197,19 @@ def _build_memory_settings(settings: Settings) -> MemorySettings:
             api_key=settings.litellm_api_key,
         ),
         embedding=LiteLLMEmbeddingProvider(
-            settings.memory_embedding,
+            litellm_embedding_model(settings.memory_embedding),
             dimensions=settings.memory_embedding_dimensions,
             api_base=settings.litellm_base_url,
             api_key=settings.litellm_api_key,
         ),
         memory=MemoryConfig(multi_tenant=True),
     )
+
+
+def litellm_embedding_model(model: str) -> str:
+    if "/" in model:
+        return model
+    return f"openai/{model}"
 
 
 def _session_id(scope: MemoryScope) -> str:

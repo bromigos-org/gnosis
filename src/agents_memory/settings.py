@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     litellm_base_url: str = Field(default="", min_length=1)
     litellm_api_key: str = Field(default="", min_length=1)
     memory_llm: str = Field(default="openai/gemma4", min_length=1)
-    memory_embedding: str = Field(default="local-bge-m3", min_length=1)
+    memory_embedding: str = Field(default="local-qwen3-embedding-0.6b", min_length=1)
     memory_embedding_dimensions: int = Field(default=1024, gt=0)
 
 
