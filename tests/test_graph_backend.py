@@ -198,7 +198,13 @@ def test_graph_schema_cypher_declares_constraints_and_indexes() -> None:
     # Given: graph operations rely on uniqueness and query indexes.
     statements = "\n".join(GRAPH_SCHEMA_CYPHER)
 
-    # When / Then: schema bootstrap includes core constraints and vector indexes.
+    # When / Then: schema bootstrap repairs existing duplicates before constraints.
+    assert GRAPH_SCHEMA_CYPHER[0].find("collect(e) AS events") >= 0
+    assert GRAPH_SCHEMA_CYPHER[0].find("MERGE (keep)-[:AFFECTS]->(target)") >= 0
+    assert GRAPH_SCHEMA_CYPHER[0].find("DETACH DELETE duplicate") >= 0
+    assert GRAPH_SCHEMA_CYPHER[1].find(
+        "CREATE CONSTRAINT event_idempotency IF NOT EXISTS",
+    ) >= 0
     assert "CREATE CONSTRAINT event_idempotency IF NOT EXISTS" in statements
     assert "CREATE CONSTRAINT graph_node_id IF NOT EXISTS" in statements
     assert "CREATE INDEX graph_node_scope IF NOT EXISTS" in statements
@@ -231,6 +237,8 @@ async def test_neo4j_executor_bootstraps_schema_once_before_operations() -> None
 
     # Then: schema bootstrap runs idempotently once before operation Cypher.
     assert driver.queries[: len(GRAPH_SCHEMA_CYPHER)] == list(GRAPH_SCHEMA_CYPHER)
+    assert "collect(e) AS events" in driver.queries[0]
+    assert "CREATE CONSTRAINT event_idempotency IF NOT EXISTS" in driver.queries[1]
     assert driver.queries.count(GRAPH_SCHEMA_CYPHER[0]) == 1
     assert driver.queries[len(GRAPH_SCHEMA_CYPHER)] == graph_vector_schema_cypher(768)
     assert driver.queries[len(GRAPH_SCHEMA_CYPHER) + 1] != GRAPH_SCHEMA_CYPHER[0]

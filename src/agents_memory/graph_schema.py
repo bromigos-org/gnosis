@@ -2,6 +2,20 @@ from typing import Final
 
 GRAPH_SCHEMA_CYPHER: Final[tuple[str, ...]] = (
     """
+    MATCH (e:Event)
+    WHERE e.tenant_id IS NOT NULL AND e.idempotency_key IS NOT NULL
+    WITH e.tenant_id AS tenant_id, e.idempotency_key AS idempotency_key,
+      collect(e) AS events
+    WHERE size(events) > 1
+    WITH tenant_id, idempotency_key, head(events) AS keep, tail(events) AS duplicates
+    UNWIND duplicates AS duplicate
+    OPTIONAL MATCH (duplicate)-[:AFFECTS]->(target)
+    FOREACH (_ IN CASE WHEN target IS NULL THEN [] ELSE [1] END |
+      MERGE (keep)-[:AFFECTS]->(target)
+    )
+    DETACH DELETE duplicate
+    """,
+    """
     CREATE CONSTRAINT event_idempotency IF NOT EXISTS
     FOR (e:Event) REQUIRE (e.tenant_id, e.idempotency_key) IS UNIQUE
     """,
