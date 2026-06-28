@@ -20,6 +20,19 @@ GRAPH_SCHEMA_CYPHER: Final[tuple[str, ...]] = (
     FOR (e:Event) REQUIRE (e.tenant_id, e.idempotency_key) IS UNIQUE
     """,
     """
+    MATCH (n:GraphNode)
+    WHERE n.id IS NOT NULL
+    WITH n.id AS graph_node_id, collect(n) AS nodes
+    WHERE size(nodes) > 1
+    WITH graph_node_id, head(nodes) AS keep, tail(nodes) AS duplicates
+    UNWIND duplicates AS duplicate
+    OPTIONAL MATCH (source)-[:AFFECTS]->(duplicate)
+    FOREACH (_ IN CASE WHEN source IS NULL THEN [] ELSE [1] END |
+      MERGE (source)-[:AFFECTS]->(keep)
+    )
+    DETACH DELETE duplicate
+    """,
+    """
     CREATE CONSTRAINT graph_node_id IF NOT EXISTS
     FOR (n:GraphNode) REQUIRE n.id IS UNIQUE
     """,
