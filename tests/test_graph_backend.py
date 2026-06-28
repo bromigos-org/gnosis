@@ -4,6 +4,8 @@ import pytest
 from pydantic import SecretStr
 
 from agents_memory.backend import Neo4jAgentMemoryBackend
+from agents_memory.graph_cypher import upsert_parameters
+from agents_memory.graph_events import plan_event
 from agents_memory.graph_store import DirectNeo4jGraphStore, InMemoryGraphExecutor
 from agents_memory.models import (
     ClientEvent,
@@ -158,6 +160,32 @@ async def test_channel_rename_updates_current_state_preserving_history() -> None
     assert context.context == "channel channel-456: operations"
     assert context.facts[0]["summary"] == "channel channel-456: operations"
     assert await store.event_count() == 2
+
+
+def test_upsert_parameters_serializes_message_payload_for_neo4j() -> None:
+    # Given: a Discord backfill message carries structured payload metadata.
+    event = _message_event().model_copy(
+        update={
+            "payload": {
+                "message_id": "message-999",
+                "channel_id": "channel-456",
+                "guild_id": "guild-123",
+                "content": "remember this",
+                "attachment_count": 2,
+                "source_marker": "backfill",
+            },
+        },
+    )
+
+    # When: the event is converted to Neo4j upsert parameters.
+    parameters = upsert_parameters(plan_event(event))
+
+    # Then: the payload property is a deterministic scalar, not a Neo4j MAP.
+    assert parameters["payload"] == (
+        '{"attachment_count":2,"channel_id":"channel-456","content":"remember this",'
+        '"guild_id":"guild-123","message_id":"message-999","source_marker":"backfill"}'
+    )
+    assert not isinstance(parameters["payload"], dict)
 
 
 def _scope(*, channel_id: str = "channel-456") -> MemoryScope:

@@ -1,3 +1,4 @@
+import json
 from collections.abc import Sequence
 
 from agents_memory.graph_events import PlannedGraphEvent
@@ -23,7 +24,11 @@ def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:
         "visibility": event.node.scope.visibility.value,
         "summary": event.node.summary,
         "deleted": event.node.deleted,
-        "payload": event.node.payload,
+        "payload": json.dumps(
+            event.node.payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         "supporting_node_ids": list(event.supporting_node_ids),
     }
 
