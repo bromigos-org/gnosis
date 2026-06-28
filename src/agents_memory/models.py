@@ -43,6 +43,9 @@ class ClientEventType(StrEnum):
     ROLE_UPDATED = "role_updated"
     ROLE_DELETED = "role_deleted"
     MEMBER_UPDATED = "member_updated"
+    USER_DISCOVERED = "user_discovered"
+    MEMBER_ROLE_ASSIGNED = "member_role_assigned"
+    MEMBER_ROLE_UNASSIGNED = "member_role_unassigned"
     ATTACHMENT_DISCOVERED = "attachment_discovered"
     LINK_DISCOVERED = "link_discovered"
     TOPIC_UPDATED = "topic_updated"
@@ -218,6 +221,9 @@ def default_event_visibility(event: ClientEvent) -> MemoryVisibility:
             | ClientEventType.ROLE_UPDATED
             | ClientEventType.ROLE_DELETED
             | ClientEventType.MEMBER_UPDATED
+            | ClientEventType.USER_DISCOVERED
+            | ClientEventType.MEMBER_ROLE_ASSIGNED
+            | ClientEventType.MEMBER_ROLE_UNASSIGNED
         ):
             return MemoryVisibility.GUILD
         case (
