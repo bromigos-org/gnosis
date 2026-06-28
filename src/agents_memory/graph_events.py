@@ -27,6 +27,7 @@ class PlannedGraphEvent:
     event: ClientEvent
     node: GraphNode
     supporting_node_ids: tuple[str, ...]
+    semantic_node_ids: tuple[str, ...]
 
 
 def plan_event(event: ClientEvent) -> PlannedGraphEvent:
@@ -43,6 +44,7 @@ def plan_event(event: ClientEvent) -> PlannedGraphEvent:
         event=event,
         node=node,
         supporting_node_ids=_supporting_node_ids(event),
+        semantic_node_ids=_semantic_node_ids(event),
     )
 
 
@@ -137,6 +139,31 @@ def _supporting_node_ids(event: ClientEvent) -> tuple[str, ...]:
     return tuple(ids)
 
 
+def _semantic_node_ids(event: ClientEvent) -> tuple[str, ...]:
+    ids = [
+        _node_id(event.tenant_id, "tenant", event.tenant_id),
+        _node_id(event.tenant_id, "agent", event.agent_id),
+        _node_id(event.tenant_id, "client", event.source_client.value),
+    ]
+    scope = event.scope
+    if scope.guild_id is not None:
+        ids.append(_node_id(event.tenant_id, "guild", scope.guild_id))
+    if scope.channel_id is not None:
+        ids.append(_node_id(event.tenant_id, "channel", scope.channel_id))
+    if event.discord is not None and event.discord.thread_id is not None:
+        ids.append(_node_id(event.tenant_id, "thread", event.discord.thread_id))
+    if event.actor.id != "":
+        ids.append(_node_id(event.tenant_id, "user", event.actor.id))
+    message_id = _message_id(event)
+    if message_id != "":
+        ids.append(_node_id(event.tenant_id, "message", message_id))
+    if node_type_for(event) == "link":
+        ids.append(_node_id(event.tenant_id, "link", event.subject.id))
+    if node_type_for(event) == "attachment":
+        ids.append(_node_id(event.tenant_id, "attachment", event.subject.id))
+    return tuple(ids)
+
+
 def _append_scoped_ids(ids: list[str], event: ClientEvent) -> None:
     scope = event.scope
     if scope.guild_id is not None:
@@ -157,6 +184,14 @@ def _append_scoped_ids(ids: list[str], event: ClientEvent) -> None:
 
 def _node_id(tenant_id: str, node_type: str, raw_id: str) -> str:
     return f"tenant:{tenant_id}:{node_type}:{raw_id}"
+
+
+def _message_id(event: ClientEvent) -> str:
+    if event.subject.type == "message":
+        return event.subject.id
+    if event.discord is not None and event.discord.message_id is not None:
+        return event.discord.message_id
+    return _string_payload(event.payload, "message_id")
 
 
 def _scope_allows(request: MemoryScope, candidate: MemoryScope) -> bool:

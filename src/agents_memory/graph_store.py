@@ -121,6 +121,7 @@ class InMemoryGraphExecutor:
         self._idempotency_keys: set[str] = set()
         self._events: list[ClientEvent] = []
         self._nodes: dict[str, GraphNode] = {}
+        self._semantic_node_ids: set[str] = set()
 
     @property
     def event_count(self) -> int:
@@ -131,6 +132,8 @@ class InMemoryGraphExecutor:
 
     async def upsert_event(self, event: PlannedGraphEvent) -> EventIngestResult:
         if event.event.idempotency_key in self._idempotency_keys:
+            self._nodes[event.node.id] = event.node
+            self._semantic_node_ids.update(event.semantic_node_ids)
             return EventIngestResult(
                 event_id=event.event.event_id,
                 status=EventIngestStatus.DUPLICATE,
@@ -139,6 +142,7 @@ class InMemoryGraphExecutor:
         self._idempotency_keys.add(event.event.idempotency_key)
         self._events.append(event.event)
         self._nodes[event.node.id] = event.node
+        self._semantic_node_ids.update(event.semantic_node_ids)
         return EventIngestResult(
             event_id=event.event.event_id,
             status=EventIngestStatus.ACCEPTED,
@@ -149,3 +153,10 @@ class InMemoryGraphExecutor:
             node for node in self._nodes.values() if context_allows_node(request, node)
         ]
         return scoped_nodes[: request.limit]
+
+    def clear_current_nodes_for_test(self) -> None:
+        self._nodes.clear()
+        self._semantic_node_ids.clear()
+
+    def semantic_node_ids_for_test(self) -> set[str]:
+        return set(self._semantic_node_ids)
