@@ -18,6 +18,7 @@ def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:
     channel_kind = _channel_kind(event)
     role_id = _role_id(event)
     member_user_id = _member_user_id(event)
+    member_is_bot = _member_is_bot(event)
     member_role_ids = _member_role_ids(event)
     user_id = _user_id(event)
     is_bot_user = _is_bot_user(event)
@@ -110,6 +111,8 @@ def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:
         "role_id": role_id,
         "role_name": _string_payload(event.event.payload, "name"),
         "member_user_id": member_user_id,
+        "member_is_bot": member_is_bot,
+        "member_user_type": "bot" if member_is_bot else "user",
         "source_client": event.event.source_client.value,
         "message_id": message_id,
         "message_content": _string_payload(event.event.payload, "content"),
@@ -131,6 +134,7 @@ def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:
         and category_id is not None,
         "has_role": role_id is not None,
         "has_member_user": member_user_id is not None,
+        "has_member_identity_snapshot": _has_member_identity_snapshot(event),
         "has_member_roles": bool(member_role_ids),
         "has_member_role_snapshot": _has_member_role_snapshot(event),
         "has_user_identity": user_id != "",
@@ -215,12 +219,17 @@ FOREACH (_ IN CASE WHEN $has_user_identity THEN [1] ELSE [] END |
   MERGE (u:User {id: $user_node_id})
   SET u.tenant_id = $tenant_id, u.user_id = $user_identity_id,
     u.display_name = $actor_display_name, u.is_bot = $actor_is_bot,
+    u.user_type = CASE WHEN $actor_is_bot THEN 'bot' ELSE 'user' END,
     u.updated_at = datetime()
   MERGE (e)-[:AFFECTS]->(u)
 )
 FOREACH (_ IN CASE WHEN $has_user_identity AND $actor_is_bot THEN [1] ELSE [] END |
   MERGE (u:User {id: $user_node_id})
   SET u:Bot
+)
+FOREACH (_ IN CASE WHEN $has_user_identity AND NOT $actor_is_bot THEN [1] ELSE [] END |
+  MERGE (u:User {id: $user_node_id})
+  REMOVE u:Bot
 )
 FOREACH (_ IN CASE WHEN $has_message_subject THEN [1] ELSE [] END |
   MERGE (m:Message {id: $message_node_id})
@@ -302,6 +311,27 @@ FOREACH (_ IN CASE WHEN $has_member_user THEN [1] ELSE [] END |
   SET member.tenant_id = $tenant_id, member.user_id = $member_user_id,
     member.updated_at = datetime()
   MERGE (e)-[:AFFECTS]->(member)
+)
+FOREACH (_ IN CASE WHEN $has_member_identity_snapshot THEN [1] ELSE [] END |
+  MERGE (member:User {id: $member_user_node_id})
+  SET member.display_name = $actor_display_name,
+    member.is_bot = $member_is_bot,
+    member.user_type = $member_user_type,
+    member.updated_at = datetime()
+)
+FOREACH (_ IN CASE
+  WHEN $has_member_identity_snapshot AND $member_is_bot THEN [1]
+  ELSE []
+END |
+  MERGE (member:User {id: $member_user_node_id})
+  SET member:Bot
+)
+FOREACH (_ IN CASE
+  WHEN $has_member_identity_snapshot AND NOT $member_is_bot THEN [1]
+  ELSE []
+END |
+  MERGE (member:User {id: $member_user_node_id})
+  REMOVE member:Bot
 )
 FOREACH (member_role_node_id IN $member_role_node_ids |
   MERGE (member:User {id: $member_user_node_id})
@@ -506,6 +536,13 @@ def _has_member_role_snapshot(event: PlannedGraphEvent) -> bool:
     )
 
 
+def _has_member_identity_snapshot(event: PlannedGraphEvent) -> bool:
+    return (
+        event.event.event_type == ClientEventType.MEMBER_UPDATED
+        and isinstance(event.event.payload.get("is_bot"), bool)
+    )
+
+
 def _user_id(event: PlannedGraphEvent) -> str:
     if event.event.event_type == ClientEventType.USER_DISCOVERED:
         value = event.event.payload.get("user_id")
@@ -523,6 +560,12 @@ def _display_name(event: PlannedGraphEvent) -> str | None:
 
 
 def _is_bot_user(event: PlannedGraphEvent) -> bool:
+    if event.event.event_type == ClientEventType.USER_DISCOVERED:
+        is_bot = event.event.payload.get("is_bot", False)
+        if isinstance(is_bot, bool):
+            return is_bot
+        user_type = event.event.payload.get("user_type", event.event.subject.type)
+        return user_type == "bot"
     if event.event.actor.is_bot:
         return True
     is_bot = event.event.payload.get("is_bot", False)
@@ -530,6 +573,13 @@ def _is_bot_user(event: PlannedGraphEvent) -> bool:
         return True
     user_type = event.event.payload.get("user_type", event.event.subject.type)
     return user_type == "bot"
+
+
+def _member_is_bot(event: PlannedGraphEvent) -> bool:
+    is_bot = event.event.payload.get("is_bot", False)
+    if isinstance(is_bot, bool):
+        return is_bot
+    return _string_payload(event.event.payload, "user_type") == "bot"
 
 
 def _string_payload(payload: dict[str, JsonValue], key: str) -> str:

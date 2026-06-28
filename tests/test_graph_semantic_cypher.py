@@ -360,6 +360,104 @@ def test_pc_principal_user_discovered_cypher_repairs_bot_typing() -> None:
     assert "tenant:bromigos:bot:bot-007" in semantic_node_ids
 
 
+def test_pc_principal_user_discovered_human_payload_clears_stale_bot_typing() -> None:
+    # Given: PC-Principal later corrects a previously bot-typed user to human.
+    event = _user_discovered_event().model_copy(
+        update={
+            "event_id": "user_discovered:user-789",
+            "idempotency_key": "user_discovered:user-789",
+            "actor": ClientEventActor(
+                id="user-789",
+                display_name="cartman",
+                is_bot=False,
+            ),
+            "subject": ClientEventSubject(
+                id="user-789",
+                type="user",
+                parent_id="guild-123",
+            ),
+            "payload": {
+                "guild_id": "guild-123",
+                "user_id": "user-789",
+                "display_name": "cartman",
+                "is_bot": False,
+                "user_type": "user",
+            },
+        },
+    )
+
+    # When: Neo4j parameters are built for the authoritative human payload.
+    parameters = upsert_parameters(plan_event(event))
+
+    # Then: the same User id is persisted as human and stale Bot labeling is removed.
+    assert "REMOVE u:Bot" in UPSERT_EVENT_CYPHER
+    assert "u.user_type = CASE WHEN $actor_is_bot THEN 'bot' ELSE 'user' END" in (
+        UPSERT_EVENT_CYPHER
+    )
+    assert parameters["user_node_id"] == "tenant:bromigos:user:user-789"
+    assert parameters["user_identity_id"] == "user-789"
+    assert parameters["actor_is_bot"] is False
+    assert parameters["node_type"] == "user"
+    semantic_node_ids = parameters["semantic_node_ids"]
+    assert isinstance(semantic_node_ids, list)
+    assert "tenant:bromigos:user:user-789" in semantic_node_ids
+    assert "tenant:bromigos:bot:user-789" not in semantic_node_ids
+
+
+def test_pc_principal_member_updated_bot_payload_types_member_as_bot() -> None:
+    # Given: PC-Principal emits a member snapshot for a bot user.
+    event = _member_event().model_copy(
+        update={
+            "event_id": "member_updated:bot-007",
+            "idempotency_key": "member_updated:bot-007",
+            "subject": ClientEventSubject(id="bot-007", type="member"),
+            "payload": {
+                "user_id": "bot-007",
+                "guild_id": "guild-123",
+                "display_name": "PC Principal",
+                "is_bot": True,
+                "user_type": "bot",
+                "roles": ["role-222"],
+            },
+        },
+    )
+
+    # When: Neo4j parameters are built for the authoritative member snapshot.
+    parameters = upsert_parameters(plan_event(event))
+
+    # Then: the member User node is typed as Bot with a stable user id.
+    assert "SET member:Bot" in UPSERT_EVENT_CYPHER
+    assert parameters["member_user_node_id"] == "tenant:bromigos:user:bot-007"
+    assert parameters["member_user_id"] == "bot-007"
+    assert parameters["member_is_bot"] is True
+    assert parameters["member_user_type"] == "bot"
+
+
+def test_pc_principal_member_updated_human_payload_clears_member_bot_label() -> None:
+    # Given: PC-Principal emits an authoritative human correction for a member.
+    event = _member_event().model_copy(
+        update={
+            "payload": {
+                "user_id": "user-789",
+                "guild_id": "guild-123",
+                "display_name": "cartman",
+                "is_bot": False,
+                "user_type": "user",
+                "roles": ["role-222"],
+            },
+        },
+    )
+
+    # When: Neo4j parameters are built for the authoritative member snapshot.
+    parameters = upsert_parameters(plan_event(event))
+
+    # Then: the member User node is human and stale Bot labeling is removed.
+    assert "REMOVE member:Bot" in UPSERT_EVENT_CYPHER
+    assert parameters["member_user_node_id"] == "tenant:bromigos:user:user-789"
+    assert parameters["member_is_bot"] is False
+    assert parameters["member_user_type"] == "user"
+
+
 def test_pc_principal_member_role_assigned_cypher_creates_current_has_role() -> None:
     # Given: PC-Principal emits an explicit role assignment fact.
     event = _member_role_event(ClientEventType.MEMBER_ROLE_ASSIGNED)
