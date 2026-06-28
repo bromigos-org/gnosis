@@ -278,8 +278,9 @@ FOREACH (_ IN CASE WHEN $has_channel_category THEN [1] ELSE [] END |
 FOREACH (_ IN CASE WHEN $has_role THEN [1] ELSE [] END |
   MERGE (r:Role {id: $role_node_id})
   SET r.tenant_id = $tenant_id, r.guild_id = $guild_id,
-    r.role_id = $role_id, r.name = $role_name, r.deleted = $deleted,
-    r.updated_at = datetime()
+    r.role_id = $role_id,
+    r.name = coalesce(nullif($role_name, ''), r.name),
+    r.deleted = $deleted, r.updated_at = datetime()
   MERGE (e)-[:AFFECTS]->(r)
 )
 FOREACH (_ IN CASE WHEN $has_role AND $has_guild THEN [1] ELSE [] END |

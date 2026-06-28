@@ -121,6 +121,17 @@ def test_discord_role_upsert_cypher_fans_out_guild_role_ownership() -> None:
     assert parameters["has_role"] is True
 
 
+def test_discord_role_upsert_preserves_existing_name_when_payload_is_blank() -> None:
+    event = _role_event().model_copy(
+        update={"payload": {"role_id": "role-222", "guild_id": "guild-123", "name": ""}},
+    )
+
+    parameters = upsert_parameters(plan_event(event))
+
+    assert parameters["role_name"] == ""
+    assert "coalesce(nullif($role_name, ''), r.name)" in UPSERT_EVENT_CYPHER
+
+
 def test_discord_member_update_cypher_fans_out_user_role_assignments() -> None:
     # Given: a Discord member update includes the member's current role IDs.
     event = _member_event()
