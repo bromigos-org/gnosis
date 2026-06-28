@@ -10,7 +10,11 @@ type JsonObject = dict[str, JsonValue]
 
 
 class ContractModel(BaseModel):
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        populate_by_name=True,
+    )
 
 
 class MemoryVisibility(StrEnum):
@@ -174,6 +178,30 @@ class GraphContextRequest(ContractModel):
 class GraphContextResponse(ContractModel):
     context: str
     facts: list[JsonObject] = Field(default_factory=list)
+
+
+class BackendReadiness(ContractModel):
+    graph: str
+    schema_status: str = Field(alias="schema")
+
+
+class ReadinessResponse(ContractModel):
+    status: str
+
+
+class DiagnosticsConfig(ContractModel):
+    neo4j_uri: str
+    neo4j_username: str
+    litellm_base_url: str
+    memory_llm: str
+    memory_embedding: str
+    memory_embedding_dimensions: int
+
+
+class DiagnosticsResponse(ContractModel):
+    tenant_id: str
+    config: DiagnosticsConfig
+    backend: BackendReadiness
 
 
 class SkillRecord(ContractModel):

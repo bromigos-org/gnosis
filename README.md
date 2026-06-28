@@ -4,7 +4,9 @@
 
 ## API
 
-- `GET /health` returns service status.
+- `GET /health` returns shallow liveness as `{"status":"ok"}` without checking dependencies.
+- `GET /ready` is unauthenticated Kubernetes readiness. It returns `{"status":"ready"}` only after the structured graph backend can connect and bootstrap schema.
+- `GET /v1/diagnostics` returns bearer-protected, non-secret tenant, config, and backend readiness details.
 - `POST /v1/messages` records a scoped message for extraction into memory.
 - `POST /v1/context` retrieves scoped memory context for a query.
 - `POST /v1/events` and `POST /v1/events/batch` ingest scoped structured events such as Discord messages, topology updates, reactions, links, and attachment metadata.
@@ -13,7 +15,7 @@
 - `POST /v1/skills/proposals` stores a proposed skill for human review.
 - `POST /v1/skills/usage` records usage only for approved reviewed skills.
 
-All non-health endpoints require `Authorization: Bearer <AGENTS_MEMORY_TOKEN>`.
+All endpoints except `/health` and `/ready` require `Authorization: Bearer <AGENTS_MEMORY_TOKEN>`.
 
 ## Discord memory scope and privacy
 
@@ -22,6 +24,7 @@ All non-health endpoints require `Authorization: Bearer <AGENTS_MEMORY_TOKEN>`.
 - Visibility is enforced in the backend. `private_user` stays tied to the matching user, `channel` stays tied to the matching guild and channel, `guild` stays inside that guild, `agent_shared` stays within the same agent, and `global` is the only broad scope.
 - Channel-scoped graph recall does not cross into sibling channels. This prevents cross-channel graph recall even when two channels live in the same guild.
 - Topology deletes and renames are preserved as tombstones or event history, not hard-deleted facts. That keeps the audit trail while still reflecting current state.
+- Structured event ingestion bootstraps Neo4j constraints and indexes before graph writes. Accepted events are written to graph state and promoted to embedded long-term facts through `MemoryClient.long_term.add_fact(..., generate_embedding=True)` with event, tenant, agent, session, user, visibility, guild, and channel metadata. Duplicate event deliveries repair current graph state but are not promoted to long-term facts again.
 
 ## Reviewed skill workflow
 

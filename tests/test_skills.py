@@ -10,6 +10,7 @@ environ["LITELLM_API_KEY"] = "test-litellm-key"
 
 from agents_memory.backend import Neo4jAgentMemoryBackend
 from agents_memory.models import (
+    BackendReadiness,
     ClientEvent,
     EventIngestResult,
     EventIngestStatus,
@@ -168,6 +169,9 @@ def _proposal() -> SkillProposal:
 class AvailableGraphStore:
     async def require_available(self) -> None:
         return None
+
+    async def readiness(self) -> BackendReadiness:
+        return BackendReadiness(graph="ready", schema="ready")
 
     async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
         return EventIngestResult(

@@ -2,6 +2,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, Self
 
+from neo4j.exceptions import Neo4jError
+
 from agents_memory.graph_cypher import (
     CONTEXT_CYPHER,
     UPSERT_EVENT_CYPHER,
@@ -18,7 +20,9 @@ from agents_memory.graph_events import (
     node_from_row,
     plan_event,
 )
+from agents_memory.graph_schema import GRAPH_SCHEMA_CYPHER, graph_vector_schema_cypher
 from agents_memory.models import (
+    BackendReadiness,
     ClientEvent,
     EventIngestResult,
     EventIngestStatus,
@@ -50,6 +54,7 @@ class CypherDriverFactory(Protocol):
 
 class GraphExecutor(Protocol):
     async def require_available(self) -> None: ...
+    async def readiness(self) -> BackendReadiness: ...
     async def upsert_event(self, event: PlannedGraphEvent) -> EventIngestResult: ...
     async def get_context(
         self,
@@ -57,15 +62,26 @@ class GraphExecutor(Protocol):
     ) -> Sequence[GraphNode]: ...
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class Neo4jGraphExecutor:
     driver_factory: CypherDriverFactory
+    embedding_dimensions: int
+    _schema_bootstrapped: bool = False
 
     async def require_available(self) -> None:
+        await self._bootstrap_schema()
         async with self.driver_factory() as driver:
             await driver.verify_connectivity()
 
+    async def readiness(self) -> BackendReadiness:
+        try:
+            await self.require_available()
+        except (Neo4jError, OSError):
+            return BackendReadiness(graph="unavailable", schema="unavailable")
+        return BackendReadiness(graph="ready", schema="ready")
+
     async def upsert_event(self, event: PlannedGraphEvent) -> EventIngestResult:
+        await self._bootstrap_schema()
         async with self.driver_factory() as driver:
             rows = await driver.execute_query(
                 UPSERT_EVENT_CYPHER,
@@ -83,12 +99,25 @@ class Neo4jGraphExecutor:
         )
 
     async def get_context(self, request: GraphContextRequest) -> Sequence[GraphNode]:
+        await self._bootstrap_schema()
         async with self.driver_factory() as driver:
             rows = await driver.execute_query(
                 CONTEXT_CYPHER,
                 context_parameters(request),
             )
         return tuple(node_from_row(row, request.scope) for row in rows)
+
+    async def _bootstrap_schema(self) -> None:
+        if self._schema_bootstrapped:
+            return
+        async with self.driver_factory() as driver:
+            for statement in GRAPH_SCHEMA_CYPHER:
+                _ = await driver.execute_query(statement, {})
+            _ = await driver.execute_query(
+                graph_vector_schema_cypher(self.embedding_dimensions),
+                {},
+            )
+        self._schema_bootstrapped = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +126,9 @@ class DirectNeo4jGraphStore:
 
     async def require_available(self) -> None:
         await self.executor.require_available()
+
+    async def readiness(self) -> BackendReadiness:
+        return await self.executor.readiness()
 
     async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
         await self.require_available()
@@ -122,15 +154,22 @@ class InMemoryGraphExecutor:
         self._events: list[ClientEvent] = []
         self._nodes: dict[str, GraphNode] = {}
         self._semantic_node_ids: set[str] = set()
+        self._schema_bootstrapped: bool = False
+        self._schema_bootstrap_count: int = 0
 
     @property
     def event_count(self) -> int:
         return len(self._events)
 
     async def require_available(self) -> None:
-        return None
+        await self._bootstrap_schema()
+
+    async def readiness(self) -> BackendReadiness:
+        await self.require_available()
+        return BackendReadiness(graph="ready", schema="ready")
 
     async def upsert_event(self, event: PlannedGraphEvent) -> EventIngestResult:
+        await self._bootstrap_schema()
         if event.event.idempotency_key in self._idempotency_keys:
             self._nodes[event.node.id] = event.node
             self._semantic_node_ids.update(event.semantic_node_ids)
@@ -149,6 +188,7 @@ class InMemoryGraphExecutor:
         )
 
     async def get_context(self, request: GraphContextRequest) -> Sequence[GraphNode]:
+        await self._bootstrap_schema()
         scoped_nodes = [
             node for node in self._nodes.values() if context_allows_node(request, node)
         ]
@@ -160,3 +200,12 @@ class InMemoryGraphExecutor:
 
     def semantic_node_ids_for_test(self) -> set[str]:
         return set(self._semantic_node_ids)
+
+    def schema_bootstrap_count_for_test(self) -> int:
+        return self._schema_bootstrap_count
+
+    async def _bootstrap_schema(self) -> None:
+        if self._schema_bootstrapped:
+            return
+        self._schema_bootstrapped = True
+        self._schema_bootstrap_count += 1

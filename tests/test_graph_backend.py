@@ -1,12 +1,19 @@
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Self
 
 import pytest
-from pydantic import SecretStr
 
-from agents_memory.backend import Neo4jAgentMemoryBackend
-from agents_memory.graph_cypher import upsert_parameters
+from agents_memory.graph_cypher import (
+    upsert_parameters,
+)
 from agents_memory.graph_events import plan_event
-from agents_memory.graph_store import DirectNeo4jGraphStore, InMemoryGraphExecutor
+from agents_memory.graph_schema import GRAPH_SCHEMA_CYPHER, graph_vector_schema_cypher
+from agents_memory.graph_store import (
+    DirectNeo4jGraphStore,
+    InMemoryGraphExecutor,
+    Neo4jGraphExecutor,
+)
 from agents_memory.models import (
     ClientEvent,
     ClientEventActor,
@@ -15,25 +22,24 @@ from agents_memory.models import (
     DiscordEventContext,
     EventIngestStatus,
     GraphContextRequest,
+    JsonValue,
     MemoryScope,
     MemoryVisibility,
     SourceClient,
 )
-from agents_memory.settings import Settings
 
 
 @pytest.mark.anyio
 async def test_discord_message_upsert_and_context_retrieval() -> None:
     # Given: a direct graph store receives a Discord channel message event.
     store = DirectNeo4jGraphStore(executor=InMemoryGraphExecutor())
-    backend = Neo4jAgentMemoryBackend(_settings(), graph_store=store)
     event = _message_event(
         _MessageEventValues(content="remember the plasma conduit"),
     )
 
     # When: the event is ingested and graph context is requested in the same scope.
-    result = await backend.ingest_event(event)
-    context = await backend.get_graph_context(
+    result = await store.ingest_event(event)
+    context = await store.get_context(
         GraphContextRequest(scope=event.scope, query="plasma", limit=4),
     )
 
@@ -188,6 +194,77 @@ def test_upsert_parameters_serializes_message_payload_for_neo4j() -> None:
     assert not isinstance(parameters["payload"], dict)
 
 
+def test_graph_schema_cypher_declares_constraints_and_indexes() -> None:
+    # Given: graph operations rely on uniqueness and query indexes.
+    statements = "\n".join(GRAPH_SCHEMA_CYPHER)
+
+    # When / Then: schema bootstrap includes core constraints and vector indexes.
+    assert "CREATE CONSTRAINT event_idempotency IF NOT EXISTS" in statements
+    assert "CREATE CONSTRAINT graph_node_id IF NOT EXISTS" in statements
+    assert "CREATE INDEX graph_node_scope IF NOT EXISTS" in statements
+
+
+def test_graph_vector_schema_cypher_uses_configured_dimensions() -> None:
+    # Given: embedding dimensions can vary with the selected embedding model.
+    statement = graph_vector_schema_cypher(768)
+
+    # When / Then: the Neo4j vector index matches runtime configuration.
+    assert "CREATE VECTOR INDEX graph_node_embedding IF NOT EXISTS" in statement
+    assert "`vector.dimensions`: 768" in statement
+
+
+@pytest.mark.anyio
+async def test_neo4j_executor_bootstraps_schema_once_before_operations() -> None:
+    # Given: a Neo4j executor connected to a recording driver.
+    driver = RecordingCypherDriver()
+    executor = Neo4jGraphExecutor(
+        driver_factory=RecordingDriverFactory(driver),
+        embedding_dimensions=768,
+    )
+    event = plan_event(_message_event())
+
+    # When: multiple graph operations run through the executor.
+    _ = await executor.upsert_event(event)
+    _ = await executor.get_context(
+        GraphContextRequest(scope=event.event.scope, query="message", limit=4),
+    )
+
+    # Then: schema bootstrap runs idempotently once before operation Cypher.
+    assert driver.queries[: len(GRAPH_SCHEMA_CYPHER)] == list(GRAPH_SCHEMA_CYPHER)
+    assert driver.queries.count(GRAPH_SCHEMA_CYPHER[0]) == 1
+    assert driver.queries[len(GRAPH_SCHEMA_CYPHER)] == graph_vector_schema_cypher(768)
+    assert driver.queries[len(GRAPH_SCHEMA_CYPHER) + 1] != GRAPH_SCHEMA_CYPHER[0]
+
+
+@pytest.mark.anyio
+async def test_neo4j_executor_readiness_reports_unavailable_on_failure() -> None:
+    # Given: schema bootstrap cannot reach Neo4j.
+    executor = Neo4jGraphExecutor(
+        driver_factory=FailingCypherDriverFactory(),
+        embedding_dimensions=1024,
+    )
+
+    # When: readiness is checked for Kubernetes.
+    readiness = await executor.readiness()
+
+    # Then: readiness degrades to a safe unavailable status instead of leaking errors.
+    assert readiness.graph == "unavailable"
+    assert readiness.schema_status == "unavailable"
+
+
+@pytest.mark.anyio
+async def test_in_memory_executor_records_schema_bootstrap_before_operations() -> None:
+    # Given: the in-memory executor models the production schema lifecycle.
+    executor = InMemoryGraphExecutor()
+    store = DirectNeo4jGraphStore(executor=executor)
+
+    # When: graph ingestion occurs.
+    _ = await store.ingest_event(_message_event())
+
+    # Then: tests can assert schema readiness without a Neo4j instance.
+    assert executor.schema_bootstrap_count_for_test() == 1
+
+
 def _scope(*, channel_id: str = "channel-456") -> MemoryScope:
     return MemoryScope(
         tenant_id="bromigos",
@@ -198,18 +275,6 @@ def _scope(*, channel_id: str = "channel-456") -> MemoryScope:
         visibility=MemoryVisibility.CHANNEL,
         guild_id="guild-123",
         channel_id=channel_id,
-    )
-
-
-def _settings() -> Settings:
-    token = SecretStr("test-token").get_secret_value()
-    neo4j_password = SecretStr("test-password").get_secret_value()
-    return Settings(
-        agents_memory_token=token,
-        neo4j_uri="bolt://neo4j.local:7687",
-        neo4j_password=neo4j_password,
-        litellm_base_url="http://litellm.local/v1",
-        litellm_api_key="test-litellm-key",
     )
 
 
@@ -283,3 +348,72 @@ def _channel_event(
         },
         discord=DiscordEventContext(guild_id="guild-123", channel_id="channel-456"),
     )
+
+
+@dataclass(slots=True)
+class RecordingCypherDriver:
+    queries: list[str] = field(default_factory=list)
+
+    async def execute_query(
+        self,
+        query: str,
+        parameters: dict[str, JsonValue],
+    ) -> Sequence[dict[str, JsonValue]]:
+        _ = parameters
+        self.queries.append(query)
+        return [{"duplicate": False}]
+
+    async def verify_connectivity(self) -> None:
+        self.queries.append("verify_connectivity")
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: object,
+        exc_val: object,
+        exc_tb: object,
+    ) -> None:
+        _ = (exc_type, exc_val, exc_tb)
+
+
+@dataclass(frozen=True, slots=True)
+class RecordingDriverFactory:
+    driver: RecordingCypherDriver
+
+    def __call__(self) -> RecordingCypherDriver:
+        return self.driver
+
+
+@dataclass(frozen=True, slots=True)
+class FailingCypherDriverFactory:
+    def __call__(self) -> "FailingCypherDriver":
+        return FailingCypherDriver()
+
+
+@dataclass(frozen=True, slots=True)
+class FailingCypherDriver:
+    async def execute_query(
+        self,
+        query: str,
+        parameters: dict[str, JsonValue],
+    ) -> Sequence[dict[str, JsonValue]]:
+        _ = (query, parameters)
+        reason = "connection refused"
+        raise OSError(reason)
+
+    async def verify_connectivity(self) -> None:
+        reason = "connection refused"
+        raise OSError(reason)
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: object,
+        exc_val: object,
+        exc_tb: object,
+    ) -> None:
+        _ = (exc_type, exc_val, exc_tb)

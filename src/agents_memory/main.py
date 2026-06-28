@@ -2,15 +2,18 @@ from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 
 from agents_memory.auth import Authenticator, build_authenticator
 from agents_memory.backend import MemoryBackend, Neo4jAgentMemoryBackend
 from agents_memory.models import (
+    BackendReadiness,
     ClientEvent,
     ClientEventBatchRequest,
     ClientEventBatchResponse,
     ContextRequest,
     ContextResponse,
+    DiagnosticsResponse,
     EventIngestResult,
     EventIngestStatus,
     GraphContextRequest,
@@ -18,6 +21,7 @@ from agents_memory.models import (
     HealthResponse,
     MessageWriteRequest,
     MessageWriteResponse,
+    ReadinessResponse,
     SkillListRequest,
     SkillListResponse,
     SkillProposal,
@@ -40,6 +44,7 @@ def create_app(
         return memory_backend
 
     _register_health_route(app)
+    _register_readiness_routes(app, settings, authenticator, get_backend)
     _register_message_routes(app, authenticator, get_backend)
     _register_event_routes(app, authenticator, get_backend)
     _register_context_routes(app, authenticator, get_backend)
@@ -52,6 +57,39 @@ def _register_health_route(app: FastAPI) -> None:
     @app.get("/health")
     def health() -> HealthResponse:
         return HealthResponse(status="ok")
+
+
+def _register_readiness_routes(
+    app: FastAPI,
+    settings: Settings,
+    authenticator: Authenticator,
+    get_backend: Callable[[], MemoryBackend],
+) -> None:
+    @app.get("/ready", response_model=ReadinessResponse)
+    async def ready(
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> ReadinessResponse | JSONResponse:
+        readiness = await memory.readiness()
+        if _is_ready(readiness):
+            return ReadinessResponse(status="ready")
+        return JSONResponse(
+            status_code=503,
+            content=ReadinessResponse(status="unavailable").model_dump(by_alias=True),
+        )
+
+    @app.get(
+        "/v1/diagnostics",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def diagnostics(
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> DiagnosticsResponse:
+        authenticator.require_tenant(settings.agents_memory_tenant_id)
+        return memory.diagnostics(await memory.readiness())
+
+
+def _is_ready(readiness: BackendReadiness) -> bool:
+    return readiness.graph == "ready" and readiness.schema_status == "ready"
 
 
 def _register_message_routes(
@@ -84,7 +122,7 @@ def _register_event_routes(
         request: ClientEvent,
         memory: Annotated[MemoryBackend, Depends(get_backend)],
     ) -> EventIngestResult:
-        authenticator.require_scope(request.scope)
+        _require_event_scope(authenticator, request)
         return await memory.ingest_event(request)
 
     @app.post(
@@ -101,7 +139,7 @@ def _register_event_routes(
 
         for index, event in enumerate(request.events):
             try:
-                authenticator.require_scope(event.scope)
+                _require_event_scope(authenticator, event)
             except HTTPException as error:
                 results[index] = EventIngestResult(
                     event_id=event.event_id,
@@ -125,6 +163,15 @@ def _register_event_routes(
 
         return ClientEventBatchResponse(
             results=[result for result in results if result is not None],
+        )
+
+
+def _require_event_scope(authenticator: Authenticator, event: ClientEvent) -> None:
+    authenticator.require_scope(event.scope)
+    if event.tenant_id != event.scope.tenant_id:
+        raise HTTPException(
+            status_code=403,
+            detail="event tenant does not match scope tenant",
         )
 
 

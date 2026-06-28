@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Protocol, Self, override
 from neo4j.exceptions import Neo4jError
 
 from agents_memory.models import (
+    BackendReadiness,
     ClientEvent,
     EventIngestResult,
     GraphContextRequest,
@@ -77,6 +78,7 @@ class ConnectivityNeo4jDriverFactory(Protocol):
 
 class StructuredGraphStore(Protocol):
     async def require_available(self) -> None: ...
+    async def readiness(self) -> BackendReadiness: ...
     async def ingest_event(self, event: ClientEvent) -> EventIngestResult: ...
     async def get_context(
         self,

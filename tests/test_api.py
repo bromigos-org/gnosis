@@ -17,12 +17,15 @@ from neo4j_agent_memory import MemorySettings
 from agents_memory.backend import Neo4jAgentMemoryBackend
 from agents_memory.main import create_app
 from agents_memory.models import (
+    BackendReadiness,
     ClientEvent,
     ClientEventBatchRequest,
     ClientEventBatchResponse,
     ClientEventType,
     ContextRequest,
     ContextResponse,
+    DiagnosticsConfig,
+    DiagnosticsResponse,
     EventIngestResult,
     EventIngestStatus,
     GraphContextRequest,
@@ -52,6 +55,69 @@ def test_health_when_called_without_auth() -> None:
     # Then: the service reports healthy.
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_ready_when_backend_is_available_without_auth() -> None:
+    # Given: an app whose graph backend can bootstrap and connect.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: Kubernetes calls the unauthenticated readiness endpoint.
+    response = client.get("/ready")
+
+    # Then: readiness succeeds without requiring bearer credentials.
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+    assert backend.readiness_checks == 1
+
+
+def test_ready_when_backend_is_unavailable_without_auth() -> None:
+    # Given: an app whose graph backend cannot connect.
+    backend = RecordingBackend(backend_available=False)
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: Kubernetes calls the unauthenticated readiness endpoint.
+    response = client.get("/ready")
+
+    # Then: readiness fails shallowly without leaking connection details.
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
+
+
+def test_diagnostics_requires_bearer_auth() -> None:
+    # Given: diagnostics exposes backend configuration readiness details.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a caller omits credentials.
+    response = client.get("/v1/diagnostics")
+
+    # Then: diagnostics remains protected.
+    assert response.status_code == 401
+
+
+def test_diagnostics_returns_safe_readiness_details() -> None:
+    # Given: an authenticated operator and available backend.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: diagnostics are requested.
+    response = client.get("/v1/diagnostics", headers=_auth_header())
+
+    # Then: tenant, non-secret config, and backend readiness are returned.
+    assert response.status_code == 200
+    assert response.json() == {
+        "tenant_id": "bromigos",
+        "config": {
+            "neo4j_uri": "bolt://neo4j.neo4j.svc.cluster.local:7687",
+            "neo4j_username": "neo4j",
+            "litellm_base_url": "http://litellm.litellm.svc.cluster.local:4000/v1",
+            "memory_llm": "openai/gemma4",
+            "memory_embedding": "local-qwen3-embedding-0.6b",
+            "memory_embedding_dimensions": 1024,
+        },
+        "backend": {"graph": "ready", "schema": "ready"},
+    }
 
 
 def test_write_message_when_token_is_missing() -> None:
@@ -179,6 +245,21 @@ def test_write_event_when_scope_is_outside_policy() -> None:
     assert backend.events == []
 
 
+def test_write_event_when_tenant_differs_from_scope_is_rejected() -> None:
+    # Given: an event whose authorized scope tenant differs from its write tenant.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+    payload = _client_event_payload()
+    payload["tenant_id"] = "evil-corp"
+
+    # When: the caller submits the event with valid bearer credentials.
+    response = client.post("/v1/events", headers=_auth_header(), json=payload)
+
+    # Then: the API rejects the cross-tenant write before persistence.
+    assert response.status_code == 403
+    assert backend.events == []
+
+
 def test_write_event_when_backend_returns_duplicate() -> None:
     # Given: an app with a fake memory backend that has already seen the event.
     backend = RecordingBackend(duplicate_event_ids={"discord-message-999"})
@@ -249,6 +330,42 @@ def test_write_event_batch_when_one_event_fails_policy() -> None:
                 "event_id": "discord-message-999",
                 "status": "rejected",
                 "reason": "scope is not authorized for this token",
+            },
+        ],
+    }
+    assert [event.tenant_id for event in backend.events] == ["bromigos"]
+
+
+def test_write_event_batch_when_event_tenant_differs_from_scope_rejects_event() -> None:
+    # Given: a batch with one valid event and one cross-tenant event.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+    invalid_event = _client_event_payload(
+        event_type="reaction_added",
+        subject={"id": "reaction-1", "type": "reaction"},
+    )
+    invalid_event["tenant_id"] = "evil-corp"
+
+    # When: the caller submits the mixed batch.
+    response = client.post(
+        "/v1/events/batch",
+        headers=_auth_header(),
+        json={"events": [_client_event_payload(), invalid_event]},
+    )
+
+    # Then: only the cross-tenant event is rejected and never reaches the backend.
+    assert response.status_code == 200
+    assert response.json() == {
+        "results": [
+            {
+                "event_id": "discord-message-999",
+                "status": "accepted",
+                "reason": None,
+            },
+            {
+                "event_id": "discord-message-999",
+                "status": "rejected",
+                "reason": "event tenant does not match scope tenant",
             },
         ],
     }
@@ -545,6 +662,7 @@ def test_privacy_defaults_match_discord_scope_policy() -> None:
 @dataclass(slots=True)
 class RecordingBackend:
     context: str = ""
+    backend_available: bool = True
     messages: list[MessageWriteRequest] = field(default_factory=list)
     context_requests: list[ContextRequest] = field(default_factory=list)
     events: list[ClientEvent] = field(default_factory=list)
@@ -552,6 +670,27 @@ class RecordingBackend:
     duplicate_event_ids: set[str] = field(default_factory=set)
     skill_usages: list[SkillUsage] = field(default_factory=list)
     skill_list_requests: list[SkillListRequest] = field(default_factory=list)
+    readiness_checks: int = 0
+
+    async def readiness(self) -> BackendReadiness:
+        self.readiness_checks += 1
+        if self.backend_available:
+            return BackendReadiness(graph="ready", schema="ready")
+        return BackendReadiness(graph="unavailable", schema="unavailable")
+
+    def diagnostics(self, readiness: BackendReadiness) -> DiagnosticsResponse:
+        return DiagnosticsResponse(
+            tenant_id="bromigos",
+            config=DiagnosticsConfig(
+                neo4j_uri="bolt://neo4j.neo4j.svc.cluster.local:7687",
+                neo4j_username="neo4j",
+                litellm_base_url="http://litellm.litellm.svc.cluster.local:4000/v1",
+                memory_llm="openai/gemma4",
+                memory_embedding="local-qwen3-embedding-0.6b",
+                memory_embedding_dimensions=1024,
+            ),
+            backend=readiness,
+        )
 
     async def add_message(self, request: MessageWriteRequest) -> MessageWriteResponse:
         self.messages.append(request)
@@ -623,6 +762,7 @@ class ShortTermWrite:
 @dataclass(frozen=True, slots=True)
 class LongTermFactWrite:
     metadata: dict[str, str]
+    generate_embedding: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -679,9 +819,15 @@ class RecordingLongTermMemory:
         obj: str,
         *,
         metadata: dict[str, str],
+        generate_embedding: bool,
     ) -> None:
         _ = (subject, predicate, obj)
-        self.facts.append(LongTermFactWrite(metadata=metadata))
+        self.facts.append(
+            LongTermFactWrite(
+                metadata=metadata,
+                generate_embedding=generate_embedding,
+            ),
+        )
 
     async def get_context(self, query: str, *, max_items: int) -> str:
         _ = max_items

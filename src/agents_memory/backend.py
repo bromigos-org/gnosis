@@ -7,14 +7,18 @@ from neo4j_agent_memory.llm.adapters.litellm import (
 )
 from pydantic import SecretStr
 
+from agents_memory.event_facts import EventFactPromoter
 from agents_memory.graph_probe import StructuredGraphStore, direct_neo4j_driver_factory
 from agents_memory.graph_store import DirectNeo4jGraphStore, Neo4jGraphExecutor
 from agents_memory.models import (
+    BackendReadiness,
     ClientEvent,
     ClientEventBatchRequest,
     ClientEventBatchResponse,
     ContextRequest,
     ContextResponse,
+    DiagnosticsConfig,
+    DiagnosticsResponse,
     EventIngestResult,
     GraphContextRequest,
     GraphContextResponse,
@@ -31,6 +35,8 @@ from agents_memory.skill_registry import InMemorySkillRegistry, SkillRegistry
 
 
 class MemoryBackend(Protocol):
+    async def readiness(self) -> BackendReadiness: ...
+    def diagnostics(self, readiness: BackendReadiness) -> DiagnosticsResponse: ...
     async def add_message(
         self,
         request: MessageWriteRequest,
@@ -85,6 +91,7 @@ class LongTermMemory(Protocol):
         obj: str,
         *,
         metadata: dict[str, str],
+        generate_embedding: bool,
     ) -> object: ...
 
 
@@ -110,14 +117,17 @@ class Neo4jAgentMemoryBackend:
         graph_store: StructuredGraphStore | None = None,
         skill_registry: SkillRegistry | None = None,
     ) -> None:
+        self._app_settings: Settings = settings
         self._settings: MemorySettings = _build_memory_settings(settings)
         self._memory_client_factory: MemoryClientFactory | None = memory_client_factory
         self._graph_store: StructuredGraphStore = graph_store or DirectNeo4jGraphStore(
             executor=Neo4jGraphExecutor(
                 driver_factory=direct_neo4j_driver_factory(settings),
+                embedding_dimensions=settings.memory_embedding_dimensions,
             ),
         )
         self._skill_registry: SkillRegistry = skill_registry or InMemorySkillRegistry()
+        self._event_fact_promoter: EventFactPromoter = EventFactPromoter()
 
     async def add_message(self, request: MessageWriteRequest) -> MessageWriteResponse:
         metadata = _scope_metadata(request.scope)
@@ -136,8 +146,28 @@ class Neo4jAgentMemoryBackend:
                 predicate=f"said_{request.role.value}",
                 obj=request.content,
                 metadata=metadata,
+                generate_embedding=True,
             )
         return MessageWriteResponse(accepted=True)
+
+    async def readiness(self) -> BackendReadiness:
+        return await self._graph_store.readiness()
+
+    def diagnostics(self, readiness: BackendReadiness) -> DiagnosticsResponse:
+        return DiagnosticsResponse(
+            tenant_id=self._app_settings.agents_memory_tenant_id,
+            config=DiagnosticsConfig(
+                neo4j_uri=self._app_settings.neo4j_uri,
+                neo4j_username=self._app_settings.neo4j_username,
+                litellm_base_url=self._app_settings.litellm_base_url,
+                memory_llm=self._app_settings.memory_llm,
+                memory_embedding=self._app_settings.memory_embedding,
+                memory_embedding_dimensions=(
+                    self._app_settings.memory_embedding_dimensions
+                ),
+            ),
+            backend=readiness,
+        )
 
     async def get_context(self, request: ContextRequest) -> ContextResponse:
         async with self._memory_client() as client:
@@ -150,7 +180,13 @@ class Neo4jAgentMemoryBackend:
         return ContextResponse(context=context)
 
     async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
-        return await self._graph_store.ingest_event(event)
+        result = await self._graph_store.ingest_event(event)
+        await self._event_fact_promoter.promote_for_result(
+            event,
+            result,
+            self._memory_client(),
+        )
+        return result
 
     async def ingest_events(
         self,
