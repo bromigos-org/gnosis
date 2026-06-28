@@ -14,6 +14,8 @@ def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:
         event.event.subject.id if event.node.node_type == "attachment" else None
     )
     category_id = _category_id(event)
+    channel_name = _channel_name(event)
+    channel_kind = _channel_kind(event)
     role_id = _role_id(event)
     member_user_id = _member_user_id(event)
     member_role_ids = _member_role_ids(event)
@@ -102,7 +104,9 @@ def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:
         "actor_is_bot": is_bot_user,
         "user_identity_id": user_id,
         "category_id": category_id,
-        "category_name": _string_payload(event.event.payload, "name"),
+        "category_name": _category_name(event),
+        "channel_name": channel_name,
+        "channel_kind": channel_kind,
         "role_id": role_id,
         "role_name": _string_payload(event.event.payload, "name"),
         "member_user_id": member_user_id,
@@ -128,6 +132,7 @@ def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:
         "has_role": role_id is not None,
         "has_member_user": member_user_id is not None,
         "has_member_roles": bool(member_role_ids),
+        "has_member_role_snapshot": _has_member_role_snapshot(event),
         "has_user_identity": user_id != "",
         "is_member_role_assignment": event.event.event_type
         == ClientEventType.MEMBER_ROLE_ASSIGNED,
@@ -189,7 +194,10 @@ FOREACH (_ IN CASE WHEN $has_guild THEN [1] ELSE [] END |
 FOREACH (_ IN CASE WHEN $has_channel THEN [1] ELSE [] END |
   MERGE (ch:Channel {id: $channel_node_id})
   SET ch.tenant_id = $tenant_id, ch.guild_id = $guild_id,
-    ch.channel_id = $channel_id, ch.updated_at = datetime()
+    ch.channel_id = $channel_id,
+    ch.name = coalesce(nullif($channel_name, ''), ch.name),
+    ch.kind = coalesce(nullif($channel_kind, ''), ch.kind),
+    ch.updated_at = datetime()
   MERGE (e)-[:AFFECTS]->(ch)
 )
 FOREACH (_ IN CASE WHEN $has_guild AND $has_channel THEN [1] ELSE [] END |
@@ -261,7 +269,8 @@ FOREACH (_ IN CASE WHEN $has_attachment AND $has_message THEN [1] ELSE [] END |
 FOREACH (_ IN CASE WHEN $has_category THEN [1] ELSE [] END |
   MERGE (cat:Category {id: $category_node_id})
   SET cat.tenant_id = $tenant_id, cat.guild_id = $guild_id,
-    cat.category_id = $category_id, cat.name = $category_name,
+    cat.category_id = $category_id,
+    cat.name = coalesce(nullif($category_name, ''), cat.name),
     cat.updated_at = datetime()
   MERGE (e)-[:AFFECTS]->(cat)
 )
@@ -300,6 +309,17 @@ FOREACH (member_role_node_id IN $member_role_node_ids |
   MERGE (member)-[:HAS_ROLE]->(role)
   MERGE (e)-[:AFFECTS]->(role)
 )
+WITH e, duplicate
+OPTIONAL MATCH (:User {id: $member_user_node_id})-[stale_role:HAS_ROLE]->(
+  stale_role_node:Role
+)
+FOREACH (_ IN CASE
+  WHEN $has_member_role_snapshot
+    AND stale_role IS NOT NULL
+    AND stale_role_node.id IN $member_role_node_ids THEN []
+  WHEN $has_member_role_snapshot AND stale_role IS NOT NULL THEN [1]
+  ELSE []
+END | DELETE stale_role)
 WITH e, duplicate
 OPTIONAL MATCH (:User {id: $member_user_node_id})-[current_role:HAS_ROLE]->(
   :Role {id: $role_node_id}
@@ -366,6 +386,75 @@ def _category_id(event: PlannedGraphEvent) -> str | None:
     return None
 
 
+def _category_name(event: PlannedGraphEvent) -> str:
+    if event.node.node_type == "category":
+        return _string_payload(event.event.payload, "name")
+    return _string_payload(event.event.payload, "category_name")
+
+
+def _channel_name(event: PlannedGraphEvent) -> str:
+    if event.node.node_type in {"category", "channel", "thread"}:
+        return _string_payload(event.event.payload, "name")
+    return ""
+
+
+def _channel_kind(event: PlannedGraphEvent) -> str:
+    if event.node.node_type == "category":
+        return "category"
+    if event.node.node_type == "thread":
+        return "thread"
+    return _normalize_channel_kind(event.event.payload.get("channel_type"))
+
+
+def _normalize_channel_kind(value: JsonValue | None) -> str:
+    match value:
+        case str():
+            return _normalize_channel_kind_text(value)
+        case int():
+            return _normalize_channel_kind_number(value)
+        case _:
+            return ""
+
+
+def _normalize_channel_kind_text(value: str) -> str:
+    normalized = value.strip().lower().removeprefix("guild_")
+    match normalized:
+        case "0" | "text":
+            return "text"
+        case "2" | "voice":
+            return "voice"
+        case "4" | "category":
+            return "category"
+        case (
+            "10"
+            | "11"
+            | "12"
+            | "15"
+            | "thread"
+            | "news_thread"
+            | "public_thread"
+            | "private_thread"
+            | "forum_thread"
+        ):
+            return "thread"
+        case _:
+            return normalized
+
+
+def _normalize_channel_kind_number(value: int) -> str:
+    match value:
+        case 0:
+            return "text"
+        case 2:
+            return "voice"
+        case 4:
+            return "category"
+        case 10 | 11 | 12 | 15:
+            return "thread"
+        case _:
+            return str(value)
+
+
 def _role_id(event: PlannedGraphEvent) -> str | None:
     if event.node.node_type == "role":
         return event.event.subject.id
@@ -408,6 +497,13 @@ def _member_role_ids(event: PlannedGraphEvent) -> list[str]:
             return []
         case _:
             return _string_list_payload(event.event.payload, "roles")
+
+
+def _has_member_role_snapshot(event: PlannedGraphEvent) -> bool:
+    return (
+        event.event.event_type == ClientEventType.MEMBER_UPDATED
+        and isinstance(event.event.payload.get("roles"), list)
+    )
 
 
 def _user_id(event: PlannedGraphEvent) -> str:

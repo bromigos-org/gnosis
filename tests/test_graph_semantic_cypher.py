@@ -105,6 +105,134 @@ def test_discord_category_upsert_cypher_fans_out_channel_hierarchy() -> None:
     assert child_parameters["has_channel_category"] is True
 
 
+def test_discord_child_channel_does_not_pass_channel_name_as_category_name() -> None:
+    # Given: a child channel event names the child and references its parent category.
+    event = _channel_child_event()
+
+    # When: Neo4j parameters are built for the child channel event.
+    parameters = upsert_parameters(plan_event(event))
+
+    # Then: the parent Category can be linked without taking the child name.
+    assert parameters["channel_name"] == "announcements"
+    assert parameters["category_id"] == "category-111"
+    assert parameters["category_name"] == ""
+    assert parameters["has_channel_category"] is True
+
+
+def test_discord_child_channel_cannot_overwrite_real_parent_category_name() -> None:
+    # Given: a real category arrives before a child channel from the live failure.
+    category = _category_event().model_copy(
+        update={
+            "event_id": "channel_created:programming-cohort",
+            "idempotency_key": "channel_created:programming-cohort",
+            "subject": ClientEventSubject(id="programming-cohort", type="category"),
+            "payload": {
+                "channel_id": "programming-cohort",
+                "guild_id": "guild-123",
+                "name": "Programming/Cohort",
+                "category_id": "programming-cohort",
+                "category_name": "Programming/Cohort",
+                "channel_type": 4,
+            },
+            "discord": DiscordEventContext(
+                guild_id="guild-123",
+                channel_id="programming-cohort",
+            ),
+        },
+    )
+    child = _channel_child_event().model_copy(
+        update={
+            "event_id": "channel_created:bot-status",
+            "idempotency_key": "channel_created:bot-status",
+            "subject": ClientEventSubject(
+                id="bot-status",
+                type="channel",
+                parent_id="programming-cohort",
+            ),
+            "payload": {
+                "channel_id": "bot-status",
+                "guild_id": "guild-123",
+                "name": "bot_status",
+                "category_id": "programming-cohort",
+                "parent_id": "programming-cohort",
+                "channel_type": 0,
+            },
+            "scope": _scope().model_copy(update={"channel_id": "bot-status"}),
+            "discord": DiscordEventContext(
+                guild_id="guild-123",
+                channel_id="bot-status",
+            ),
+        },
+    )
+
+    # When: Neo4j parameters are built in the same order production saw them.
+    category_parameters = upsert_parameters(plan_event(category))
+    child_parameters = upsert_parameters(plan_event(child))
+
+    # Then: the child can name itself and link to the real parent without naming it.
+    assert category_parameters["category_name"] == "Programming/Cohort"
+    assert category_parameters["category_node_id"] == (
+        "tenant:bromigos:category:programming-cohort"
+    )
+    assert child_parameters["channel_node_id"] == "tenant:bromigos:channel:bot-status"
+    assert child_parameters["channel_name"] == "bot_status"
+    assert child_parameters["channel_kind"] == "text"
+    assert child_parameters["category_id"] == "programming-cohort"
+    assert child_parameters["category_node_id"] == (
+        "tenant:bromigos:category:programming-cohort"
+    )
+    assert child_parameters["category_name"] == ""
+    assert child_parameters["has_category"] is True
+    assert child_parameters["has_channel_category"] is True
+    assert (
+        "ch.name = coalesce(nullif($channel_name, ''), ch.name)"
+        in UPSERT_EVENT_CYPHER
+    )
+    assert (
+        "ch.kind = coalesce(nullif($channel_kind, ''), ch.kind)"
+        in UPSERT_EVENT_CYPHER
+    )
+    assert (
+        "cat.name = coalesce(nullif($category_name, ''), cat.name)"
+        in UPSERT_EVENT_CYPHER
+    )
+    assert "MERGE (ch)-[:IN_CATEGORY]->(cat)" in UPSERT_EVENT_CYPHER
+
+
+def test_discord_category_event_passes_own_category_name() -> None:
+    # Given: a real Discord category event carries the category display name.
+    event = _category_event()
+
+    # When: Neo4j parameters are built for the category subject.
+    parameters = upsert_parameters(plan_event(event))
+
+    # Then: the Category node receives its own authoritative name.
+    assert parameters["category_name"] == "School Board"
+    assert parameters["channel_name"] == "School Board"
+    assert parameters["channel_kind"] == "category"
+    assert parameters["has_category_subject"] is True
+
+
+def test_discord_channel_parameters_expose_name_and_normalized_kind() -> None:
+    # Given: child channel events carry Discord channel_type values in mixed forms.
+    text_event = _channel_child_event().model_copy(
+        update={"payload": _channel_payload(channel_type="GUILD_TEXT")},
+    )
+    voice_event = _channel_child_event().model_copy(
+        update={"payload": _channel_payload(channel_type=2)},
+    )
+
+    # When: Neo4j parameters are built for text and voice channels.
+    text_parameters = upsert_parameters(plan_event(text_event))
+    voice_parameters = upsert_parameters(plan_event(voice_event))
+
+    # Then: Channel nodes can expose readable names and stable kind strings.
+    assert text_parameters["channel_name"] == "announcements"
+    assert text_parameters["channel_kind"] == "text"
+    assert voice_parameters["channel_name"] == "announcements"
+    assert voice_parameters["channel_kind"] == "voice"
+
+
 def test_discord_role_upsert_cypher_fans_out_guild_role_ownership() -> None:
     # Given: a Discord role event is planned for Neo4j persistence.
     event = _role_event()
@@ -123,7 +251,9 @@ def test_discord_role_upsert_cypher_fans_out_guild_role_ownership() -> None:
 
 def test_discord_role_upsert_preserves_existing_name_when_payload_is_blank() -> None:
     event = _role_event().model_copy(
-        update={"payload": {"role_id": "role-222", "guild_id": "guild-123", "name": ""}},
+        update={
+            "payload": {"role_id": "role-222", "guild_id": "guild-123", "name": ""},
+        },
     )
 
     parameters = upsert_parameters(plan_event(event))
@@ -150,6 +280,48 @@ def test_discord_member_update_cypher_fans_out_user_role_assignments() -> None:
         "tenant:bromigos:role:role-333",
     ]
     assert parameters["has_member_roles"] is True
+
+
+def test_discord_member_update_cypher_removes_stale_roles_from_full_snapshot() -> None:
+    # Given: a Discord member update includes the member's full current role IDs.
+    event = _member_event()
+
+    # When: Neo4j parameters are built for the member update.
+    parameters = upsert_parameters(plan_event(event))
+
+    # Then: the writer can remove current HAS_ROLE edges outside the snapshot.
+    assert "$has_member_role_snapshot" in UPSERT_EVENT_CYPHER
+    assert "stale_role_node.id IN $member_role_node_ids" in UPSERT_EVENT_CYPHER
+    assert "DELETE stale_role" in UPSERT_EVENT_CYPHER
+    assert parameters["member_role_node_ids"] == [
+        "tenant:bromigos:role:role-222",
+        "tenant:bromigos:role:role-333",
+    ]
+    assert parameters["has_member_role_snapshot"] is True
+
+
+def test_discord_member_update_empty_roles_removes_all_current_roles() -> None:
+    # Given: a Discord member update has an authoritative empty role snapshot.
+    event = _member_event().model_copy(
+        update={
+            "payload": {
+                "user_id": "user-789",
+                "guild_id": "guild-123",
+                "display_name": "cartman",
+                "roles": [],
+                "previous_roles": ["role-222"],
+            },
+        },
+    )
+
+    # When: Neo4j parameters are built for the empty full snapshot.
+    parameters = upsert_parameters(plan_event(event))
+
+    # Then: empty roles still trigger snapshot reconciliation, not no-op handling.
+    assert parameters["member_user_node_id"] == "tenant:bromigos:user:user-789"
+    assert parameters["member_role_node_ids"] == []
+    assert parameters["has_member_roles"] is False
+    assert parameters["has_member_role_snapshot"] is True
 
 
 def test_pc_principal_topology_event_enum_accepts_new_event_types() -> None:
@@ -387,6 +559,16 @@ def _channel_child_event() -> ClientEvent:
         },
         discord=DiscordEventContext(guild_id="guild-123", channel_id="channel-456"),
     )
+
+
+def _channel_payload(*, channel_type: str | int) -> JsonObject:
+    return {
+        "channel_id": "channel-456",
+        "guild_id": "guild-123",
+        "name": "announcements",
+        "category_id": "category-111",
+        "channel_type": channel_type,
+    }
 
 
 def _role_event() -> ClientEvent:
