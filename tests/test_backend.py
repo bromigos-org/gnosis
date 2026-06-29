@@ -1,9 +1,14 @@
 from dataclasses import dataclass, field
 from os import environ
 from typing import TYPE_CHECKING, Self
+from uuid import UUID
 
 import pytest
 from neo4j_agent_memory import MemorySettings
+from neo4j_agent_memory.memory.reasoning import ReasoningStep as SdkReasoningStep
+from neo4j_agent_memory.memory.reasoning import ReasoningTrace as SdkReasoningTrace
+from neo4j_agent_memory.memory.reasoning import ToolCall, ToolCallStatus
+from neo4j_agent_memory.schema.models import EntityRef
 
 environ["AGENTS_MEMORY_TOKEN"] = "test-token"
 environ["NEO4J_URI"] = "bolt://neo4j.local:7687"
@@ -31,10 +36,25 @@ from agents_memory.models import (
     EventIngestStatus,
     GraphContextRequest,
     GraphContextResponse,
+    JsonObject,
+    JsonValue,
+    MemoryContextRequest,
+    MemoryContextResponse,
+    MemoryContextSection,
     MemoryScope,
     MemoryVisibility,
     MessageWriteRequest,
     MessageWriteResponse,
+    ReasoningContextRequest,
+    ReasoningContextResponse,
+    ReasoningStepRequest,
+    ReasoningStepResponse,
+    ReasoningToolCallRequest,
+    ReasoningToolCallResponse,
+    ReasoningTraceCompleteRequest,
+    ReasoningTraceCompleteResponse,
+    ReasoningTraceStartRequest,
+    ReasoningTraceStartResponse,
     SkillListRequest,
     SkillListResponse,
     SkillProposal,
@@ -44,7 +64,7 @@ from agents_memory.models import (
 from agents_memory.settings import Settings
 
 if TYPE_CHECKING:
-    from agents_memory.backend import MemoryBackend
+    from agents_memory.backend import MemoryBackend, MemoryClientContext
 
 
 def test_litellm_embedding_model_when_embedding_alias_is_bare() -> None:
@@ -193,6 +213,92 @@ async def test_backend_retries_fact_promotion_after_initial_failure() -> None:
     assert fake_client.long_term.facts[0].generate_embedding is True
 
 
+@pytest.mark.anyio
+async def test_memory_context_combines_labeled_sections_in_order() -> None:
+    # Given: a backend with fake short-term, long-term, reasoning, and graph stores.
+    fake_client = RecordingMemoryClient(
+        short_term=RecordingShortTermMemory(context="recent chat"),
+        long_term=RecordingLongTermMemory(context="### User Preferences\n- concise"),
+        reasoning=RecordingReasoningMemory(context="### Similar Past Tasks\n- replied"),
+    )
+    graph_store = RecordingGraphStore(context="graph summary")
+    backend = Neo4jAgentMemoryBackend(
+        Settings(),
+        memory_client_factory=MemoryClientFactory(fake_client),
+        graph_store=graph_store,
+    )
+
+    # When: combined memory context is requested with graph enabled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=_scope(),
+            query="what matters?",
+            max_items=4,
+            graph_limit=3,
+        ),
+    )
+
+    # Then: sections are labeled in the required order and scoped graph is used.
+    assert response == MemoryContextResponse(
+        sections=[
+            MemoryContextSection(source="short_term", content="recent chat"),
+            MemoryContextSection(
+                source="long_term_preferences_entities",
+                content="### User Preferences\n- concise",
+            ),
+            MemoryContextSection(
+                source="reasoning",
+                content="### Similar Past Tasks\n- replied",
+            ),
+            MemoryContextSection(
+                source="graph",
+                content="graph summary",
+                facts=[{"kind": "graph"}],
+            ),
+        ],
+    )
+    assert fake_client.short_term.context_queries == ["what matters?"]
+    assert fake_client.long_term.context_queries == ["what matters?"]
+    assert fake_client.reasoning.context_queries == ["what matters?"]
+    assert graph_store.context_requests == [
+        GraphContextRequest(scope=_scope(), query="what matters?", limit=3),
+    ]
+
+
+@pytest.mark.anyio
+async def test_memory_context_omits_empty_sections_and_disabled_graph() -> None:
+    # Given: only long-term context has content and graph recall is disabled.
+    fake_client = RecordingMemoryClient(
+        long_term=RecordingLongTermMemory(context="### Relevant Entities\n- Cartman"),
+    )
+    graph_store = RecordingGraphStore(context="graph summary")
+    backend = Neo4jAgentMemoryBackend(
+        Settings(),
+        memory_client_factory=MemoryClientFactory(fake_client),
+        graph_store=graph_store,
+    )
+
+    # When: combined memory context is requested without graph context.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=_scope(),
+            query="what matters?",
+            include_graph=False,
+        ),
+    )
+
+    # Then: empty sections are omitted and graph storage is not queried.
+    assert response == MemoryContextResponse(
+        sections=[
+            MemoryContextSection(
+                source="long_term_preferences_entities",
+                content="### Relevant Entities\n- Cartman",
+            ),
+        ],
+    )
+    assert graph_store.context_requests == []
+
+
 @dataclass(slots=True)
 class RecordingBackend:
     events: list[ClientEvent] = field(default_factory=list)
@@ -204,6 +310,13 @@ class RecordingBackend:
     async def get_context(self, request: ContextRequest) -> ContextResponse:
         _ = request
         return ContextResponse(context="")
+
+    async def get_memory_context(
+        self,
+        request: MemoryContextRequest,
+    ) -> MemoryContextResponse:
+        _ = request
+        return MemoryContextResponse()
 
     async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
         self.events.append(event)
@@ -239,6 +352,53 @@ class RecordingBackend:
             status=EventIngestStatus.ACCEPTED,
         )
 
+    async def start_reasoning_trace(
+        self,
+        request: ReasoningTraceStartRequest,
+    ) -> ReasoningTraceStartResponse:
+        _ = request
+        return ReasoningTraceStartResponse(
+            trace_id="trace-placeholder",
+            session_id="session-placeholder",
+            task="task-placeholder",
+        )
+
+    async def add_reasoning_step(
+        self,
+        request: ReasoningStepRequest,
+    ) -> ReasoningStepResponse:
+        _ = request
+        return ReasoningStepResponse(
+            step_id="step-placeholder",
+            trace_id="trace-placeholder",
+            step_number=1,
+        )
+
+    async def record_reasoning_tool_call(
+        self,
+        request: ReasoningToolCallRequest,
+    ) -> ReasoningToolCallResponse:
+        _ = request
+        return ReasoningToolCallResponse(
+            tool_call_id="tool-call-placeholder",
+            trace_id="trace-placeholder",
+            step_id="step-placeholder",
+        )
+
+    async def complete_reasoning_trace(
+        self,
+        request: ReasoningTraceCompleteRequest,
+    ) -> ReasoningTraceCompleteResponse:
+        _ = request
+        return ReasoningTraceCompleteResponse(trace_id="trace-placeholder")
+
+    async def get_reasoning_context(
+        self,
+        request: ReasoningContextRequest,
+    ) -> ReasoningContextResponse:
+        _ = request
+        return ReasoningContextResponse(context="reasoning context")
+
     async def readiness(self) -> BackendReadiness:
         return BackendReadiness(graph="ready", schema="ready")
 
@@ -270,6 +430,8 @@ class LongTermFactWrite:
 class RecordingLongTermMemory:
     facts: list[LongTermFactWrite] = field(default_factory=list)
     failed_writes_remaining: int = 0
+    context: str = ""
+    context_queries: list[str] = field(default_factory=list)
 
     async def add_fact(
         self,
@@ -293,6 +455,11 @@ class RecordingLongTermMemory:
             ),
         )
 
+    async def get_context(self, query: str, *, max_items: int) -> str:
+        _ = max_items
+        self.context_queries.append(query)
+        return self.context
+
 
 class PromotionFailureError(Exception):
     pass
@@ -300,6 +467,9 @@ class PromotionFailureError(Exception):
 
 @dataclass(slots=True)
 class RecordingShortTermMemory:
+    context: str = ""
+    context_queries: list[str] = field(default_factory=list)
+
     async def add_message(  # noqa: PLR0913
         self,
         session_id: str,
@@ -329,8 +499,97 @@ class RecordingShortTermMemory:
         max_messages: int,
         metadata_filters: dict[str, str],
     ) -> str:
-        _ = (query, session_id, max_messages, metadata_filters)
-        return ""
+        _ = (session_id, max_messages, metadata_filters)
+        self.context_queries.append(query)
+        return self.context
+
+
+@dataclass(slots=True)
+class RecordingReasoningMemory:
+    context: str = ""
+    context_queries: list[str] = field(default_factory=list)
+
+    async def get_context(self, query: str, *, max_traces: int) -> str:
+        _ = max_traces
+        self.context_queries.append(query)
+        return self.context
+
+    async def start_trace(  # noqa: PLR0913
+        self,
+        session_id: str,
+        task: str,
+        *,
+        generate_embedding: bool,
+        metadata: JsonObject | None,
+        triggered_by_message_id: str | None,
+        user_identifier: str,
+    ) -> SdkReasoningTrace:
+        _ = (generate_embedding, metadata, triggered_by_message_id, user_identifier)
+        return SdkReasoningTrace(session_id=session_id, task=task)
+
+    async def add_step(  # noqa: PLR0913
+        self,
+        trace_id: UUID,
+        *,
+        thought: None,
+        action: str | None,
+        observation: str | None,
+        generate_embedding: bool,
+        metadata: JsonObject | None,
+    ) -> SdkReasoningStep:
+        _ = (thought, action, observation, generate_embedding, metadata)
+        return SdkReasoningStep(trace_id=trace_id, step_number=1)
+
+    async def record_tool_call(  # noqa: PLR0913
+        self,
+        step_id: UUID,
+        tool_name: str,
+        arguments: JsonObject,
+        *,
+        result: JsonValue | None,
+        status: ToolCallStatus,
+        duration_ms: int | None,
+        error: str | None,
+        message_id: str | None,
+        touched_entities: list[EntityRef],
+    ) -> ToolCall:
+        _ = (result, message_id, touched_entities)
+        return ToolCall(
+            step_id=step_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            status=status,
+            duration_ms=duration_ms,
+            error=error,
+        )
+
+    async def complete_trace(
+        self,
+        trace_id: UUID,
+        *,
+        outcome: str | None,
+        success: bool | None,
+        generate_step_embeddings: bool,
+    ) -> SdkReasoningTrace:
+        _ = generate_step_embeddings
+        return SdkReasoningTrace(
+            id=trace_id,
+            session_id="session-placeholder",
+            task="task-placeholder",
+            outcome=outcome,
+            success=success,
+        )
+
+
+@dataclass(slots=True)
+class RecordingCypherQuery:
+    async def cypher(
+        self,
+        query: str,
+        params: dict[str, JsonValue] | None = None,
+    ) -> list[JsonObject]:
+        _ = (query, params)
+        return []
 
 
 @dataclass(slots=True)
@@ -339,6 +598,12 @@ class RecordingMemoryClient:
         default_factory=RecordingShortTermMemory,
     )
     long_term: RecordingLongTermMemory = field(default_factory=RecordingLongTermMemory)
+    reasoning: RecordingReasoningMemory = field(
+        default_factory=RecordingReasoningMemory,
+    )
+    query: RecordingCypherQuery = field(
+        default_factory=RecordingCypherQuery,
+    )
 
     async def __aenter__(self) -> Self:
         return self
@@ -356,9 +621,31 @@ class RecordingMemoryClient:
 class MemoryClientFactory:
     client: RecordingMemoryClient
 
-    def __call__(self, settings: MemorySettings) -> RecordingMemoryClient:
+    def __call__(self, settings: MemorySettings) -> "MemoryClientContext":
         _ = settings
         return self.client
+
+
+@dataclass(slots=True)
+class RecordingGraphStore:
+    context: str = ""
+    context_requests: list[GraphContextRequest] = field(default_factory=list)
+
+    async def require_available(self) -> None:
+        return None
+
+    async def readiness(self) -> BackendReadiness:
+        return BackendReadiness(graph="ready", schema="ready")
+
+    async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
+        return EventIngestResult(
+            event_id=event.event_id,
+            status=EventIngestStatus.ACCEPTED,
+        )
+
+    async def get_context(self, request: GraphContextRequest) -> GraphContextResponse:
+        self.context_requests.append(request)
+        return GraphContextResponse(context=self.context, facts=[{"kind": "graph"}])
 
 
 @dataclass(frozen=True, slots=True)
