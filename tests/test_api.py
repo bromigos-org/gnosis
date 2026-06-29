@@ -1,8 +1,13 @@
 from dataclasses import dataclass, field
 from os import environ
 from typing import Self
+from uuid import UUID
 
 import pytest
+from neo4j_agent_memory.memory.reasoning import ReasoningStep as SdkReasoningStep
+from neo4j_agent_memory.memory.reasoning import ReasoningTrace as SdkReasoningTrace
+from neo4j_agent_memory.memory.reasoning import ToolCall, ToolCallStatus
+from neo4j_agent_memory.schema.models import EntityRef
 from pydantic import ValidationError
 
 environ["AGENTS_MEMORY_TOKEN"] = "test-token"
@@ -14,7 +19,7 @@ environ["LITELLM_API_KEY"] = "test-litellm-key"
 from fastapi.testclient import TestClient
 from neo4j_agent_memory import MemorySettings
 
-from agents_memory.backend import Neo4jAgentMemoryBackend
+from agents_memory.backend import MemoryClientContext, Neo4jAgentMemoryBackend
 from agents_memory.main import create_app
 from agents_memory.models import (
     BackendReadiness,
@@ -30,9 +35,25 @@ from agents_memory.models import (
     EventIngestStatus,
     GraphContextRequest,
     GraphContextResponse,
+    JsonObject,
+    JsonValue,
+    MemoryContextRequest,
+    MemoryContextResponse,
+    MemoryContextSection,
+    MemoryScope,
     MemoryVisibility,
     MessageWriteRequest,
     MessageWriteResponse,
+    ReasoningContextRequest,
+    ReasoningContextResponse,
+    ReasoningStepRequest,
+    ReasoningStepResponse,
+    ReasoningToolCallRequest,
+    ReasoningToolCallResponse,
+    ReasoningTraceCompleteRequest,
+    ReasoningTraceCompleteResponse,
+    ReasoningTraceStartRequest,
+    ReasoningTraceStartResponse,
     SkillListRequest,
     SkillListResponse,
     SkillProposal,
@@ -94,6 +115,20 @@ def test_diagnostics_requires_bearer_auth() -> None:
 
     # Then: diagnostics remains protected.
     assert response.status_code == 401
+
+
+def test_all_memory_endpoints_require_bearer_token() -> None:
+    client = TestClient(
+        create_app(settings_factory=_settings, backend=RecordingBackend()),
+    )
+
+    assert client.get("/v1/diagnostics").status_code == 401
+    for path, payload in _protected_post_endpoint_payloads():
+        response = client.post(path, json=payload)
+        assert response.status_code == 401, path
+
+    assert client.get("/health").status_code == 200
+    assert client.get("/ready").status_code == 200
 
 
 def test_diagnostics_returns_safe_readiness_details() -> None:
@@ -204,6 +239,159 @@ def test_existing_context_contract_still_works() -> None:
             {"scope": _scope_payload(), "query": "what matters?", "limit": 4},
         ),
     ]
+
+
+def test_memory_context_returns_labeled_combined_sections() -> None:
+    # Given: an app with a backend that can compose official-style memory context.
+    backend = RecordingBackend(
+        memory_context=MemoryContextResponse(
+            sections=[
+                MemoryContextSection(
+                    source="short_term",
+                    content="recent channel chat",
+                ),
+                MemoryContextSection(
+                    source="long_term_preferences_entities",
+                    content="### User Preferences\n- concise answers",
+                ),
+                MemoryContextSection(
+                    source="reasoning",
+                    content="### Similar Past Tasks\n- prior Discord reply",
+                ),
+                MemoryContextSection(
+                    source="graph",
+                    content="Cartman mentioned memory alignment",
+                    facts=[{"kind": "message", "id": "message-999"}],
+                ),
+            ],
+        ),
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a client requests the combined memory context endpoint.
+    response = client.post(
+        "/v1/memory/context",
+        headers=_auth_header(),
+        json={
+            "scope": _scope_payload(),
+            "query": "what matters?",
+            "max_items": 4,
+            "graph_limit": 3,
+        },
+    )
+
+    # Then: the endpoint returns labeled sections and forwards the typed request.
+    assert response.status_code == 200
+    assert response.json() == {
+        "sections": [
+            {"source": "short_term", "content": "recent channel chat", "facts": []},
+            {
+                "source": "long_term_preferences_entities",
+                "content": "### User Preferences\n- concise answers",
+                "facts": [],
+            },
+            {
+                "source": "reasoning",
+                "content": "### Similar Past Tasks\n- prior Discord reply",
+                "facts": [],
+            },
+            {
+                "source": "graph",
+                "content": "Cartman mentioned memory alignment",
+                "facts": [{"kind": "message", "id": "message-999"}],
+            },
+        ],
+    }
+    assert backend.memory_context_requests == [
+        MemoryContextRequest.model_validate(
+            {
+                "scope": _scope_payload(),
+                "query": "what matters?",
+                "max_items": 4,
+                "graph_limit": 3,
+            },
+        ),
+    ]
+
+
+def test_memory_context_requires_auth() -> None:
+    # Given: the combined memory context endpoint is protected.
+    client = TestClient(
+        create_app(settings_factory=_settings, backend=RecordingBackend()),
+    )
+
+    # When: a client omits credentials.
+    response = client.post(
+        "/v1/memory/context",
+        json={"scope": _scope_payload(), "query": "what matters?"},
+    )
+
+    # Then: bearer auth is required before backend access.
+    assert response.status_code == 401
+
+
+def test_memory_context_when_scope_is_outside_policy() -> None:
+    # Given: an app configured for the bromigos tenant.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a caller tries to read context from another tenant.
+    response = client.post(
+        "/v1/memory/context",
+        headers=_auth_header(),
+        json={
+            "scope": _scope_payload(tenant_id="evil-corp"),
+            "query": "what matters?",
+        },
+    )
+
+    # Then: the API rejects the request before reaching the backend.
+    assert response.status_code == 403
+    assert backend.memory_context_requests == []
+
+
+def test_memory_context_rejects_unknown_fields() -> None:
+    # Given: the combined memory context request contract forbids extra fields.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a client sends an unsupported request field.
+    response = client.post(
+        "/v1/memory/context",
+        headers=_auth_header(),
+        json={
+            "scope": _scope_payload(),
+            "query": "what matters?",
+            "unsupported": "ignored?",
+        },
+    )
+
+    # Then: validation rejects it before backend access.
+    assert response.status_code == 422
+    assert backend.memory_context_requests == []
+
+
+def test_legacy_context_remains_short_term_only() -> None:
+    # Given: the deployed context endpoint still has the legacy backend response.
+    backend = RecordingBackend(context="short-term only")
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: an existing client requests legacy context.
+    response = client.post(
+        "/v1/context",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(), "query": "what matters?", "limit": 4},
+    )
+
+    # Then: legacy shape remains context-only and does not call combined context.
+    assert response.status_code == 200
+    assert response.json() == {"context": "short-term only"}
+    assert backend.context_requests == [
+        ContextRequest.model_validate(
+            {"scope": _scope_payload(), "query": "what matters?", "limit": 4},
+        ),
+    ]
+    assert backend.memory_context_requests == []
 
 
 def test_write_event_when_token_is_missing() -> None:
@@ -489,6 +677,57 @@ def test_skill_endpoint_when_tenant_is_outside_policy() -> None:
     assert backend.skill_list_requests == []
 
 
+@pytest.mark.parametrize(
+    ("path", "payload", "backend_collection"),
+    [
+        (
+            "/v1/skills",
+            {"tenant_id": "evil-corp", "agent_id": "pc-principal"},
+            "skill_list_requests",
+        ),
+        (
+            "/v1/skills/proposals",
+            {
+                "proposal_id": "proposal-1",
+                "tenant_id": "evil-corp",
+                "agent_id": "pc-principal",
+                "proposed_by": "789",
+                "name": "Summarize",
+                "description": "Summarize channels",
+                "scope": "agent_shared",
+                "metadata": {"source": "test"},
+            },
+            "skill_proposals",
+        ),
+        (
+            "/v1/skills/usage",
+            {
+                "skill_id": "skill-1",
+                "tenant_id": "evil-corp",
+                "agent_id": "pc-principal",
+                "used_by": "789",
+                "used_at": "2026-06-27T01:02:05Z",
+                "scope": "agent_shared",
+                "metadata": {"outcome": "ok"},
+            },
+            "skill_usages",
+        ),
+    ],
+)
+def test_skill_endpoints_reject_cross_tenant_requests(
+    path: str,
+    payload: dict[str, object],
+    backend_collection: str,
+) -> None:
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    response = client.post(path, headers=_auth_header(), json=payload)
+
+    assert response.status_code == 403
+    assert getattr(backend, backend_collection) == []
+
+
 def test_skill_endpoint_when_payload_has_unknown_field() -> None:
     # Given: a skill proposal with an undeclared field.
     payload = _skill_proposal_payload()
@@ -506,6 +745,122 @@ def test_skill_endpoint_when_payload_has_unknown_field() -> None:
 
     # Then: model strictness rejects unknown fields.
     assert response.status_code == 422
+
+
+def test_skills_are_not_returned_as_reasoning_context() -> None:
+    backend = RecordingBackend(
+        reasoning_context=ReasoningContextResponse(
+            context="reasoning trace summary",
+            traces=[
+                {
+                    "trace_id": "trace-1",
+                    "task": "discord_reply",
+                    "metadata": {"skill_name": "Summarize"},
+                },
+            ],
+        ),
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    response = client.post(
+        "/v1/reasoning/context",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(), "query": "what reasoning applies?"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "context": "reasoning trace summary",
+        "traces": [
+            {
+                "trace_id": "trace-1",
+                "task": "discord_reply",
+                "metadata": {"skill_name": "Summarize"},
+            },
+        ],
+    }
+    assert backend.reasoning_context_requests == [
+        ReasoningContextRequest.model_validate(
+            {"scope": _scope_payload(), "query": "what reasoning applies?"},
+        ),
+    ]
+    assert backend.skill_list_requests == []
+
+
+def test_reasoning_context_redacts_inert_sensitive_placeholders() -> None:
+    backend = RecordingBackend(
+        reasoning_context=ReasoningContextResponse(
+            context="internal note placeholder value",
+            traces=[
+                {
+                    "trace_id": "trace-1",
+                    "metadata": {"secret": "placeholder-value"},
+                    "steps": [
+                        {
+                            "step_id": "step-1",
+                            "observation": "found placeholder value",
+                        },
+                    ],
+                },
+            ],
+        ),
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    response = client.post(
+        "/v1/reasoning/context",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(), "query": "redaction check"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "context": "internal note placeholder value",
+        "traces": [
+            {
+                "trace_id": "trace-1",
+                "metadata": {"secret": "[REDACTED]"},
+                "steps": [
+                    {"step_id": "step-1", "observation": "found placeholder value"},
+                ],
+            },
+        ],
+    }
+
+
+def test_reasoning_context_rejects_scope_outside_policy() -> None:
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    response = client.post(
+        "/v1/reasoning/context",
+        headers=_auth_header(),
+        json={
+            "scope": _scope_payload(tenant_id="evil-corp"),
+            "query": "what reasoning applies?",
+        },
+    )
+
+    assert response.status_code == 403
+    assert backend.reasoning_context_requests == []
+
+
+def test_reasoning_context_rejects_unknown_fields() -> None:
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    response = client.post(
+        "/v1/reasoning/context",
+        headers=_auth_header(),
+        json={
+            "scope": _scope_payload(),
+            "query": "what reasoning applies?",
+            "unexpected": "reject me",
+        },
+    )
+
+    assert response.status_code == 422
+    assert backend.reasoning_context_requests == []
 
 
 def test_get_context_when_request_is_scoped() -> None:
@@ -574,6 +929,136 @@ async def test_neo4j_backend_context_uses_scoped_short_term_only() -> None:
     assert fake_client.long_term.context_queries == []
 
 
+@pytest.mark.anyio
+async def test_neo4j_backend_memory_context_uses_graph_context_path() -> None:
+    # Given: combined context is backed by a fake graph store with structured facts.
+    fake_client = RecordingMemoryClient()
+    graph_store = RecordingGraphStore(
+        context="message message-999: visible graph note",
+        facts=[
+            {
+                "id": "tenant:bromigos:message:message-999",
+                "type": "message",
+                "scope": "channel",
+                "summary": "message message-999: visible graph note",
+                "deleted": False,
+            },
+        ],
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(fake_client),
+        graph_store=graph_store,
+    )
+
+    # When: graph-enabled combined context is requested.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            query="visible graph note",
+            include_short_term=False,
+            include_long_term=False,
+            include_reasoning=False,
+            graph_limit=2,
+        ),
+    )
+
+    # Then: the same GraphContextRequest path feeds the combined graph section.
+    assert response.sections == [
+        MemoryContextSection(
+            source="graph",
+            content="message message-999: visible graph note",
+            facts=[
+                {
+                    "id": "tenant:bromigos:message:message-999",
+                    "type": "message",
+                    "scope": "channel",
+                    "summary": "message message-999: visible graph note",
+                    "deleted": False,
+                },
+            ],
+        ),
+    ]
+    assert graph_store.context_requests == [
+        GraphContextRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            query="visible graph note",
+            limit=2,
+        ),
+    ]
+
+
+@pytest.mark.anyio
+async def test_neo4j_backend_memory_context_dedupes_graph_facts() -> None:
+    # Given: a local Fact already represents one graph node summary.
+    fact: JsonObject = {
+        "subject": "tenant:bromigos:message:message-999",
+        "predicate": "discord.message_created",
+        "object": "message message-999: duplicate graph note",
+        "metadata": {
+            "tenant_id": "bromigos",
+            "agent_id": "pc-principal",
+            "session_id": "guild:123:channel:456",
+            "user_id": "789",
+            "visibility": "channel",
+            "guild_id": "123",
+            "channel_id": "456",
+        },
+    }
+    fake_client = RecordingMemoryClient(query=RecordingQuery(rows=[{"f": fact}]))
+    graph_store = RecordingGraphStore(
+        context=(
+            "message message-999: duplicate graph note\n"
+            "message message-1000: unique graph note"
+        ),
+        facts=[
+            {
+                "id": "tenant:bromigos:message:message-999",
+                "type": "message",
+                "scope": "channel",
+                "summary": "message message-999: duplicate graph note",
+                "deleted": False,
+            },
+            {
+                "id": "tenant:bromigos:message:message-1000",
+                "type": "message",
+                "scope": "channel",
+                "summary": "message message-1000: unique graph note",
+                "deleted": False,
+            },
+        ],
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(fake_client),
+        graph_store=graph_store,
+    )
+
+    # When: combined context contains both long-term facts and graph facts.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            query="graph note",
+            include_short_term=False,
+            include_reasoning=False,
+            graph_limit=4,
+        ),
+    )
+
+    # Then: the duplicate graph fact is not repeated in the graph section.
+    assert [section.source for section in response.sections] == [
+        "long_term_facts",
+        "long_term_preferences_entities",
+        "graph",
+    ]
+    graph_section = response.sections[2]
+    assert "message message-999: duplicate graph note" not in graph_section.content
+    assert graph_section.content == "message message-1000: unique graph note"
+    assert [fact["id"] for fact in graph_section.facts] == [
+        "tenant:bromigos:message:message-1000",
+    ]
+
+
 def test_client_event_model_accepts_discord_message() -> None:
     # Given: a Discord message event with the canonical client envelope.
     payload = _client_event_payload()
@@ -629,6 +1114,227 @@ def test_existing_message_and_context_models_still_serialize() -> None:
     }
 
 
+def test_memory_context_model_accepts_official_style_toggles() -> None:
+    payload = {
+        "scope": _scope_payload(),
+        "query": "what matters?",
+        "include_short_term": True,
+        "include_long_term": True,
+        "include_reasoning": True,
+        "include_graph": False,
+        "max_items": 8,
+        "graph_limit": 3,
+    }
+
+    request = MemoryContextRequest.model_validate(payload)
+    response = MemoryContextResponse.model_validate(
+        {
+            "sections": [
+                {
+                    "source": "short_term",
+                    "content": "remembered facts",
+                    "facts": [{"kind": "message", "value": "hello"}],
+                },
+                {
+                    "source": "long_term",
+                    "content": "user prefers concise answers",
+                },
+            ],
+        },
+    )
+
+    assert request.model_dump(mode="json") == payload
+    assert response.model_dump(mode="json") == {
+        "sections": [
+            {
+                "source": "short_term",
+                "content": "remembered facts",
+                "facts": [{"kind": "message", "value": "hello"}],
+            },
+            {
+                "source": "long_term",
+                "content": "user prefers concise answers",
+                "facts": [],
+            },
+        ],
+    }
+
+
+def test_reasoning_models_reject_unknown_chain_of_thought_field() -> None:
+    start_payload = {
+        "scope": _scope_payload(),
+        "session_id": "guild:123:channel:456",
+        "task": "discord_reply",
+        "chain_of_thought": "private internal reasoning",
+    }
+    step_payload = {
+        "trace_id": "trace-1",
+        "thought": "private internal reasoning",
+        "chain_of_thought": "private internal reasoning",
+    }
+    tool_call_payload = {
+        "trace_id": "trace-1",
+        "step_id": "step-1",
+        "tool_name": "memory.get_context",
+        "arguments": {"query": "what matters?"},
+        "chain_of_thought": "private internal reasoning",
+    }
+
+    with pytest.raises(ValidationError):
+        _ = ReasoningTraceStartRequest.model_validate(start_payload)
+    with pytest.raises(ValidationError):
+        _ = ReasoningStepRequest.model_validate(step_payload)
+    with pytest.raises(ValidationError):
+        _ = ReasoningToolCallRequest.model_validate(tool_call_payload)
+
+
+def test_reasoning_lifecycle_models_serialize_stable_ids() -> None:
+    start_request = ReasoningTraceStartRequest.model_validate(
+        {
+            "scope": _scope_payload(),
+            "session_id": "guild:123:channel:456",
+            "task": "discord_reply",
+            "metadata": {"channel_id": "456"},
+        },
+    )
+    start_response = ReasoningTraceStartResponse.model_validate(
+        {
+            "trace_id": "trace-1",
+            "session_id": "guild:123:channel:456",
+            "task": "discord_reply",
+        },
+    )
+    step_request = ReasoningStepRequest.model_validate(
+        {
+            "trace_id": "trace-1",
+            "step_number": 1,
+            "action": "get_memory_context",
+            "observation": "combined memory returned",
+        },
+    )
+    step_response = ReasoningStepResponse.model_validate(
+        {
+            "step_id": "step-1",
+            "trace_id": "trace-1",
+            "step_number": 1,
+        },
+    )
+    tool_call_request = ReasoningToolCallRequest.model_validate(
+        {
+            "trace_id": "trace-1",
+            "step_id": "step-1",
+            "tool_name": "memory.get_context",
+            "arguments": {"query": "what matters?"},
+            "status": "success",
+            "touched_entities": [
+                {"id": "entity-1", "name": "cartman", "type": "user"},
+            ],
+        },
+    )
+    tool_call_response = ReasoningToolCallResponse.model_validate(
+        {
+            "tool_call_id": "tool-call-1",
+            "trace_id": "trace-1",
+            "step_id": "step-1",
+        },
+    )
+    complete_request = ReasoningTraceCompleteRequest.model_validate(
+        {
+            "trace_id": "trace-1",
+            "outcome": "sent reply",
+            "success": True,
+        },
+    )
+    complete_response = ReasoningTraceCompleteResponse.model_validate(
+        {
+            "trace_id": "trace-1",
+            "success": True,
+        },
+    )
+    reasoning_request = ReasoningContextRequest.model_validate(
+        {
+            "scope": _scope_payload(),
+            "query": "what matters?",
+            "include_traces": True,
+            "include_steps": True,
+            "include_tool_calls": True,
+            "max_items": 8,
+        },
+    )
+    reasoning_response = ReasoningContextResponse.model_validate(
+        {"context": "similar trace context", "traces": []},
+    )
+
+    assert start_request.model_dump(mode="json") == {
+        "scope": _scope_payload(),
+        "session_id": "guild:123:channel:456",
+        "task": "discord_reply",
+        "metadata": {"channel_id": "456"},
+        "triggered_by_message_id": None,
+        "user_identifier": None,
+    }
+    assert start_response.model_dump(mode="json") == {
+        "trace_id": "trace-1",
+        "session_id": "guild:123:channel:456",
+        "task": "discord_reply",
+    }
+    assert step_request.model_dump(mode="json") == {
+        "trace_id": "trace-1",
+        "step_number": 1,
+        "action": "get_memory_context",
+        "observation": "combined memory returned",
+        "metadata": {},
+    }
+    assert step_response.model_dump(mode="json") == {
+        "step_id": "step-1",
+        "trace_id": "trace-1",
+        "step_number": 1,
+    }
+    assert tool_call_request.model_dump(mode="json") == {
+        "trace_id": "trace-1",
+        "step_id": "step-1",
+        "tool_name": "memory.get_context",
+        "arguments": {"query": "what matters?"},
+        "result": None,
+        "status": "success",
+        "duration_ms": None,
+        "error": None,
+        "message_id": None,
+        "touched_entities": [
+            {"id": "entity-1", "name": "cartman", "type": "user"},
+        ],
+    }
+    assert tool_call_response.model_dump(mode="json") == {
+        "tool_call_id": "tool-call-1",
+        "trace_id": "trace-1",
+        "step_id": "step-1",
+    }
+    assert complete_request.model_dump(mode="json") == {
+        "trace_id": "trace-1",
+        "outcome": "sent reply",
+        "success": True,
+        "metadata": {},
+    }
+    assert complete_response.model_dump(mode="json") == {
+        "trace_id": "trace-1",
+        "success": True,
+        "outcome": None,
+        "completed_at": None,
+    }
+    assert reasoning_request.model_dump(mode="json") == {
+        "scope": _scope_payload(),
+        "query": "what matters?",
+        "include_traces": True,
+        "include_steps": True,
+        "include_tool_calls": True,
+        "max_items": 8,
+    }
+    assert reasoning_response.model_dump(mode="json") == {
+        "context": "similar trace context",
+        "traces": [],
+    }
+
+
 def test_privacy_defaults_match_discord_scope_policy() -> None:
     # Given: representative DM, channel, topology, and skill records.
     dm_event = ClientEvent.model_validate(
@@ -662,14 +1368,29 @@ def test_privacy_defaults_match_discord_scope_policy() -> None:
 @dataclass(slots=True)
 class RecordingBackend:
     context: str = ""
+    memory_context: MemoryContextResponse = field(
+        default_factory=MemoryContextResponse,
+    )
+    reasoning_context: ReasoningContextResponse = field(
+        default_factory=lambda: ReasoningContextResponse(context="reasoning context"),
+    )
     backend_available: bool = True
     messages: list[MessageWriteRequest] = field(default_factory=list)
     context_requests: list[ContextRequest] = field(default_factory=list)
+    memory_context_requests: list[MemoryContextRequest] = field(default_factory=list)
     events: list[ClientEvent] = field(default_factory=list)
     graph_context_requests: list[GraphContextRequest] = field(default_factory=list)
+    trace_starts: list[ReasoningTraceStartRequest] = field(default_factory=list)
+    steps: list[ReasoningStepRequest] = field(default_factory=list)
+    tool_calls: list[ReasoningToolCallRequest] = field(default_factory=list)
+    completions: list[ReasoningTraceCompleteRequest] = field(default_factory=list)
+    reasoning_context_requests: list[ReasoningContextRequest] = field(
+        default_factory=list,
+    )
     duplicate_event_ids: set[str] = field(default_factory=set)
     skill_usages: list[SkillUsage] = field(default_factory=list)
     skill_list_requests: list[SkillListRequest] = field(default_factory=list)
+    skill_proposals: list[SkillProposal] = field(default_factory=list)
     readiness_checks: int = 0
 
     async def readiness(self) -> BackendReadiness:
@@ -699,6 +1420,13 @@ class RecordingBackend:
     async def get_context(self, request: ContextRequest) -> ContextResponse:
         self.context_requests.append(request)
         return ContextResponse(context=self.context)
+
+    async def get_memory_context(
+        self,
+        request: MemoryContextRequest,
+    ) -> MemoryContextResponse:
+        self.memory_context_requests.append(request)
+        return self.memory_context
 
     async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
         self.events.append(event)
@@ -743,6 +1471,7 @@ class RecordingBackend:
         )
 
     async def propose_skill(self, proposal: SkillProposal) -> SkillProposal:
+        self.skill_proposals.append(proposal)
         return proposal
 
     async def record_skill_usage(self, usage: SkillUsage) -> EventIngestResult:
@@ -751,6 +1480,58 @@ class RecordingBackend:
             event_id=usage.skill_id,
             status=EventIngestStatus.ACCEPTED,
         )
+
+    async def start_reasoning_trace(
+        self,
+        request: ReasoningTraceStartRequest,
+    ) -> ReasoningTraceStartResponse:
+        self.trace_starts.append(request)
+        return ReasoningTraceStartResponse(
+            trace_id="trace-1",
+            session_id=request.session_id,
+            task=request.task,
+        )
+
+    async def add_reasoning_step(
+        self,
+        request: ReasoningStepRequest,
+    ) -> ReasoningStepResponse:
+        self.steps.append(request)
+        return ReasoningStepResponse(
+            step_id="step-1",
+            trace_id=request.trace_id,
+            step_number=1,
+        )
+
+    async def record_reasoning_tool_call(
+        self,
+        request: ReasoningToolCallRequest,
+    ) -> ReasoningToolCallResponse:
+        self.tool_calls.append(request)
+        return ReasoningToolCallResponse(
+            tool_call_id="tool-call-1",
+            trace_id=request.trace_id,
+            step_id=request.step_id,
+        )
+
+    async def complete_reasoning_trace(
+        self,
+        request: ReasoningTraceCompleteRequest,
+    ) -> ReasoningTraceCompleteResponse:
+        self.completions.append(request)
+        return ReasoningTraceCompleteResponse(
+            trace_id=request.trace_id,
+            success=request.success,
+            outcome=request.outcome,
+            completed_at="2026-06-28T01:02:03Z",
+        )
+
+    async def get_reasoning_context(
+        self,
+        request: ReasoningContextRequest,
+    ) -> ReasoningContextResponse:
+        self.reasoning_context_requests.append(request)
+        return self.reasoning_context
 
 
 @dataclass(frozen=True, slots=True)
@@ -811,6 +1592,7 @@ class RecordingShortTermMemory:
 class RecordingLongTermMemory:
     facts: list[LongTermFactWrite] = field(default_factory=list)
     context_queries: list[str] = field(default_factory=list)
+    context: str = "unscoped long-term context"
 
     async def add_fact(
         self,
@@ -832,14 +1614,115 @@ class RecordingLongTermMemory:
     async def get_context(self, query: str, *, max_items: int) -> str:
         _ = max_items
         self.context_queries.append(query)
-        return "unscoped long-term context"
+        return self.context
+
+
+@dataclass(slots=True)
+class RecordingReasoningMemory:
+    context: str = ""
+    context_queries: list[str] = field(default_factory=list)
+
+    async def get_context(self, query: str, *, max_traces: int) -> str:
+        _ = max_traces
+        self.context_queries.append(query)
+        return self.context
+
+    async def start_trace(  # noqa: PLR0913
+        self,
+        session_id: str,
+        task: str,
+        *,
+        generate_embedding: bool,
+        metadata: JsonObject | None,
+        triggered_by_message_id: str | None,
+        user_identifier: str,
+    ) -> SdkReasoningTrace:
+        _ = (generate_embedding, metadata, triggered_by_message_id, user_identifier)
+        return SdkReasoningTrace(session_id=session_id, task=task)
+
+    async def add_step(  # noqa: PLR0913
+        self,
+        trace_id: UUID,
+        *,
+        thought: None,
+        action: str | None,
+        observation: str | None,
+        generate_embedding: bool,
+        metadata: JsonObject | None,
+    ) -> SdkReasoningStep:
+        _ = (thought, action, observation, generate_embedding, metadata)
+        return SdkReasoningStep(trace_id=trace_id, step_number=1)
+
+    async def record_tool_call(  # noqa: PLR0913
+        self,
+        step_id: UUID,
+        tool_name: str,
+        arguments: JsonObject,
+        *,
+        result: JsonValue | None,
+        status: ToolCallStatus,
+        duration_ms: int | None,
+        error: str | None,
+        message_id: str | None,
+        touched_entities: list[EntityRef],
+    ) -> ToolCall:
+        _ = (result, message_id, touched_entities)
+        return ToolCall(
+            step_id=step_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            status=status,
+            duration_ms=duration_ms,
+            error=error,
+        )
+
+    async def complete_trace(
+        self,
+        trace_id: UUID,
+        *,
+        outcome: str | None,
+        success: bool | None,
+        generate_step_embeddings: bool,
+    ) -> SdkReasoningTrace:
+        _ = generate_step_embeddings
+        return SdkReasoningTrace(
+            id=trace_id,
+            session_id="guild:123:channel:456",
+            task="discord_reply",
+            outcome=outcome,
+            success=success,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CypherCall:
+    statement: str
+    parameters: dict[str, JsonValue]
+
+
+@dataclass(slots=True)
+class RecordingQuery:
+    rows: list[JsonObject] = field(default_factory=list)
+    cypher_calls: list[CypherCall] = field(default_factory=list)
+
+    async def cypher(
+        self,
+        query: str,
+        params: dict[str, JsonValue] | None = None,
+    ) -> list[JsonObject]:
+        self.cypher_calls.append(CypherCall(statement=query, parameters=params or {}))
+        return self.rows
 
 
 @dataclass(slots=True)
 class RecordingMemoryClient:
     context: str = ""
+    query: "RecordingQuery" = field(default_factory=RecordingQuery)
     short_term: RecordingShortTermMemory = field(init=False)
     long_term: RecordingLongTermMemory = field(default_factory=RecordingLongTermMemory)
+    reasoning: RecordingReasoningMemory = field(
+        default_factory=RecordingReasoningMemory,
+    )
 
     def __post_init__(self) -> None:
         self.short_term = RecordingShortTermMemory(context=self.context)
@@ -856,11 +1739,34 @@ class RecordingMemoryClient:
         _ = (exc_type, exc_val, exc_tb)
 
 
+@dataclass(slots=True)
+class RecordingGraphStore:
+    context: str = ""
+    facts: list[JsonObject] = field(default_factory=list)
+    context_requests: list[GraphContextRequest] = field(default_factory=list)
+
+    async def require_available(self) -> None:
+        return None
+
+    async def readiness(self) -> BackendReadiness:
+        return BackendReadiness(graph="ready", schema="ready")
+
+    async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
+        return EventIngestResult(
+            event_id=event.event_id,
+            status=EventIngestStatus.ACCEPTED,
+        )
+
+    async def get_context(self, request: GraphContextRequest) -> GraphContextResponse:
+        self.context_requests.append(request)
+        return GraphContextResponse(context=self.context, facts=self.facts)
+
+
 @dataclass(frozen=True, slots=True)
 class MemoryClientFactory:
     client: RecordingMemoryClient
 
-    def __call__(self, settings: MemorySettings) -> RecordingMemoryClient:
+    def __call__(self, settings: MemorySettings) -> MemoryClientContext:
         _ = settings
         return self.client
 
@@ -871,6 +1777,59 @@ def _settings() -> Settings:
 
 def _auth_header() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
+
+
+def _protected_post_endpoint_payloads() -> list[tuple[str, dict[str, object]]]:
+    payloads: list[tuple[str, dict[str, object]]] = [
+        (
+            "/v1/messages",
+            {"scope": _scope_payload(), "role": "user", "content": "remember this"},
+        ),
+        ("/v1/events", _client_event_payload()),
+        ("/v1/events/batch", {"events": [_client_event_payload()]}),
+        ("/v1/context", {"scope": _scope_payload(), "query": "what matters?"}),
+        (
+            "/v1/memory/context",
+            {"scope": _scope_payload(), "query": "what matters?"},
+        ),
+        (
+            "/v1/graph/context",
+            {"scope": _scope_payload(), "query": "what matters?"},
+        ),
+        ("/v1/skills", {"tenant_id": "bromigos", "agent_id": "pc-principal"}),
+        ("/v1/skills/proposals", _skill_proposal_payload()),
+        ("/v1/skills/usage", _skill_usage_payload()),
+        (
+            "/v1/reasoning/traces",
+            {
+                "scope": _scope_payload(),
+                "session_id": "guild:123:channel:456",
+                "task": "discord_reply",
+            },
+        ),
+        (
+            "/v1/reasoning/traces/trace-1/steps",
+            {"trace_id": "trace-1", "action": "get_memory_context"},
+        ),
+        (
+            "/v1/reasoning/steps/step-1/tool-calls",
+            {
+                "trace_id": "trace-1",
+                "step_id": "step-1",
+                "tool_name": "memory.get_context",
+                "status": "success",
+            },
+        ),
+        (
+            "/v1/reasoning/traces/trace-1/complete",
+            {"trace_id": "trace-1", "success": True},
+        ),
+        (
+            "/v1/reasoning/context",
+            {"scope": _scope_payload(), "query": "what reasoning applies?"},
+        ),
+    ]
+    return payloads
 
 
 def _scope_payload(
@@ -939,10 +1898,10 @@ def _client_event_payload(
     }
 
 
-def _skill_proposal_payload() -> dict[str, object]:
+def _skill_proposal_payload(*, tenant_id: str = "bromigos") -> dict[str, object]:
     return {
         "proposal_id": "proposal-1",
-        "tenant_id": "bromigos",
+        "tenant_id": tenant_id,
         "agent_id": "pc-principal",
         "proposed_by": "789",
         "name": "Summarize",
@@ -952,10 +1911,10 @@ def _skill_proposal_payload() -> dict[str, object]:
     }
 
 
-def _skill_usage_payload() -> dict[str, object]:
+def _skill_usage_payload(*, tenant_id: str = "bromigos") -> dict[str, object]:
     return {
         "skill_id": "skill-1",
-        "tenant_id": "bromigos",
+        "tenant_id": tenant_id,
         "agent_id": "pc-principal",
         "used_by": "789",
         "used_at": "2026-06-27T01:02:05Z",

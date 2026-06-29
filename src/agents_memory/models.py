@@ -109,6 +109,109 @@ class ContextResponse(ContractModel):
     context: str
 
 
+class MemoryContextSection(ContractModel):
+    source: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    facts: list[JsonObject] = Field(default_factory=list)
+
+
+class MemoryContextRequest(ContractModel):
+    scope: MemoryScope
+    query: str = Field(min_length=1)
+    include_short_term: bool = True
+    include_long_term: bool = True
+    include_reasoning: bool = True
+    include_graph: bool = True
+    max_items: int = Field(default=8, ge=1, le=100)
+    graph_limit: int = Field(default=8, ge=1, le=100)
+
+
+class MemoryContextResponse(ContractModel):
+    sections: list[MemoryContextSection] = Field(default_factory=list)
+
+
+class TouchedEntityRef(ContractModel):
+    id: str | None = Field(default=None, min_length=1)
+    name: str = Field(min_length=1)
+    type: str | None = Field(default=None, min_length=1)
+
+
+class ReasoningTraceStartRequest(ContractModel):
+    scope: MemoryScope
+    session_id: str = Field(min_length=1)
+    task: str = Field(min_length=1)
+    metadata: JsonObject = Field(default_factory=dict)
+    triggered_by_message_id: str | None = Field(default=None, min_length=1)
+    user_identifier: str | None = Field(default=None, min_length=1)
+
+
+class ReasoningTraceStartResponse(ContractModel):
+    trace_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    task: str = Field(min_length=1)
+
+
+class ReasoningStepRequest(ContractModel):
+    trace_id: str = Field(min_length=1)
+    action: str | None = Field(default=None, min_length=1)
+    observation: str | None = Field(default=None, min_length=1)
+    step_number: int | None = Field(default=None, ge=1)
+    metadata: JsonObject = Field(default_factory=dict)
+
+
+class ReasoningStepResponse(ContractModel):
+    step_id: str = Field(min_length=1)
+    trace_id: str = Field(min_length=1)
+    step_number: int = Field(ge=1)
+
+
+class ReasoningToolCallRequest(ContractModel):
+    trace_id: str = Field(min_length=1)
+    step_id: str = Field(min_length=1)
+    tool_name: str = Field(min_length=1)
+    arguments: JsonObject = Field(default_factory=dict)
+    result: JsonValue | None = None
+    status: str = Field(min_length=1)
+    duration_ms: int | None = Field(default=None, ge=0)
+    error: str | None = Field(default=None, min_length=1)
+    message_id: str | None = Field(default=None, min_length=1)
+    touched_entities: list[TouchedEntityRef] = Field(default_factory=list)
+
+
+class ReasoningToolCallResponse(ContractModel):
+    tool_call_id: str = Field(min_length=1)
+    trace_id: str = Field(min_length=1)
+    step_id: str = Field(min_length=1)
+
+
+class ReasoningTraceCompleteRequest(ContractModel):
+    trace_id: str = Field(min_length=1)
+    outcome: str | None = Field(default=None, min_length=1)
+    success: bool | None = None
+    metadata: JsonObject = Field(default_factory=dict)
+
+
+class ReasoningTraceCompleteResponse(ContractModel):
+    trace_id: str = Field(min_length=1)
+    success: bool | None = None
+    outcome: str | None = Field(default=None, min_length=1)
+    completed_at: str | None = Field(default=None, min_length=1)
+
+
+class ReasoningContextRequest(ContractModel):
+    scope: MemoryScope
+    query: str = Field(min_length=1)
+    include_traces: bool = True
+    include_steps: bool = True
+    include_tool_calls: bool = True
+    max_items: int = Field(default=8, ge=1, le=100)
+
+
+class ReasoningContextResponse(ContractModel):
+    context: str = Field(min_length=1)
+    traces: list[JsonObject] = Field(default_factory=list)
+
+
 class SkillListRequest(ContractModel):
     tenant_id: str = Field(min_length=1)
     agent_id: str = Field(min_length=1)

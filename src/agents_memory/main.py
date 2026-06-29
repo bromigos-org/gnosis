@@ -19,14 +19,28 @@ from agents_memory.models import (
     GraphContextRequest,
     GraphContextResponse,
     HealthResponse,
+    JsonObject,
+    MemoryContextRequest,
+    MemoryContextResponse,
     MessageWriteRequest,
     MessageWriteResponse,
     ReadinessResponse,
+    ReasoningContextRequest,
+    ReasoningContextResponse,
+    ReasoningStepRequest,
+    ReasoningStepResponse,
+    ReasoningToolCallRequest,
+    ReasoningToolCallResponse,
+    ReasoningTraceCompleteRequest,
+    ReasoningTraceCompleteResponse,
+    ReasoningTraceStartRequest,
+    ReasoningTraceStartResponse,
     SkillListRequest,
     SkillListResponse,
     SkillProposal,
     SkillUsage,
 )
+from agents_memory.redaction import redact_secrets
 from agents_memory.settings import Settings, load_settings
 
 
@@ -48,6 +62,7 @@ def create_app(
     _register_message_routes(app, authenticator, get_backend)
     _register_event_routes(app, authenticator, get_backend)
     _register_context_routes(app, authenticator, get_backend)
+    _register_reasoning_routes(app, authenticator, get_backend)
     _register_skill_routes(app, authenticator, get_backend)
 
     return app
@@ -192,6 +207,17 @@ def _register_context_routes(
         return await memory.get_context(request)
 
     @app.post(
+        "/v1/memory/context",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def get_memory_context(
+        request: MemoryContextRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> MemoryContextResponse:
+        authenticator.require_scope(request.scope)
+        return await memory.get_memory_context(request)
+
+    @app.post(
         "/v1/graph/context",
         dependencies=[Depends(authenticator.require_token)],
     )
@@ -243,6 +269,115 @@ def _register_skill_routes(
         return MessageWriteResponse(
             accepted=result.status is EventIngestStatus.ACCEPTED,
         )
+
+
+def _register_reasoning_routes(
+    app: FastAPI,
+    authenticator: Authenticator,
+    get_backend: Callable[[], MemoryBackend],
+) -> None:
+    @app.post(
+        "/v1/reasoning/traces",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def start_reasoning_trace(
+        request: ReasoningTraceStartRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> ReasoningTraceStartResponse:
+        authenticator.require_scope(request.scope)
+        return await memory.start_reasoning_trace(request)
+
+    @app.post(
+        "/v1/reasoning/traces/{trace_id}/steps",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def add_reasoning_step(
+        trace_id: str,
+        request: ReasoningStepRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> ReasoningStepResponse:
+        _require_matching_identifier(
+            path_value=trace_id,
+            body_value=request.trace_id,
+            field_name="trace_id",
+        )
+        return await memory.add_reasoning_step(request)
+
+    @app.post(
+        "/v1/reasoning/steps/{step_id}/tool-calls",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def record_reasoning_tool_call(
+        step_id: str,
+        request: ReasoningToolCallRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> ReasoningToolCallResponse:
+        _require_matching_identifier(
+            path_value=step_id,
+            body_value=request.step_id,
+            field_name="step_id",
+        )
+        return await memory.record_reasoning_tool_call(request)
+
+    @app.post(
+        "/v1/reasoning/traces/{trace_id}/complete",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def complete_reasoning_trace(
+        trace_id: str,
+        request: ReasoningTraceCompleteRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> ReasoningTraceCompleteResponse:
+        _require_matching_identifier(
+            path_value=trace_id,
+            body_value=request.trace_id,
+            field_name="trace_id",
+        )
+        return await memory.complete_reasoning_trace(request)
+
+    @app.post(
+        "/v1/reasoning/context",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def get_reasoning_context(
+        request: ReasoningContextRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> ReasoningContextResponse:
+        authenticator.require_scope(request.scope)
+        response = await memory.get_reasoning_context(request)
+        return ReasoningContextResponse(
+            context=_redacted_context(response.context),
+            traces=_redacted_traces(response.traces),
+        )
+
+
+def _redacted_context(context: str) -> str:
+    redacted = redact_secrets(context)
+    if isinstance(redacted, str):
+        return redacted
+    return context
+
+
+def _require_matching_identifier(
+    *,
+    path_value: str,
+    body_value: str,
+    field_name: str,
+) -> None:
+    if path_value != body_value:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Path {field_name} must match request body {field_name}.",
+        )
+
+
+def _redacted_traces(traces: list[JsonObject]) -> list[JsonObject]:
+    redacted_traces: list[JsonObject] = []
+    for trace in traces:
+        redacted = redact_secrets(trace)
+        if isinstance(redacted, dict):
+            redacted_traces.append(redacted)
+    return redacted_traces
 
 
 app = create_app()
