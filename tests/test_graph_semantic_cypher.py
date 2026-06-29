@@ -185,12 +185,10 @@ def test_discord_child_channel_cannot_overwrite_real_parent_category_name() -> N
     assert child_parameters["has_category"] is True
     assert child_parameters["has_channel_category"] is True
     assert (
-        "ch.name = coalesce(nullif($channel_name, ''), ch.name)"
-        in UPSERT_EVENT_CYPHER
+        "ch.name = coalesce(nullif($channel_name, ''), ch.name)" in UPSERT_EVENT_CYPHER
     )
     assert (
-        "ch.kind = coalesce(nullif($channel_kind, ''), ch.kind)"
-        in UPSERT_EVENT_CYPHER
+        "ch.kind = coalesce(nullif($channel_kind, ''), ch.kind)" in UPSERT_EVENT_CYPHER
     )
     assert (
         "cat.name = coalesce(nullif($category_name, ''), cat.name)"

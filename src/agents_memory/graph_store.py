@@ -6,6 +6,7 @@ from neo4j.exceptions import Neo4jError
 
 from agents_memory.graph_cypher import (
     CONTEXT_CYPHER,
+    SEMANTIC_CONTEXT_CYPHER,
     UPSERT_EVENT_CYPHER,
     CypherParameters,
     context_parameters,
@@ -21,6 +22,7 @@ from agents_memory.graph_events import (
     plan_event,
 )
 from agents_memory.graph_schema import GRAPH_SCHEMA_CYPHER, graph_vector_schema_cypher
+from agents_memory.graph_types import vector_parameter
 from agents_memory.models import (
     BackendReadiness,
     ClientEvent,
@@ -52,6 +54,10 @@ class CypherDriverFactory(Protocol):
     def __call__(self) -> CypherDriver: ...
 
 
+class TextEmbeddingProvider(Protocol):
+    async def embed_one(self, text: str) -> list[float]: ...
+
+
 class GraphExecutor(Protocol):
     async def require_available(self) -> None: ...
     async def readiness(self) -> BackendReadiness: ...
@@ -66,6 +72,7 @@ class GraphExecutor(Protocol):
 class Neo4jGraphExecutor:
     driver_factory: CypherDriverFactory
     embedding_dimensions: int
+    embedding_provider: TextEmbeddingProvider | None = None
     _schema_bootstrapped: bool = False
 
     async def require_available(self) -> None:
@@ -82,10 +89,15 @@ class Neo4jGraphExecutor:
 
     async def upsert_event(self, event: PlannedGraphEvent) -> EventIngestResult:
         await self._bootstrap_schema()
+        parameters = upsert_parameters(event)
+        if self.embedding_provider is not None:
+            parameters["node_embedding"] = vector_parameter(
+                await self.embedding_provider.embed_one(event.node.summary),
+            )
         async with self.driver_factory() as driver:
             rows = await driver.execute_query(
                 UPSERT_EVENT_CYPHER,
-                upsert_parameters(event),
+                parameters,
             )
         if is_duplicate_result(rows):
             return EventIngestResult(
@@ -100,10 +112,18 @@ class Neo4jGraphExecutor:
 
     async def get_context(self, request: GraphContextRequest) -> Sequence[GraphNode]:
         await self._bootstrap_schema()
+        query = CONTEXT_CYPHER
+        parameters = context_parameters(request)
+        if self.embedding_provider is not None:
+            query = SEMANTIC_CONTEXT_CYPHER
+            parameters = context_parameters(
+                request,
+                await self.embedding_provider.embed_one(request.query),
+            )
         async with self.driver_factory() as driver:
             rows = await driver.execute_query(
-                CONTEXT_CYPHER,
-                context_parameters(request),
+                query,
+                parameters,
             )
         return tuple(node_from_row(row, request.scope) for row in rows)
 

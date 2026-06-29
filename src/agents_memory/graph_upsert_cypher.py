@@ -13,6 +13,7 @@ MERGE (n:GraphNode {id: $node_id})
 SET n.tenant_id = $tenant_id, n.agent_id = $agent_id,
   n.user_id = $user_id, n.guild_id = $guild_id, n.channel_id = $channel_id,
   n.visibility = $visibility, n.type = $node_type, n.summary = $summary,
+  n.embedding = coalesce($node_embedding, n.embedding),
   n.deleted = $deleted, n.payload = $payload, n.updated_at = datetime()
 MERGE (e)-[:AFFECTS]->(n)
 MERGE (t:Tenant {id: $tenant_node_id})

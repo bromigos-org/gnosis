@@ -202,15 +202,21 @@ def test_graph_schema_cypher_declares_constraints_and_indexes() -> None:
     assert GRAPH_SCHEMA_CYPHER[0].find("collect(e) AS events") >= 0
     assert GRAPH_SCHEMA_CYPHER[0].find("MERGE (keep)-[:AFFECTS]->(target)") >= 0
     assert GRAPH_SCHEMA_CYPHER[0].find("DETACH DELETE duplicate") >= 0
-    assert GRAPH_SCHEMA_CYPHER[1].find(
-        "CREATE CONSTRAINT event_idempotency IF NOT EXISTS",
-    ) >= 0
+    assert (
+        GRAPH_SCHEMA_CYPHER[1].find(
+            "CREATE CONSTRAINT event_idempotency IF NOT EXISTS",
+        )
+        >= 0
+    )
     assert GRAPH_SCHEMA_CYPHER[2].find("collect(n) AS nodes") >= 0
     assert GRAPH_SCHEMA_CYPHER[2].find("MERGE (source)-[:AFFECTS]->(keep)") >= 0
     assert GRAPH_SCHEMA_CYPHER[2].find("DETACH DELETE duplicate") >= 0
-    assert GRAPH_SCHEMA_CYPHER[3].find(
-        "CREATE CONSTRAINT graph_node_id IF NOT EXISTS",
-    ) >= 0
+    assert (
+        GRAPH_SCHEMA_CYPHER[3].find(
+            "CREATE CONSTRAINT graph_node_id IF NOT EXISTS",
+        )
+        >= 0
+    )
     assert "CREATE CONSTRAINT event_idempotency IF NOT EXISTS" in statements
     assert "CREATE CONSTRAINT graph_node_id IF NOT EXISTS" in statements
     assert "CREATE INDEX graph_node_scope IF NOT EXISTS" in statements

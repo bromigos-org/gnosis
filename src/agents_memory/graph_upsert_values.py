@@ -72,16 +72,14 @@ def normalize_channel_kind_number(value: int) -> str:
 
 
 def has_member_role_snapshot(event: PlannedGraphEvent) -> bool:
-    return (
-        event.event.event_type == ClientEventType.MEMBER_UPDATED
-        and isinstance(event.event.payload.get("roles"), list)
+    return event.event.event_type == ClientEventType.MEMBER_UPDATED and isinstance(
+        event.event.payload.get("roles"), list
     )
 
 
 def has_member_identity_snapshot(event: PlannedGraphEvent) -> bool:
-    return (
-        event.event.event_type == ClientEventType.MEMBER_UPDATED
-        and isinstance(event.event.payload.get("is_bot"), bool)
+    return event.event.event_type == ClientEventType.MEMBER_UPDATED and isinstance(
+        event.event.payload.get("is_bot"), bool
     )
 
 

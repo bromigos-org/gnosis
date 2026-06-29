@@ -56,6 +56,7 @@ def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:
         "channel_id": event.node.scope.channel_id,
         "visibility": event.node.scope.visibility.value,
         "summary": event.node.summary,
+        "node_embedding": None,
         "deleted": event.node.deleted,
         "payload": json.dumps(
             event.node.payload,
