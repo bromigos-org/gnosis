@@ -4,7 +4,7 @@ from typing import Self
 
 import pytest
 
-from gnosis.graph_cypher import SEMANTIC_CONTEXT_CYPHER
+from gnosis.graph_cypher import SEMANTIC_CONTEXT_CYPHER, TOP_ACTIVE_CHANNELS_CYPHER
 from gnosis.graph_events import plan_event
 from gnosis.graph_store import Neo4jGraphExecutor
 from gnosis.graph_types import CypherParameters
@@ -40,6 +40,32 @@ async def test_neo4j_executor_uses_semantic_context_with_embeddings() -> None:
     assert driver.parameters[-1]["query_embedding"] == [0.1, 0.2, 0.3]
     assert driver.parameters[-1]["vector_limit"] == 16
     assert embedding_provider.embedded_texts == ["plasma conduit"]
+
+
+@pytest.mark.anyio
+async def test_neo4j_executor_uses_activity_aggregate_before_embeddings() -> None:
+    # Given: a Neo4j executor has embeddings configured for normal context recall.
+    driver = RecordingCypherDriver()
+    embedding_provider = StaticEmbeddingProvider(vector=[0.1, 0.2, 0.3])
+    executor = Neo4jGraphExecutor(
+        driver_factory=RecordingDriverFactory(driver),
+        embedding_dimensions=3,
+        embedding_provider=embedding_provider,
+    )
+    request = GraphContextRequest(
+        scope=_scope(),
+        query="@BlackDave top 5 most active channels??",
+        limit=5,
+    )
+
+    # When: the query requests a Discord channel activity aggregate.
+    _ = await executor.get_context(request)
+
+    # Then: the aggregate Cypher runs without spending an embedding request.
+    assert driver.queries[-1] == TOP_ACTIVE_CHANNELS_CYPHER
+    assert driver.parameters[-1]["user_token"] == "blackdave"
+    assert driver.parameters[-1]["limit"] == 5
+    assert embedding_provider.embedded_texts == []
 
 
 @pytest.mark.anyio

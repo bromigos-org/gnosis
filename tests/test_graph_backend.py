@@ -91,6 +91,110 @@ async def test_graph_context_does_not_cross_channel_scope() -> None:
 
 
 @pytest.mark.anyio
+async def test_graph_context_ranks_top_active_channels_for_queried_user() -> None:
+    # Given: guild-scoped Discord messages from multiple users across channels.
+    store = DirectNeo4jGraphStore(executor=InMemoryGraphExecutor())
+    for event in (
+        _channel_event(
+            event_id="channel_created:channel-1",
+            idempotency_key="channel_created:channel-1",
+            channel_id="channel-1",
+            name="general",
+        ),
+        _channel_event(
+            event_id="channel_created:channel-2",
+            idempotency_key="channel_created:channel-2",
+            channel_id="channel-2",
+            name="bot-lab",
+        ),
+        _message_event(
+            _MessageEventValues(
+                event_id="message_created:message-1",
+                idempotency_key="message_created:message-1",
+                message_id="message-1",
+                channel_id="channel-1",
+                actor_id="black-dave",
+                actor_display_name="BlackDave",
+            ),
+        ),
+        _message_event(
+            _MessageEventValues(
+                event_id="message_created:message-2",
+                idempotency_key="message_created:message-2",
+                message_id="message-2",
+                channel_id="channel-1",
+                actor_id="black-dave",
+                actor_display_name="BlackDave",
+            ),
+        ),
+        _message_event(
+            _MessageEventValues(
+                event_id="message_created:message-3",
+                idempotency_key="message_created:message-3",
+                message_id="message-3",
+                channel_id="channel-2",
+                actor_id="black-dave",
+                actor_display_name="BlackDave",
+            ),
+        ),
+        _message_event(
+            _MessageEventValues(
+                event_id="message_created:message-4",
+                idempotency_key="message_created:message-4",
+                message_id="message-4",
+                channel_id="channel-1",
+                actor_id="cartman",
+                actor_display_name="cartman",
+            ),
+        ),
+    ):
+        _ = await store.ingest_event(event)
+
+    # When: PC-Principal asks for the mentioned user's top channels at guild scope.
+    context = await store.get_context(
+        GraphContextRequest(
+            scope=_guild_scope(),
+            query="@BlackDave top 5 most active channels??",
+            limit=5,
+        ),
+    )
+
+    # Then: gnosis returns an aggregate answer instead of recent raw messages.
+    assert context.context == (
+        "BlackDave active channel #1: general (2 messages)\n"
+        "BlackDave active channel #2: bot-lab (1 message)"
+    )
+    assert context.facts == [
+        {
+            "id": "aggregate:bromigos:guild-123:black-dave:channel-1",
+            "type": "channel_activity",
+            "scope": "guild",
+            "summary": "BlackDave active channel #1: general (2 messages)",
+            "deleted": False,
+            "rank": 1,
+            "user_id": "black-dave",
+            "user_display_name": "BlackDave",
+            "channel_id": "channel-1",
+            "channel_name": "general",
+            "message_count": 2,
+        },
+        {
+            "id": "aggregate:bromigos:guild-123:black-dave:channel-2",
+            "type": "channel_activity",
+            "scope": "guild",
+            "summary": "BlackDave active channel #2: bot-lab (1 message)",
+            "deleted": False,
+            "rank": 2,
+            "user_id": "black-dave",
+            "user_display_name": "BlackDave",
+            "channel_id": "channel-2",
+            "channel_name": "bot-lab",
+            "message_count": 1,
+        },
+    ]
+
+
+@pytest.mark.anyio
 async def test_duplicate_idempotency_key_is_noop_duplicate() -> None:
     # Given: the graph store has already accepted an event idempotency key.
     store = DirectNeo4jGraphStore(executor=InMemoryGraphExecutor())
@@ -300,6 +404,18 @@ def _scope(*, channel_id: str = "channel-456") -> MemoryScope:
     )
 
 
+def _guild_scope() -> MemoryScope:
+    return MemoryScope(
+        tenant_id="bromigos",
+        space_id="discord",
+        agent_id="pc-principal",
+        session_id="guild:guild-123",
+        user_id="user-789",
+        visibility=MemoryVisibility.GUILD,
+        guild_id="guild-123",
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _MessageEventValues:
     event_id: str = "message_created:message-999"
@@ -308,6 +424,8 @@ class _MessageEventValues:
     message_id: str = "message-999"
     channel_id: str = "channel-456"
     content: str = "remember this"
+    actor_id: str = "user-789"
+    actor_display_name: str = "cartman"
 
 
 def _message_event(
@@ -324,7 +442,11 @@ def _message_event(
         observed_at="2026-06-27T01:02:04Z",
         idempotency_key=event_values.idempotency_key,
         scope=_scope(channel_id=event_values.channel_id),
-        actor=ClientEventActor(id="user-789", display_name="cartman", is_bot=False),
+        actor=ClientEventActor(
+            id=event_values.actor_id,
+            display_name=event_values.actor_display_name,
+            is_bot=False,
+        ),
         subject=ClientEventSubject(
             id=event_values.message_id,
             type="message",
@@ -349,6 +471,7 @@ def _channel_event(
     event_id: str = "channel_created:channel-456",
     event_type: ClientEventType = ClientEventType.CHANNEL_CREATED,
     idempotency_key: str = "channel_created:channel-456",
+    channel_id: str = "channel-456",
     name: str,
 ) -> ClientEvent:
     return ClientEvent(
@@ -360,15 +483,15 @@ def _channel_event(
         occurred_at="2026-06-27T01:02:03Z",
         observed_at="2026-06-27T01:02:04Z",
         idempotency_key=idempotency_key,
-        scope=_scope(),
+        scope=_scope(channel_id=channel_id),
         actor=ClientEventActor(id="system", display_name="discord", is_bot=True),
-        subject=ClientEventSubject(id="channel-456", type="channel"),
+        subject=ClientEventSubject(id=channel_id, type="channel"),
         payload={
-            "channel_id": "channel-456",
+            "channel_id": channel_id,
             "guild_id": "guild-123",
             "name": name,
         },
-        discord=DiscordEventContext(guild_id="guild-123", channel_id="channel-456"),
+        discord=DiscordEventContext(guild_id="guild-123", channel_id=channel_id),
     )
 
 

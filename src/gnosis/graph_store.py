@@ -4,13 +4,17 @@ from typing import Protocol, Self
 
 from neo4j.exceptions import Neo4jError
 
+from gnosis.graph_activity import top_active_channel_nodes
 from gnosis.graph_cypher import (
     CONTEXT_CYPHER,
     SEMANTIC_CONTEXT_CYPHER,
+    TOP_ACTIVE_CHANNELS_CYPHER,
     UPSERT_EVENT_CYPHER,
     CypherParameters,
     context_parameters,
     is_duplicate_result,
+    is_top_active_channels_request,
+    top_active_channel_parameters,
     upsert_parameters,
 )
 from gnosis.graph_events import (
@@ -112,6 +116,13 @@ class Neo4jGraphExecutor:
 
     async def get_context(self, request: GraphContextRequest) -> Sequence[GraphNode]:
         await self._bootstrap_schema()
+        if is_top_active_channels_request(request):
+            async with self.driver_factory() as driver:
+                rows = await driver.execute_query(
+                    TOP_ACTIVE_CHANNELS_CYPHER,
+                    top_active_channel_parameters(request),
+                )
+            return tuple(node_from_row(row, request.scope) for row in rows)
         query = CONTEXT_CYPHER
         parameters = context_parameters(request)
         if self.embedding_provider is not None:
@@ -209,6 +220,8 @@ class InMemoryGraphExecutor:
 
     async def get_context(self, request: GraphContextRequest) -> Sequence[GraphNode]:
         await self._bootstrap_schema()
+        if is_top_active_channels_request(request):
+            return top_active_channel_nodes(request, self._events)
         scoped_nodes = [
             node for node in self._nodes.values() if context_allows_node(request, node)
         ]
