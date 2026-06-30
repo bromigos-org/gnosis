@@ -4,6 +4,10 @@ from os import environ
 from fastapi.testclient import TestClient
 
 _ = environ.setdefault("AGENTS_MEMORY_TOKEN", "reasoning-access")
+_ = environ.setdefault("AGENTS_MEMORY_READ_OPERATOR_TOKEN", "read-operator-token")
+_ = environ.setdefault("AGENTS_MEMORY_EXPORT_OPERATOR_TOKEN", "export-operator-token")
+_ = environ.setdefault("AGENTS_MEMORY_WRITE_OPERATOR_TOKEN", "write-operator-token")
+_ = environ.setdefault("AGENTS_MEMORY_ADMIN_OPERATOR_TOKEN", "admin-operator-token")
 _ = environ.setdefault("NEO4J_URI", "bolt://neo4j.local:7687")
 _ = environ.setdefault("NEO4J_PASSWORD", "inert-password")
 _ = environ.setdefault("LITELLM_BASE_URL", "http://litellm.local/v1")
@@ -12,31 +16,69 @@ _ = environ.setdefault("LITELLM_API_KEY", "inert-litellm-key")
 from agents_memory.main import create_app  # noqa: E402
 from agents_memory.models import (  # noqa: E402
     BackendReadiness,
+    BufferFlushResponse,
+    BufferStatus,
     ClientEvent,
     ClientEventBatchRequest,
     ClientEventBatchResponse,
+    ConsolidationApplyRequest,
+    ConsolidationApplyResponse,
+    ConsolidationDryRunRequest,
+    ConsolidationDryRunResponse,
     ContextRequest,
     ContextResponse,
+    DedupApplyRequest,
+    DedupApplyResponse,
+    DedupCandidateRequest,
+    DedupCandidateResponse,
+    DedupStatsRequest,
+    DedupStatsResponse,
     DiagnosticsConfig,
     DiagnosticsResponse,
+    EntityRecord,
+    EntitySearchRequest,
+    EntitySearchResponse,
+    EntityWriteRequest,
     EventIngestResult,
     EventIngestStatus,
+    FactRecord,
+    FactSearchRequest,
+    FactSearchResponse,
+    FactWriteRequest,
     GraphContextRequest,
     GraphContextResponse,
+    GraphExportRequest,
+    GraphExportResponse,
     MemoryContextRequest,
     MemoryContextResponse,
     MessageWriteRequest,
     MessageWriteResponse,
+    PreferenceRecord,
+    PreferenceSearchRequest,
+    PreferenceSearchResponse,
+    PreferenceWriteRequest,
     ReasoningContextRequest,
     ReasoningContextResponse,
+    ReasoningSimilarTracesRequest,
+    ReasoningSimilarTracesResponse,
     ReasoningStepRequest,
     ReasoningStepResponse,
+    ReasoningStepSearchRequest,
+    ReasoningStepSearchResponse,
     ReasoningToolCallRequest,
     ReasoningToolCallResponse,
+    ReasoningToolStatsRequest,
+    ReasoningToolStatsResponse,
     ReasoningTraceCompleteRequest,
     ReasoningTraceCompleteResponse,
+    ReasoningTraceDetailRequest,
+    ReasoningTraceDetailResponse,
+    ReasoningTraceListRequest,
+    ReasoningTraceListResponse,
     ReasoningTraceStartRequest,
     ReasoningTraceStartResponse,
+    SdkStatsRequest,
+    SdkStatsResponse,
     SkillListRequest,
     SkillListResponse,
     SkillProposal,
@@ -175,6 +217,48 @@ def test_reasoning_route_rejects_cross_tenant_scope() -> None:
     assert backend.trace_starts == []
 
 
+def test_reasoning_step_rejects_cross_tenant_scope() -> None:
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    response = client.post(
+        "/v1/reasoning/traces/trace-1/steps",
+        headers=_auth_header(),
+        json=_step_payload(scope=_scope_payload(tenant_id="other-tenant")),
+    )
+
+    assert response.status_code == 403
+    assert backend.steps == []
+
+
+def test_reasoning_tool_call_rejects_cross_tenant_scope() -> None:
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    response = client.post(
+        "/v1/reasoning/steps/step-1/tool-calls",
+        headers=_auth_header(),
+        json=_tool_call_payload(scope=_scope_payload(tenant_id="other-tenant")),
+    )
+
+    assert response.status_code == 403
+    assert backend.tool_calls == []
+
+
+def test_reasoning_completion_rejects_cross_tenant_scope() -> None:
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    response = client.post(
+        "/v1/reasoning/traces/trace-1/complete",
+        headers=_auth_header(),
+        json=_completion_payload(scope=_scope_payload(tenant_id="other-tenant")),
+    )
+
+    assert response.status_code == 403
+    assert backend.completions == []
+
+
 def test_reasoning_step_rejects_path_body_trace_mismatch() -> None:
     backend = RecordingBackend()
     client = TestClient(create_app(settings_factory=_settings, backend=backend))
@@ -231,6 +315,21 @@ class RecordingBackend:
     reasoning_context_requests: list[ReasoningContextRequest] = field(
         default_factory=list,
     )
+    reasoning_trace_list_requests: list[ReasoningTraceListRequest] = field(
+        default_factory=list,
+    )
+    reasoning_trace_detail_requests: list[ReasoningTraceDetailRequest] = field(
+        default_factory=list,
+    )
+    reasoning_similar_trace_requests: list[ReasoningSimilarTracesRequest] = field(
+        default_factory=list,
+    )
+    reasoning_step_search_requests: list[ReasoningStepSearchRequest] = field(
+        default_factory=list,
+    )
+    reasoning_tool_stats_requests: list[ReasoningToolStatsRequest] = field(
+        default_factory=list,
+    )
 
     async def start_reasoning_trace(
         self,
@@ -284,19 +383,111 @@ class RecordingBackend:
         self.reasoning_context_requests.append(request)
         return self.reasoning_context
 
+    async def list_reasoning_traces(
+        self,
+        request: ReasoningTraceListRequest,
+    ) -> ReasoningTraceListResponse:
+        self.reasoning_trace_list_requests.append(request)
+        return ReasoningTraceListResponse(scope=request.scope)
+
+    async def get_reasoning_trace(
+        self,
+        request: ReasoningTraceDetailRequest,
+    ) -> ReasoningTraceDetailResponse:
+        self.reasoning_trace_detail_requests.append(request)
+        return ReasoningTraceDetailResponse(scope=request.scope)
+
+    async def find_similar_reasoning_traces(
+        self,
+        request: ReasoningSimilarTracesRequest,
+    ) -> ReasoningSimilarTracesResponse:
+        self.reasoning_similar_trace_requests.append(request)
+        return ReasoningSimilarTracesResponse(scope=request.scope)
+
+    async def search_reasoning_steps(
+        self,
+        request: ReasoningStepSearchRequest,
+    ) -> ReasoningStepSearchResponse:
+        self.reasoning_step_search_requests.append(request)
+        return ReasoningStepSearchResponse(scope=request.scope)
+
+    async def get_reasoning_tool_stats(
+        self,
+        request: ReasoningToolStatsRequest,
+    ) -> ReasoningToolStatsResponse:
+        self.reasoning_tool_stats_requests.append(request)
+        return ReasoningToolStatsResponse(scope=request.scope)
+
     async def readiness(self) -> BackendReadiness:
         return BackendReadiness(graph="ready", schema="ready")
 
+    async def buffer_status(self) -> BufferStatus:
+        return BufferStatus(
+            write_mode="sync",
+            max_pending=200,
+            pending_writes=None,
+            write_errors=0,
+            status="ready",
+        )
+
+    async def flush_buffer(self) -> BufferFlushResponse:
+        return BufferFlushResponse(flushed=True, status=await self.buffer_status())
+
+    async def shutdown(self) -> None:
+        return None
+
     def diagnostics(self, readiness: BackendReadiness) -> DiagnosticsResponse:
+        settings = Settings()
         return DiagnosticsResponse(
-            tenant_id="bromigos",
+            tenant_id=settings.agents_memory_tenant_id,
             config=DiagnosticsConfig(
-                neo4j_uri="bolt://neo4j.local:7687",
-                neo4j_username="neo4j",
-                litellm_base_url="http://litellm.local/v1",
-                memory_llm="openai/gemma4",
-                memory_embedding="local-qwen3-embedding-0.6b",
-                memory_embedding_dimensions=1024,
+                neo4j_uri=settings.neo4j_uri,
+                neo4j_username=settings.neo4j_username,
+                litellm_base_url=settings.litellm_base_url,
+                memory_llm=settings.memory_llm,
+                memory_embedding=settings.memory_embedding,
+                memory_embedding_dimensions=settings.memory_embedding_dimensions,
+                memory_audit_read=settings.memory_audit_read,
+                memory_conversation_ttl_days=settings.memory_conversation_ttl_days,
+                memory_write_mode=settings.memory_write_mode,
+                memory_max_pending=settings.memory_max_pending,
+                memory_fact_deduplication_enabled=(
+                    settings.memory_fact_deduplication_enabled
+                ),
+                memory_trace_embedding_enabled=settings.memory_trace_embedding_enabled,
+                memory_extract_entities_enabled=(
+                    settings.memory_extract_entities_enabled
+                ),
+                memory_extract_relations_enabled=(
+                    settings.memory_extract_relations_enabled
+                ),
+                memory_extraction_preview_enabled=(
+                    settings.memory_extraction_preview_enabled
+                ),
+                memory_extraction_batch_size=settings.memory_extraction_batch_size,
+                memory_extraction_max_concurrency=(
+                    settings.memory_extraction_max_concurrency
+                ),
+                memory_extraction_chunk_size=settings.memory_extraction_chunk_size,
+                memory_extraction_chunk_overlap=(
+                    settings.memory_extraction_chunk_overlap
+                ),
+                memory_ocr_enabled=settings.memory_ocr_enabled,
+                memory_ocr_model=settings.memory_ocr_model,
+                memory_ocr_max_image_bytes=settings.memory_ocr_max_image_bytes,
+                memory_rustfs_enabled=settings.memory_rustfs_enabled,
+                memory_rustfs_bucket=settings.memory_rustfs_bucket,
+                memory_rustfs_prefix=settings.memory_rustfs_prefix,
+                memory_rustfs_endpoint=settings.memory_rustfs_endpoint,
+                memory_rustfs_retention_days=settings.memory_rustfs_retention_days,
+                memory_prompt_entities_enabled=settings.memory_prompt_entities_enabled,
+                memory_prompt_preferences_enabled=(
+                    settings.memory_prompt_preferences_enabled
+                ),
+                memory_prompt_reasoning_enabled=settings.memory_prompt_reasoning_enabled,
+                memory_consolidation_schedule_enabled=(
+                    settings.memory_consolidation_schedule_enabled
+                ),
             ),
             backend=readiness,
         )
@@ -337,6 +528,105 @@ class RecordingBackend:
         _ = request
         return GraphContextResponse(context="")
 
+    async def get_sdk_stats(self, request: SdkStatsRequest) -> SdkStatsResponse:
+        return SdkStatsResponse(scope=request.scope, stats={})
+
+    async def get_dedup_stats(
+        self,
+        request: DedupStatsRequest,
+    ) -> DedupStatsResponse:
+        return DedupStatsResponse(scope=request.scope, stats={})
+
+    async def find_dedup_candidates(
+        self,
+        request: DedupCandidateRequest,
+    ) -> DedupCandidateResponse:
+        return DedupCandidateResponse(
+            scope=request.scope,
+            graph_snapshot_hash="snapshot-placeholder",
+            expires_at="2026-06-29T00:15:00+00:00",
+        )
+
+    async def apply_dedup_candidate(
+        self,
+        request: DedupApplyRequest,
+    ) -> DedupApplyResponse:
+        return DedupApplyResponse(
+            scope=request.scope,
+            operation=request.operation,
+            candidate_id=request.candidate_id,
+            candidate_version=request.candidate_version,
+            applied=True,
+            audit=request.audit,
+        )
+
+    async def dry_run_consolidation(
+        self,
+        request: ConsolidationDryRunRequest,
+    ) -> ConsolidationDryRunResponse:
+        return ConsolidationDryRunResponse(
+            scope=request.scope,
+            operation=request.operation,
+            dry_run=True,
+            graph_snapshot_hash="snapshot-placeholder",
+            dry_run_token="consolidation-token",  # noqa: S106
+            expires_at="2026-06-29T00:15:00+00:00",
+        )
+
+    async def apply_consolidation(
+        self,
+        request: ConsolidationApplyRequest,
+    ) -> ConsolidationApplyResponse:
+        return ConsolidationApplyResponse(
+            scope=request.scope,
+            operation=request.operation,
+            applied=True,
+            audit=request.audit,
+        )
+
+    async def export_graph(
+        self,
+        request: GraphExportRequest,
+    ) -> GraphExportResponse:
+        return GraphExportResponse(scope=request.scope)
+
+    async def search_entities(
+        self,
+        request: EntitySearchRequest,
+    ) -> EntitySearchResponse:
+        _ = request
+        return EntitySearchResponse()
+
+    async def search_facts(self, request: FactSearchRequest) -> FactSearchResponse:
+        _ = request
+        return FactSearchResponse()
+
+    async def search_preferences(
+        self,
+        request: PreferenceSearchRequest,
+    ) -> PreferenceSearchResponse:
+        _ = request
+        return PreferenceSearchResponse()
+
+    async def add_entity(self, request: EntityWriteRequest) -> EntityRecord:
+        return EntityRecord(name=request.name, type=request.type)
+
+    async def add_fact(self, request: FactWriteRequest) -> FactRecord:
+        return FactRecord(
+            subject=request.subject,
+            predicate=request.predicate,
+            object=request.object,
+        )
+
+    async def add_preference(
+        self,
+        request: PreferenceWriteRequest,
+    ) -> PreferenceRecord:
+        return PreferenceRecord(
+            category=request.category,
+            preference=request.preference,
+        )
+
     async def list_skills(self, request: SkillListRequest) -> SkillListResponse:
         _ = request
         return SkillListResponse()
@@ -372,16 +662,26 @@ def _scope_payload(*, tenant_id: str = "bromigos") -> dict[str, str]:
     }
 
 
-def _step_payload(*, trace_id: str = "trace-1") -> dict[str, str]:
+def _step_payload(
+    *,
+    trace_id: str = "trace-1",
+    scope: dict[str, str] | None = None,
+) -> dict[str, object]:
     return {
+        "scope": scope or _scope_payload(),
         "trace_id": trace_id,
         "action": "get_memory_context",
         "observation": "combined memory returned",
     }
 
 
-def _tool_call_payload(*, step_id: str = "step-1") -> dict[str, object]:
+def _tool_call_payload(
+    *,
+    step_id: str = "step-1",
+    scope: dict[str, str] | None = None,
+) -> dict[str, object]:
     return {
+        "scope": scope or _scope_payload(),
         "trace_id": "trace-1",
         "step_id": step_id,
         "tool_name": "memory.get_context",
@@ -396,5 +696,14 @@ def _tool_call_payload(*, step_id: str = "step-1") -> dict[str, object]:
     }
 
 
-def _completion_payload(*, trace_id: str = "trace-1") -> dict[str, object]:
-    return {"trace_id": trace_id, "outcome": "sent reply", "success": True}
+def _completion_payload(
+    *,
+    trace_id: str = "trace-1",
+    scope: dict[str, str] | None = None,
+) -> dict[str, object]:
+    return {
+        "scope": scope or _scope_payload(),
+        "trace_id": trace_id,
+        "outcome": "sent reply",
+        "success": True,
+    }

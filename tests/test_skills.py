@@ -3,6 +3,10 @@ from os import environ
 import pytest
 
 environ["AGENTS_MEMORY_TOKEN"] = "test-token"
+environ["AGENTS_MEMORY_READ_OPERATOR_TOKEN"] = "read-operator-token"
+environ["AGENTS_MEMORY_EXPORT_OPERATOR_TOKEN"] = "export-operator-token"
+environ["AGENTS_MEMORY_WRITE_OPERATOR_TOKEN"] = "write-operator-token"
+environ["AGENTS_MEMORY_ADMIN_OPERATOR_TOKEN"] = "admin-operator-token"
 environ["NEO4J_URI"] = "bolt://neo4j.neo4j.svc.cluster.local:7687"
 environ["NEO4J_PASSWORD"] = "test-password"
 environ["LITELLM_BASE_URL"] = "http://litellm.litellm.svc.cluster.local:4000/v1"
