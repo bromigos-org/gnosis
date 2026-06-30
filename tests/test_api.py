@@ -1,16 +1,23 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 from os import environ
+from pathlib import Path
 from typing import Self
 from uuid import UUID
 
 import pytest
+from neo4j_agent_memory.memory.long_term import EntityType
 from neo4j_agent_memory.memory.reasoning import ReasoningStep as SdkReasoningStep
 from neo4j_agent_memory.memory.reasoning import ReasoningTrace as SdkReasoningTrace
-from neo4j_agent_memory.memory.reasoning import ToolCall, ToolCallStatus
+from neo4j_agent_memory.memory.reasoning import ToolCall, ToolCallStatus, ToolStats
 from neo4j_agent_memory.schema.models import EntityRef
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 environ["AGENTS_MEMORY_TOKEN"] = "test-token"
+environ["AGENTS_MEMORY_READ_OPERATOR_TOKEN"] = "read-operator-token"
+environ["AGENTS_MEMORY_EXPORT_OPERATOR_TOKEN"] = "export-operator-token"
+environ["AGENTS_MEMORY_WRITE_OPERATOR_TOKEN"] = "write-operator-token"
+environ["AGENTS_MEMORY_ADMIN_OPERATOR_TOKEN"] = "admin-operator-token"
 environ["NEO4J_URI"] = "bolt://neo4j.neo4j.svc.cluster.local:7687"
 environ["NEO4J_PASSWORD"] = "test-password"
 environ["LITELLM_BASE_URL"] = "http://litellm.litellm.svc.cluster.local:4000/v1"
@@ -19,22 +26,59 @@ environ["LITELLM_API_KEY"] = "test-litellm-key"
 from fastapi.testclient import TestClient
 from neo4j_agent_memory import MemorySettings
 
-from agents_memory.backend import MemoryClientContext, Neo4jAgentMemoryBackend
+from agents_memory.backend import (
+    BackendCapabilityUnavailable,
+    BackendRequestError,
+    MemoryClientContext,
+    Neo4jAgentMemoryBackend,
+)
 from agents_memory.main import create_app
 from agents_memory.models import (
     BackendReadiness,
+    BufferFlushResponse,
+    BufferStatus,
     ClientEvent,
     ClientEventBatchRequest,
     ClientEventBatchResponse,
     ClientEventType,
+    ConsolidationApplyRequest,
+    ConsolidationApplyResponse,
+    ConsolidationDryRunRequest,
+    ConsolidationDryRunResponse,
     ContextRequest,
     ContextResponse,
+    DedupApplyRequest,
+    DedupApplyResponse,
+    DedupCandidate,
+    DedupCandidateRequest,
+    DedupCandidateResponse,
+    DedupEntitySnapshot,
+    DedupOperatorAudit,
+    DedupStatsRequest,
+    DedupStatsResponse,
     DiagnosticsConfig,
     DiagnosticsResponse,
+    EntityRecord,
+    EntitySearchRequest,
+    EntitySearchResponse,
+    EntityWriteRequest,
     EventIngestResult,
     EventIngestStatus,
+    ExtractionCandidate,
+    ExtractionPreviewMetrics,
+    ExtractionPreviewProvenance,
+    ExtractionPreviewRequest,
+    ExtractionPreviewResponse,
+    FactRecord,
+    FactSearchRequest,
+    FactSearchResponse,
+    FactWriteRequest,
     GraphContextRequest,
     GraphContextResponse,
+    GraphExportNode,
+    GraphExportRelationship,
+    GraphExportRequest,
+    GraphExportResponse,
     JsonObject,
     JsonValue,
     MemoryContextRequest,
@@ -44,16 +88,35 @@ from agents_memory.models import (
     MemoryVisibility,
     MessageWriteRequest,
     MessageWriteResponse,
+    PreferenceRecord,
+    PreferenceSearchRequest,
+    PreferenceSearchResponse,
+    PreferenceWriteRequest,
     ReasoningContextRequest,
     ReasoningContextResponse,
+    ReasoningSimilarTracesRequest,
+    ReasoningSimilarTracesResponse,
+    ReasoningStepRecord,
     ReasoningStepRequest,
     ReasoningStepResponse,
+    ReasoningStepSearchRequest,
+    ReasoningStepSearchResponse,
     ReasoningToolCallRequest,
     ReasoningToolCallResponse,
+    ReasoningToolStatsRecord,
+    ReasoningToolStatsRequest,
+    ReasoningToolStatsResponse,
     ReasoningTraceCompleteRequest,
     ReasoningTraceCompleteResponse,
+    ReasoningTraceDetailRequest,
+    ReasoningTraceDetailResponse,
+    ReasoningTraceListRequest,
+    ReasoningTraceListResponse,
     ReasoningTraceStartRequest,
     ReasoningTraceStartResponse,
+    ReasoningTraceSummary,
+    SdkStatsRequest,
+    SdkStatsResponse,
     SkillListRequest,
     SkillListResponse,
     SkillProposal,
@@ -64,6 +127,12 @@ from agents_memory.models import (
     default_skill_visibility,
 )
 from agents_memory.settings import Settings
+
+_JSON_OBJECT_ADAPTER: TypeAdapter[JsonObject] = TypeAdapter(JsonObject)
+_JSON_OBJECTS_ADAPTER: TypeAdapter[list[JsonObject]] = TypeAdapter(list[JsonObject])
+_MEMORY_CONTEXT_CONTRACT_FIXTURE = (
+    Path(__file__).parent / "testdata" / "memory_context_enriched_contract.json"
+)
 
 
 def test_health_when_called_without_auth() -> None:
@@ -123,6 +192,14 @@ def test_all_memory_endpoints_require_bearer_token() -> None:
     )
 
     assert client.get("/v1/diagnostics").status_code == 401
+    assert (
+        client.request(
+            "GET",
+            "/v1/memory/stats",
+            json={"scope": _scope_payload()},
+        ).status_code
+        == 401
+    )
     for path, payload in _protected_post_endpoint_payloads():
         response = client.post(path, json=payload)
         assert response.status_code == 401, path
@@ -150,9 +227,62 @@ def test_diagnostics_returns_safe_readiness_details() -> None:
             "memory_llm": "openai/gemma4",
             "memory_embedding": "local-qwen3-embedding-0.6b",
             "memory_embedding_dimensions": 1024,
+            "memory_audit_read": False,
+            "memory_conversation_ttl_days": None,
+            "memory_write_mode": "sync",
+            "memory_max_pending": 200,
+            "memory_fact_deduplication_enabled": True,
+            "memory_trace_embedding_enabled": True,
+            "memory_extract_entities_enabled": False,
+            "memory_extract_relations_enabled": False,
+            "memory_extraction_preview_enabled": False,
+            "memory_extraction_batch_size": 25,
+            "memory_extraction_max_concurrency": 1,
+            "memory_extraction_chunk_size": 4000,
+            "memory_extraction_chunk_overlap": 200,
+            "memory_ocr_enabled": False,
+            "memory_ocr_model": "",
+            "memory_ocr_max_image_bytes": 0,
+            "memory_rustfs_enabled": False,
+            "memory_rustfs_bucket": "",
+            "memory_rustfs_prefix": "",
+            "memory_rustfs_endpoint": "",
+            "memory_rustfs_retention_days": None,
+            "memory_prompt_entities_enabled": False,
+            "memory_prompt_preferences_enabled": False,
+            "memory_prompt_reasoning_enabled": False,
+            "memory_consolidation_schedule_enabled": False,
         },
-        "backend": {"graph": "ready", "schema": "ready"},
+        "backend": {"graph": "ready", "schema": "ready", "buffer": "ready"},
     }
+
+
+def test_diagnostics_reflects_memory_feature_env_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: extraction discovery is enabled in environment policy only.
+    monkeypatch.setenv("MEMORY_EXTRACT_ENTITIES_ENABLED", "true")
+    fake_client = RecordingMemoryClient()
+    backend = Neo4jAgentMemoryBackend(
+        Settings(),
+        memory_client_factory=MemoryClientFactory(fake_client),
+        graph_store=RecordingGraphStore(),
+    )
+    client = TestClient(create_app(settings_factory=Settings, backend=backend))
+
+    # When: diagnostics are requested and a message is written.
+    diagnostics = client.get("/v1/diagnostics", headers=_auth_header())
+    write = client.post(
+        "/v1/messages",
+        headers=_auth_header(),
+        json=_message_payload(),
+    )
+
+    # Then: diagnostics show the policy switch, while writes keep extraction off.
+    assert diagnostics.status_code == 200
+    assert diagnostics.json()["config"]["memory_extract_entities_enabled"] is True
+    assert write.status_code == 200
+    assert fake_client.short_term.messages[0].extract_entities is False
 
 
 def test_write_message_when_token_is_missing() -> None:
@@ -199,6 +329,73 @@ def test_write_message_when_scope_is_outside_policy() -> None:
     # Then: the API rejects the request before reaching the backend.
     assert response.status_code == 403
     assert backend.messages == []
+
+
+def test_preview_extraction_when_request_is_scoped() -> None:
+    # Given: an app with a fake memory backend that supports dry-run previews.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a client requests extraction preview for scoped raw text.
+    response = client.post(
+        "/v1/memory/extraction/preview",
+        headers=_auth_header(),
+        json=_extraction_preview_payload(),
+    )
+
+    # Then: the API returns preview data without using the message write path.
+    assert response.status_code == 200
+    assert response.json()["metrics"]["documents"] == 1
+    assert backend.preview_requests == [
+        ExtractionPreviewRequest.model_validate(_extraction_preview_payload()),
+    ]
+    assert backend.messages == []
+
+
+def test_preview_extraction_when_scope_is_outside_policy() -> None:
+    # Given: an app configured for the bromigos tenant.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a caller previews extraction for another tenant.
+    response = client.post(
+        "/v1/memory/extraction/preview",
+        headers=_auth_header(),
+        json=_extraction_preview_payload(
+            scope=_scope_payload(tenant_id="evil-corp"),
+        ),
+    )
+
+    # Then: the API rejects the request before reaching the backend.
+    assert response.status_code == 403
+    assert backend.preview_requests == []
+
+
+def test_preview_extraction_maps_backend_policy_error_to_bad_request() -> None:
+    # Given: the backend rejects a preview according to extraction policy.
+    preview_error = BackendRequestError(
+        "Extraction preview is disabled by service policy.",
+    )
+    backend = RecordingBackend(
+        preview_error=preview_error,
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a scoped preview request reaches the backend.
+    response = client.post(
+        "/v1/memory/extraction/preview",
+        headers=_auth_header(),
+        json=_extraction_preview_payload(),
+    )
+
+    # Then: the API exposes a client-correctable 400 without accepting the preview.
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "Extraction preview is disabled by service policy.",
+    }
+    assert backend.preview_requests == [
+        ExtractionPreviewRequest.model_validate(_extraction_preview_payload()),
+    ]
 
 
 def test_existing_message_write_contract_still_works() -> None:
@@ -312,6 +509,48 @@ def test_memory_context_returns_labeled_combined_sections() -> None:
             },
         ),
     ]
+
+
+def test_memory_context_contract_fixture_serializes_enriched_sections() -> None:
+    # Given: the shared fixture documents enriched memory-type sections.
+    fixture = _MEMORY_CONTEXT_CONTRACT_FIXTURE.read_text()
+
+    # When: agents-memory validates and serializes the response contract.
+    response = MemoryContextResponse.model_validate_json(fixture)
+    serialized_response = MemoryContextResponse.model_validate(
+        response.model_dump(mode="json"),
+    )
+
+    # Then: all current enriched memory types remain in service order.
+    assert [section.memory_type for section in serialized_response.sections] == [
+        "short_term",
+        "long_term",
+        "entities",
+        "preferences",
+        "dedup_notice",
+        "reasoning",
+        "similar_traces",
+    ]
+    assert "Short-term continuity" in serialized_response.sections[0].content
+    assert "Durable preference" in serialized_response.sections[3].content
+    assert "prior successful pattern" in serialized_response.sections[5].content
+
+
+def test_memory_context_response_contract_fixture_rejects_missing_content() -> None:
+    # Given: a fixture-like section with a required response field missing.
+    payload: JsonObject = {
+        "sections": [
+            {
+                "source": "conversation_buffer",
+                "memory_type": "short_term",
+                "facts": [],
+            },
+        ],
+    }
+
+    # When/Then: contract validation fails clearly at the missing field.
+    with pytest.raises(ValidationError, match="content"):
+        _ = MemoryContextResponse.model_validate(payload)
 
 
 def test_memory_context_requires_auth() -> None:
@@ -600,6 +839,942 @@ def test_get_graph_context_when_payload_has_unknown_field() -> None:
     assert response.status_code == 422
 
 
+def test_sdk_stats_requires_read_operator_token() -> None:
+    # Given: SDK stats are configured for read operators only.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a normal memory client token requests SDK stats.
+    response = client.request(
+        "GET",
+        "/v1/memory/stats",
+        headers=_auth_header(),
+        json={"scope": _scope_payload()},
+    )
+
+    # Then: the token class is rejected before backend access.
+    assert response.status_code == 403
+    assert backend.sdk_stats_requests == []
+
+
+def test_sdk_stats_requires_authentication() -> None:
+    # Given: SDK stats are configured for authenticated read operators only.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a caller omits credentials.
+    response = client.request(
+        "GET",
+        "/v1/memory/stats",
+        json={"scope": _scope_payload()},
+    )
+
+    # Then: authentication fails before backend access.
+    assert response.status_code == 401
+    assert backend.sdk_stats_requests == []
+
+
+def test_sdk_stats_rejects_export_operator_token() -> None:
+    # Given: SDK stats are limited to read operators.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: an export-only operator requests stats.
+    response = client.request(
+        "GET",
+        "/v1/memory/stats",
+        headers=_export_operator_auth_header(),
+        json={"scope": _scope_payload()},
+    )
+
+    # Then: the wrong operator class is rejected before backend access.
+    assert response.status_code == 403
+    assert backend.sdk_stats_requests == []
+
+
+def test_sdk_stats_when_scope_is_outside_policy() -> None:
+    # Given: a read operator token scoped to the bromigos tenant.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the operator requests another tenant's stats.
+    response = client.post(
+        "/v1/sdk/stats",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(tenant_id="evil-corp")},
+    )
+
+    # Then: tenant policy is enforced before backend access.
+    assert response.status_code == 403
+    assert backend.sdk_stats_requests == []
+
+
+def test_sdk_stats_redacts_sensitive_values() -> None:
+    # Given: the backend returns SDK stats that include accidental secrets.
+    backend = RecordingBackend(
+        sdk_stats=SdkStatsResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            stats={
+                "nodes": 7,
+                "token": "memory-token-sentinel",
+                "nested": {"api_key": "sk-1234567890abcdef"},
+            },
+        ),
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator requests scoped SDK stats.
+    response = client.post(
+        "/v1/sdk/stats",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload()},
+    )
+
+    # Then: typed stats are returned without leaking secret-looking fields.
+    assert response.status_code == 200
+    assert response.json() == {
+        "scope": _scope_payload(),
+        "stats": {
+            "nodes": 7,
+            "token": "[REDACTED]",
+            "nested": {"api_key": "[REDACTED]"},
+        },
+    }
+    assert backend.sdk_stats_requests == [
+        SdkStatsRequest(scope=MemoryScope.model_validate(_scope_payload())),
+    ]
+
+
+def test_memory_stats_get_uses_tenant_scope_without_request_body() -> None:
+    # Given: the canonical memory stats route is a GET endpoint.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator requests tenant-level stats without a request body.
+    response = client.get("/v1/memory/stats", headers=_read_operator_auth_header())
+
+    # Then: the endpoint succeeds without relying on a brittle GET body.
+    assert response.status_code == 200
+    assert response.json() == {
+        "scope": _tenant_scope_payload(),
+        "stats": {"nodes": 0},
+    }
+    assert backend.sdk_stats_requests == [
+        SdkStatsRequest(scope=MemoryScope.model_validate(_tenant_scope_payload())),
+    ]
+
+
+def test_sdk_stats_legacy_alias_redacts_sensitive_values() -> None:
+    # Given: the legacy SDK stats route remains a compatibility alias.
+    backend = RecordingBackend(
+        sdk_stats=SdkStatsResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            stats={"token": "memory-token-sentinel"},
+        ),
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator requests stats through the legacy alias.
+    response = client.post(
+        "/v1/sdk/stats",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload()},
+    )
+
+    # Then: the alias preserves the same typed and redacted behavior.
+    assert response.status_code == 200
+    assert response.json() == {
+        "scope": _scope_payload(),
+        "stats": {"token": "[REDACTED]"},
+    }
+    assert backend.sdk_stats_requests == [
+        SdkStatsRequest(scope=MemoryScope.model_validate(_scope_payload())),
+    ]
+
+
+def test_buffer_flush_requires_admin_operator_token() -> None:
+    # Given: buffer flush is an admin-only write-buffer control.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator attempts to flush buffered writes.
+    response = client.post(
+        "/v1/memory/buffer/flush",
+        headers=_read_operator_auth_header(),
+    )
+
+    # Then: admin authorization is required before backend access.
+    assert response.status_code == 403
+    assert backend.buffer_flushes == 0
+
+
+def test_buffer_flush_returns_status_for_admin_operator() -> None:
+    # Given: the backend can flush the SDK write buffer.
+    backend = RecordingBackend(
+        buffer_flush=BufferFlushResponse(
+            flushed=True,
+            status=BufferStatus(
+                write_mode="buffered",
+                max_pending=7,
+                pending_writes=0,
+                write_errors=0,
+                status="ready",
+            ),
+        ),
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: an admin operator flushes buffered writes.
+    response = client.post(
+        "/v1/memory/buffer/flush",
+        headers=_admin_operator_auth_header(),
+    )
+
+    # Then: the response exposes only counters and non-secret buffer policy.
+    assert response.status_code == 200
+    assert response.json() == {
+        "flushed": True,
+        "status": {
+            "write_mode": "buffered",
+            "max_pending": 7,
+            "pending_writes": 0,
+            "write_errors": 0,
+            "status": "ready",
+        },
+    }
+    assert backend.buffer_flushes == 1
+
+
+def test_graph_export_requires_export_operator_token() -> None:
+    # Given: graph export is configured for export operators only.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read-only operator attempts export.
+    response = client.post(
+        "/v1/memory/graph/export",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(), "limit": 10},
+    )
+
+    # Then: the wrong operator class is rejected before backend access.
+    assert response.status_code == 403
+    assert backend.graph_export_requests == []
+
+
+def test_graph_export_requires_authentication() -> None:
+    # Given: graph export is configured for authenticated export operators only.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a caller omits credentials.
+    response = client.post(
+        "/v1/memory/graph/export",
+        json={"scope": _scope_payload(), "limit": 10},
+    )
+
+    # Then: authentication fails before backend access.
+    assert response.status_code == 401
+    assert backend.graph_export_requests == []
+
+
+def test_graph_export_validates_max_limit() -> None:
+    # Given: graph export enforces a service max limit at the API boundary.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: an export operator requests more than the max limit.
+    response = client.post(
+        "/v1/memory/graph/export",
+        headers=_export_operator_auth_header(),
+        json={"scope": _scope_payload(), "limit": 1001},
+    )
+
+    # Then: validation rejects the request before backend access.
+    assert response.status_code == 422
+    assert backend.graph_export_requests == []
+
+
+def test_graph_export_when_scope_is_outside_policy() -> None:
+    # Given: an export operator token scoped to the bromigos tenant.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the operator requests another tenant's graph.
+    response = client.post(
+        "/v1/memory/graph/export",
+        headers=_export_operator_auth_header(),
+        json={"scope": _scope_payload(tenant_id="evil-corp"), "limit": 10},
+    )
+
+    # Then: tenant policy is enforced before backend export.
+    assert response.status_code == 403
+    assert backend.graph_export_requests == []
+
+
+def test_graph_export_returns_scoped_redacted_graph() -> None:
+    # Given: the backend returns a scoped graph containing secret-looking fields.
+    backend = RecordingBackend(
+        graph_export=GraphExportResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            nodes=[
+                GraphExportNode(
+                    id="message-1",
+                    labels=["Message"],
+                    properties={
+                        "tenant_id": "bromigos",
+                        "token": "abc123secretTOKEN456",
+                    },
+                ),
+            ],
+            relationships=[
+                GraphExportRelationship(
+                    id="rel-1",
+                    type="MENTIONS",
+                    from_node="message-1",
+                    to_node="entity-1",
+                    properties={"api_key": "sk-1234567890abcdef"},
+                ),
+            ],
+            metadata={"limit": 10},
+        ),
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: an export operator requests a scoped graph export.
+    response = client.post(
+        "/v1/memory/graph/export",
+        headers=_export_operator_auth_header(),
+        json={"scope": _scope_payload(), "limit": 10},
+    )
+
+    # Then: the export is typed, scoped, and redacted.
+    assert response.status_code == 200
+    assert response.json() == {
+        "scope": _scope_payload(),
+        "nodes": [
+            {
+                "id": "message-1",
+                "labels": ["Message"],
+                "properties": {"tenant_id": "bromigos", "token": "[REDACTED]"},
+            },
+        ],
+        "relationships": [
+            {
+                "id": "rel-1",
+                "type": "MENTIONS",
+                "from_node": "message-1",
+                "to_node": "entity-1",
+                "properties": {"api_key": "[REDACTED]"},
+            },
+        ],
+        "metadata": {"limit": 10},
+    }
+    assert backend.graph_export_requests == [
+        GraphExportRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            limit=10,
+        ),
+    ]
+
+
+def test_graph_export_maps_unavailable_sdk_capability() -> None:
+    # Given: the backend reports the SDK graph capability is unavailable.
+    backend = RecordingBackend(
+        graph_export_error=BackendCapabilityUnavailable(
+            "SDK graph export is unavailable.",
+        ),
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: an export operator requests graph export.
+    response = client.post(
+        "/v1/memory/graph/export",
+        headers=_export_operator_auth_header(),
+        json={"scope": _scope_payload(), "limit": 10},
+    )
+
+    # Then: the API returns a deterministic capability-unavailable response.
+    assert response.status_code == 501
+    assert response.json() == {
+        "detail": "capability_unavailable",
+        "message": "SDK graph export is unavailable.",
+    }
+    assert backend.graph_export_requests == [
+        GraphExportRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            limit=10,
+        ),
+    ]
+
+
+def test_graph_export_legacy_alias_returns_scoped_redacted_graph() -> None:
+    # Given: the legacy graph export route remains a compatibility alias.
+    backend = RecordingBackend(
+        graph_export=GraphExportResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            nodes=[
+                GraphExportNode(
+                    id="message-1",
+                    labels=["Message"],
+                    properties={"api_key": "sk-1234567890abcdef"},
+                ),
+            ],
+        ),
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: an export operator requests graph export through the legacy alias.
+    response = client.post(
+        "/v1/graph/export",
+        headers=_export_operator_auth_header(),
+        json={"scope": _scope_payload(), "limit": 10},
+    )
+
+    # Then: the alias preserves the same typed and redacted behavior.
+    assert response.status_code == 200
+    assert response.json() == {
+        "scope": _scope_payload(),
+        "nodes": [
+            {
+                "id": "message-1",
+                "labels": ["Message"],
+                "properties": {"api_key": "[REDACTED]"},
+            },
+        ],
+        "relationships": [],
+        "metadata": {},
+    }
+    assert backend.graph_export_requests == [
+        GraphExportRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            limit=10,
+        ),
+    ]
+
+
+def test_dedup_stats_requires_read_operator_token() -> None:
+    # Given: dedup stats are limited to read operators.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a normal bearer token attempts to read dedup stats.
+    response = client.request(
+        "GET",
+        "/v1/memory/dedup/stats",
+        headers=_auth_header(),
+        json={"scope": _scope_payload()},
+    )
+
+    # Then: the wrong token class is rejected before backend access.
+    assert response.status_code == 403
+    assert backend.dedup_stats_requests == []
+
+
+def test_dedup_stats_returns_redacted_counters() -> None:
+    # Given: dedup stats include accidental secret-looking fields.
+    backend = RecordingBackend(
+        dedup_stats=DedupStatsResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            stats={"pending_reviews": 3, "api_key": "sk-1234567890abcdef"},
+        ),
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator requests scoped dedup stats.
+    response = client.request(
+        "GET",
+        "/v1/memory/dedup/stats",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload()},
+    )
+
+    # Then: stats are returned through the typed redaction boundary.
+    assert response.status_code == 200
+    assert response.json() == {
+        "scope": _scope_payload(),
+        "stats": {"pending_reviews": 3, "api_key": "[REDACTED]"},
+    }
+    assert backend.dedup_stats_requests == [
+        DedupStatsRequest(scope=MemoryScope.model_validate(_scope_payload())),
+    ]
+
+
+def test_dedup_candidates_require_read_operator_and_scope() -> None:
+    # Given: candidate dry-runs are read-operator scoped.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: callers use the wrong token class and wrong scope.
+    wrong_token = client.post(
+        "/v1/memory/dedup/candidates",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(), "limit": 5},
+    )
+    wrong_scope = client.post(
+        "/v1/memory/dedup/candidates",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(tenant_id="evil-corp"), "limit": 5},
+    )
+
+    # Then: policy rejects both before backend access.
+    assert wrong_token.status_code == 403
+    assert wrong_scope.status_code == 403
+    assert backend.dedup_candidate_requests == []
+
+
+def test_dedup_candidates_return_dry_run_report() -> None:
+    # Given: the backend has a candidate dry-run report.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator requests duplicate candidates.
+    response = client.post(
+        "/v1/memory/dedup/candidates",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(), "limit": 5},
+    )
+
+    # Then: the API returns operation-specific dry-run tokens without applying work.
+    assert response.status_code == 200
+    assert response.json()["candidates"][0]["reject_dry_run_token"] == "reject-token"
+    assert response.json()["candidates"][0]["merge_dry_run_token"] == "merge-token"
+    assert response.json()["graph_snapshot_hash"] == "snapshot-1"
+    assert backend.dedup_candidate_requests == [
+        DedupCandidateRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            limit=5,
+        ),
+    ]
+    assert backend.dedup_apply_requests == []
+
+
+def test_dedup_apply_requires_admin_operator_token() -> None:
+    # Given: apply is limited to admin operators.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator attempts to apply a reject.
+    response = client.post(
+        "/v1/memory/dedup/apply",
+        headers=_read_operator_auth_header(),
+        json=_dedup_apply_payload(),
+    )
+
+    # Then: admin authorization is required before backend access.
+    assert response.status_code == 403
+    assert backend.dedup_apply_requests == []
+
+
+def test_dedup_apply_maps_request_errors_to_bad_request() -> None:
+    # Given: backend dry-run validation rejects an apply request.
+    backend = RecordingBackend(
+        dedup_apply_error=BackendRequestError(
+            "Deduplication dry-run token is invalid.",
+        ),
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: an admin operator submits the invalid apply request.
+    response = client.post(
+        "/v1/memory/dedup/apply",
+        headers=_admin_operator_auth_header(),
+        json=_dedup_apply_payload(),
+    )
+
+    # Then: the API reports a typed 400 without hiding the backend reason.
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Deduplication dry-run token is invalid."}
+
+
+def test_dedup_apply_requires_explicit_apply_flag() -> None:
+    # Given: the apply contract requires explicit apply=true.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the admin request omits the apply flag.
+    payload = _dedup_apply_payload()
+    del payload["apply"]
+    response = client.post(
+        "/v1/memory/dedup/apply",
+        headers=_admin_operator_auth_header(),
+        json=payload,
+    )
+
+    # Then: boundary validation rejects the request before backend access.
+    assert response.status_code == 422
+    assert backend.dedup_apply_requests == []
+
+
+def test_dedup_apply_returns_typed_audit_response() -> None:
+    # Given: an admin operator has a valid dry-run token and audit reason.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the reject operation is applied.
+    response = client.post(
+        "/v1/memory/dedup/apply",
+        headers=_admin_operator_auth_header(),
+        json=_dedup_apply_payload(),
+    )
+
+    # Then: the typed apply response includes the operator audit fields.
+    assert response.status_code == 200
+    assert response.json() == {
+        "scope": _scope_payload(),
+        "operation": "reject",
+        "candidate_id": "dedup-1",
+        "candidate_version": 1,
+        "applied": True,
+        "result": {"rejected": True},
+        "audit": {"operator_id": "admin-1", "reason": "not duplicate", "ticket": None},
+    }
+    assert backend.dedup_apply_requests == [
+        DedupApplyRequest.model_validate(_dedup_apply_payload()),
+    ]
+
+
+def test_consolidation_dry_run_requires_read_operator_and_scope() -> None:
+    # Given: consolidation dry-runs are read-operator scoped.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: callers use the wrong token class and wrong scope.
+    wrong_token = client.post(
+        "/v1/memory/consolidation/dry-run",
+        headers=_auth_header(),
+        json=_consolidation_dry_run_payload(),
+    )
+    wrong_scope = client.post(
+        "/v1/memory/consolidation/dry-run",
+        headers=_read_operator_auth_header(),
+        json=_consolidation_dry_run_payload(
+            scope=_scope_payload(tenant_id="evil-corp"),
+        ),
+    )
+
+    # Then: policy rejects both before backend access.
+    assert wrong_token.status_code == 403
+    assert wrong_scope.status_code == 403
+    assert backend.consolidation_dry_run_requests == []
+
+
+def test_consolidation_dry_run_returns_redacted_report_without_apply() -> None:
+    # Given: the backend has a consolidation dry-run report with a redacted token.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator requests a consolidation dry-run.
+    response = client.post(
+        "/v1/memory/consolidation/dry-run",
+        headers=_read_operator_auth_header(),
+        json=_consolidation_dry_run_payload(),
+    )
+
+    # Then: the API returns a dry-run report and does not apply consolidation.
+    assert response.status_code == 200
+    assert response.json() == {
+        "scope": _scope_payload(),
+        "operation": "dedupe_entities",
+        "dry_run": True,
+        "report": {"kind": "dedupe_entities", "token": "[REDACTED]"},
+        "graph_snapshot_hash": "consolidation-snapshot-1",
+        "dry_run_token": "consolidation-token",
+        "expires_at": "2026-06-29T00:15:00+00:00",
+    }
+    assert backend.consolidation_dry_run_requests == [
+        ConsolidationDryRunRequest.model_validate(_consolidation_dry_run_payload()),
+    ]
+    assert backend.consolidation_apply_requests == []
+
+
+def test_consolidation_apply_requires_admin_operator_token() -> None:
+    # Given: consolidation apply is limited to admin operators.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator attempts to apply consolidation.
+    response = client.post(
+        "/v1/memory/consolidation/apply",
+        headers=_read_operator_auth_header(),
+        json=_consolidation_apply_payload(),
+    )
+
+    # Then: admin authorization is required before backend access.
+    assert response.status_code == 403
+    assert backend.consolidation_apply_requests == []
+
+
+def test_consolidation_apply_maps_request_errors_to_bad_request() -> None:
+    # Given: backend dry-run validation rejects a consolidation apply request.
+    backend = RecordingBackend(
+        consolidation_apply_error=BackendRequestError(
+            "Consolidation dry-run token is invalid.",
+        ),
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: an admin operator submits the invalid apply request.
+    response = client.post(
+        "/v1/memory/consolidation/apply",
+        headers=_admin_operator_auth_header(),
+        json=_consolidation_apply_payload(),
+    )
+
+    # Then: the API reports a typed 400 without hiding the backend reason.
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Consolidation dry-run token is invalid."}
+
+
+def test_consolidation_apply_returns_typed_audit_response() -> None:
+    # Given: an admin operator has a valid consolidation dry-run token.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the consolidation operation is applied.
+    response = client.post(
+        "/v1/memory/consolidation/apply",
+        headers=_admin_operator_auth_header(),
+        json=_consolidation_apply_payload(),
+    )
+
+    # Then: the typed apply response includes the operator audit fields.
+    assert response.status_code == 200
+    assert response.json() == {
+        "scope": _scope_payload(),
+        "operation": "dedupe_entities",
+        "applied": True,
+        "result": {"merged": 2},
+        "audit": {"operator_id": "admin-1", "reason": "reviewed", "ticket": None},
+    }
+    assert backend.consolidation_apply_requests == [
+        ConsolidationApplyRequest.model_validate(_consolidation_apply_payload()),
+    ]
+
+
+def test_entity_search_requires_read_operator_and_scope() -> None:
+    # Given: entity search is limited to scoped read operators.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a normal bearer token attempts entity search.
+    wrong_token = client.post(
+        "/v1/memory/entities/search",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(), "query": "Cartman"},
+    )
+    wrong_scope = client.post(
+        "/v1/memory/entities/search",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(tenant_id="evil-corp"), "query": "Cartman"},
+    )
+
+    # Then: token class and tenant scope are enforced before backend access.
+    assert wrong_token.status_code == 403
+    assert wrong_scope.status_code == 403
+    assert backend.entity_search_requests == []
+
+
+def test_scoped_search_routes_return_typed_results() -> None:
+    # Given: the backend has scoped long-term records for all search surfaces.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator searches entities, facts, and preferences.
+    entity_response = client.post(
+        "/v1/memory/entities/search",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(), "query": "Cartman", "limit": 5},
+    )
+    fact_response = client.post(
+        "/v1/memory/facts/search",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(), "query": "snacks", "limit": 5},
+    )
+    preference_response = client.post(
+        "/v1/memory/preferences/search",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(), "query": "concise", "category": "style"},
+    )
+
+    # Then: typed responses are returned and backend receives scoped requests.
+    assert entity_response.status_code == 200
+    assert entity_response.json()["entities"] == [
+        {
+            "id": None,
+            "name": "Cartman",
+            "type": "PERSON",
+            "subtype": None,
+            "description": None,
+            "confidence": 1.0,
+            "aliases": [],
+            "attributes": {},
+            "metadata": {},
+            "provenance": None,
+        },
+    ]
+    assert fact_response.status_code == 200
+    assert fact_response.json()["facts"] == [
+        {
+            "id": None,
+            "subject": "Cartman",
+            "predicate": "prefers",
+            "object": "snacks",
+            "confidence": 1.0,
+            "metadata": {},
+            "provenance": None,
+        },
+    ]
+    assert preference_response.status_code == 200
+    assert preference_response.json()["preferences"] == [
+        {
+            "id": None,
+            "category": "style",
+            "preference": "concise answers",
+            "context": None,
+            "confidence": 1.0,
+            "user_identifier": None,
+            "metadata": {},
+            "provenance": None,
+        },
+    ]
+    assert backend.entity_search_requests == [
+        EntitySearchRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            query="Cartman",
+            limit=5,
+        ),
+    ]
+    assert backend.fact_search_requests == [
+        FactSearchRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            query="snacks",
+            limit=5,
+        ),
+    ]
+    assert backend.preference_search_requests == [
+        PreferenceSearchRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            query="concise",
+            category="style",
+        ),
+    ]
+
+
+def test_write_routes_require_write_operator_token() -> None:
+    # Given: direct long-term writes are limited to write operators.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read-only operator attempts a fact write.
+    response = client.post(
+        "/v1/memory/facts",
+        headers=_read_operator_auth_header(),
+        json={
+            "scope": _scope_payload(),
+            "subject": "Cartman",
+            "predicate": "prefers",
+            "object": "snacks",
+        },
+    )
+
+    # Then: the wrong operator class is rejected before backend access.
+    assert response.status_code == 403
+    assert backend.fact_writes == []
+
+
+def test_scoped_write_routes_return_typed_records() -> None:
+    # Given: direct long-term write APIs are available to scoped write operators.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a write operator adds an entity, fact, and preference.
+    entity_response = client.post(
+        "/v1/memory/entities",
+        headers=_write_operator_auth_header(),
+        json={"scope": _scope_payload(), "name": "Cartman", "type": "PERSON"},
+    )
+    fact_response = client.post(
+        "/v1/memory/facts",
+        headers=_write_operator_auth_header(),
+        json={
+            "scope": _scope_payload(),
+            "subject": "Cartman",
+            "predicate": "prefers",
+            "object": "snacks",
+            "confidence": 0.8,
+        },
+    )
+    preference_response = client.post(
+        "/v1/memory/preferences",
+        headers=_write_operator_auth_header(),
+        json={
+            "scope": _scope_payload(),
+            "category": "style",
+            "preference": "concise answers",
+        },
+    )
+
+    # Then: each route returns a typed record and records the scoped write request.
+    assert entity_response.status_code == 200
+    assert entity_response.json() == {
+        "id": None,
+        "name": "Cartman",
+        "type": "PERSON",
+        "subtype": None,
+        "description": None,
+        "confidence": 1.0,
+        "aliases": [],
+        "attributes": {},
+        "metadata": {},
+        "provenance": None,
+    }
+    assert fact_response.status_code == 200
+    assert fact_response.json() == {
+        "id": None,
+        "subject": "Cartman",
+        "predicate": "prefers",
+        "object": "snacks",
+        "confidence": 0.8,
+        "metadata": {},
+        "provenance": None,
+    }
+    assert preference_response.status_code == 200
+    assert preference_response.json() == {
+        "id": None,
+        "category": "style",
+        "preference": "concise answers",
+        "context": None,
+        "confidence": 1.0,
+        "user_identifier": None,
+        "metadata": {},
+        "provenance": None,
+    }
+    assert backend.entity_writes == [
+        EntityWriteRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            name="Cartman",
+            type="PERSON",
+        ),
+    ]
+    assert backend.fact_writes == [
+        FactWriteRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            subject="Cartman",
+            predicate="prefers",
+            object="snacks",
+            confidence=0.8,
+        ),
+    ]
+    assert backend.preference_writes == [
+        PreferenceWriteRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            category="style",
+            preference="concise answers",
+        ),
+    ]
+
+
 def test_skill_endpoints_when_requests_are_scoped() -> None:
     # Given: an app with a fake skill-capable backend.
     backend = RecordingBackend()
@@ -863,6 +2038,157 @@ def test_reasoning_context_rejects_unknown_fields() -> None:
     assert backend.reasoning_context_requests == []
 
 
+def test_reasoning_trace_reads_require_read_operator_token() -> None:
+    # Given: reasoning trace reads expose operator diagnostics only.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a normal bearer token attempts to list reasoning traces.
+    response = client.post(
+        "/v1/reasoning/traces/list",
+        headers=_auth_header(),
+        json={"scope": _scope_payload()},
+    )
+
+    # Then: the wrong token class is rejected before backend access.
+    assert response.status_code == 403
+    assert backend.reasoning_trace_list_requests == []
+
+
+def test_reasoning_trace_reads_reject_scope_outside_policy() -> None:
+    # Given: a read operator token scoped to the configured tenant.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the operator requests another tenant's reasoning traces.
+    response = client.post(
+        "/v1/reasoning/traces/list",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(tenant_id="evil-corp")},
+    )
+
+    # Then: tenant policy rejects the request before backend access.
+    assert response.status_code == 403
+    assert backend.reasoning_trace_list_requests == []
+
+
+def test_reasoning_trace_list_returns_operator_read_contract() -> None:
+    # Given: the backend has scoped trace summaries.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator lists traces.
+    response = client.post(
+        "/v1/reasoning/traces/list",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(), "success_only": True, "limit": 10},
+    )
+
+    # Then: typed summaries are returned and the request is recorded.
+    assert response.status_code == 200
+    assert response.json()["traces"] == [
+        {
+            "trace_id": "trace-1",
+            "session_id": "guild:123:channel:456",
+            "task": "discord_reply",
+            "outcome": None,
+            "success": True,
+            "started_at": None,
+            "completed_at": None,
+            "metadata": {"channel_id": "456"},
+        },
+    ]
+    assert backend.reasoning_trace_list_requests == [
+        ReasoningTraceListRequest.model_validate(
+            {"scope": _scope_payload(), "success_only": True, "limit": 10},
+        ),
+    ]
+
+
+def test_reasoning_trace_detail_rejects_path_body_mismatch() -> None:
+    # Given: trace detail reads require path/body consistency.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the path trace id differs from the typed body.
+    response = client.post(
+        "/v1/reasoning/traces/other-trace/detail",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(), "trace_id": "trace-1"},
+    )
+
+    # Then: the request is rejected before backend access.
+    assert response.status_code == 400
+    assert backend.reasoning_trace_detail_requests == []
+
+
+def test_reasoning_trace_detail_returns_steps_without_hidden_thoughts() -> None:
+    # Given: the backend response contains only public reasoning step fields.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator requests trace detail.
+    response = client.post(
+        "/v1/reasoning/traces/trace-1/detail",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(), "trace_id": "trace-1"},
+    )
+
+    # Then: steps are exposed without chain-of-thought or embeddings.
+    assert response.status_code == 200
+    payload = _JSON_OBJECT_ADAPTER.validate_python(response.json())
+    trace = _JSON_OBJECT_ADAPTER.validate_python(payload["trace"])
+    steps = _JSON_OBJECTS_ADAPTER.validate_python(payload["steps"])
+    assert trace["trace_id"] == "trace-1"
+    assert steps == [
+        {
+            "step_id": "step-1",
+            "trace_id": "trace-1",
+            "step_number": 1,
+            "action": "get_memory_context",
+            "observation": "combined memory returned",
+            "tool_calls": [],
+            "metadata": {"safe": "kept"},
+        },
+    ]
+    assert "thought" not in str(payload).casefold()
+    assert "embedding" not in str(payload).casefold()
+
+
+def test_reasoning_similarity_search_and_stats_use_read_operator() -> None:
+    # Given: the backend has read-operator reasoning search/stat surfaces.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a read operator calls the search and stats routes.
+    similar = client.post(
+        "/v1/reasoning/traces/similar",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(), "task": "discord reply"},
+    )
+    steps = client.post(
+        "/v1/reasoning/steps/search",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(), "query": "lookup"},
+    )
+    stats = client.post(
+        "/v1/reasoning/tools/stats",
+        headers=_read_operator_auth_header(),
+        json={"scope": _scope_payload(), "tool_name": "memory.get_context"},
+    )
+
+    # Then: each route returns its typed operator read response.
+    assert similar.status_code == 200
+    assert similar.json()["traces"][0]["trace_id"] == "trace-1"
+    assert steps.status_code == 200
+    assert steps.json()["steps"][0]["step_id"] == "step-1"
+    assert stats.status_code == 200
+    assert stats.json()["tools"][0]["name"] == "memory.get_context"
+    assert backend.reasoning_similar_trace_requests[0].task == "discord reply"
+    assert backend.reasoning_step_search_requests[0].query == "lookup"
+    assert backend.reasoning_tool_stats_requests[0].tool_name == "memory.get_context"
+
+
 def test_get_context_when_request_is_scoped() -> None:
     # Given: an app with a fake memory backend.
     backend = RecordingBackend(context="remembered facts")
@@ -1029,7 +2355,7 @@ async def test_neo4j_backend_memory_context_dedupes_graph_facts() -> None:
         ],
     )
     backend = Neo4jAgentMemoryBackend(
-        _settings(),
+        Settings(memory_prompt_entities_enabled=True),
         memory_client_factory=MemoryClientFactory(fake_client),
         graph_store=graph_store,
     )
@@ -1168,11 +2494,13 @@ def test_reasoning_models_reject_unknown_chain_of_thought_field() -> None:
         "chain_of_thought": "private internal reasoning",
     }
     step_payload = {
+        "scope": _scope_payload(),
         "trace_id": "trace-1",
         "thought": "private internal reasoning",
         "chain_of_thought": "private internal reasoning",
     }
     tool_call_payload = {
+        "scope": _scope_payload(),
         "trace_id": "trace-1",
         "step_id": "step-1",
         "tool_name": "memory.get_context",
@@ -1206,6 +2534,7 @@ def test_reasoning_lifecycle_models_serialize_stable_ids() -> None:
     )
     step_request = ReasoningStepRequest.model_validate(
         {
+            "scope": _scope_payload(),
             "trace_id": "trace-1",
             "step_number": 1,
             "action": "get_memory_context",
@@ -1221,6 +2550,7 @@ def test_reasoning_lifecycle_models_serialize_stable_ids() -> None:
     )
     tool_call_request = ReasoningToolCallRequest.model_validate(
         {
+            "scope": _scope_payload(),
             "trace_id": "trace-1",
             "step_id": "step-1",
             "tool_name": "memory.get_context",
@@ -1240,6 +2570,7 @@ def test_reasoning_lifecycle_models_serialize_stable_ids() -> None:
     )
     complete_request = ReasoningTraceCompleteRequest.model_validate(
         {
+            "scope": _scope_payload(),
             "trace_id": "trace-1",
             "outcome": "sent reply",
             "success": True,
@@ -1279,6 +2610,7 @@ def test_reasoning_lifecycle_models_serialize_stable_ids() -> None:
         "task": "discord_reply",
     }
     assert step_request.model_dump(mode="json") == {
+        "scope": _scope_payload(),
         "trace_id": "trace-1",
         "step_number": 1,
         "action": "get_memory_context",
@@ -1291,6 +2623,7 @@ def test_reasoning_lifecycle_models_serialize_stable_ids() -> None:
         "step_number": 1,
     }
     assert tool_call_request.model_dump(mode="json") == {
+        "scope": _scope_payload(),
         "trace_id": "trace-1",
         "step_id": "step-1",
         "tool_name": "memory.get_context",
@@ -1310,6 +2643,7 @@ def test_reasoning_lifecycle_models_serialize_stable_ids() -> None:
         "step_id": "step-1",
     }
     assert complete_request.model_dump(mode="json") == {
+        "scope": _scope_payload(),
         "trace_id": "trace-1",
         "outcome": "sent reply",
         "success": True,
@@ -1374,12 +2708,216 @@ class RecordingBackend:
     reasoning_context: ReasoningContextResponse = field(
         default_factory=lambda: ReasoningContextResponse(context="reasoning context"),
     )
+    reasoning_trace_list: ReasoningTraceListResponse = field(
+        default_factory=lambda: ReasoningTraceListResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            traces=[
+                ReasoningTraceSummary(
+                    trace_id="trace-1",
+                    session_id="guild:123:channel:456",
+                    task="discord_reply",
+                    success=True,
+                    metadata={"channel_id": "456"},
+                ),
+            ],
+        ),
+    )
+    reasoning_trace_detail: ReasoningTraceDetailResponse = field(
+        default_factory=lambda: ReasoningTraceDetailResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            trace=ReasoningTraceSummary(
+                trace_id="trace-1",
+                session_id="guild:123:channel:456",
+                task="discord_reply",
+                success=True,
+            ),
+            steps=[
+                ReasoningStepRecord(
+                    step_id="step-1",
+                    trace_id="trace-1",
+                    step_number=1,
+                    action="get_memory_context",
+                    observation="combined memory returned",
+                    metadata={"safe": "kept"},
+                ),
+            ],
+        ),
+    )
+    reasoning_similar_traces: ReasoningSimilarTracesResponse = field(
+        default_factory=lambda: ReasoningSimilarTracesResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            traces=[
+                ReasoningTraceSummary(
+                    trace_id="trace-1",
+                    session_id="guild:123:channel:456",
+                    task="discord_reply",
+                ),
+            ],
+        ),
+    )
+    reasoning_step_search: ReasoningStepSearchResponse = field(
+        default_factory=lambda: ReasoningStepSearchResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            steps=[
+                ReasoningStepRecord(
+                    step_id="step-1",
+                    trace_id="trace-1",
+                    step_number=1,
+                    action="lookup",
+                    observation="found relevant context",
+                ),
+            ],
+        ),
+    )
+    reasoning_tool_stats: ReasoningToolStatsResponse = field(
+        default_factory=lambda: ReasoningToolStatsResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            tools=[
+                ReasoningToolStatsRecord(
+                    name="memory.get_context",
+                    total_calls=3,
+                    successful_calls=2,
+                    failed_calls=1,
+                    success_rate=0.67,
+                ),
+            ],
+        ),
+    )
+    sdk_stats: SdkStatsResponse = field(
+        default_factory=lambda: SdkStatsResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            stats={"nodes": 0},
+        ),
+    )
+    dedup_stats: DedupStatsResponse = field(
+        default_factory=lambda: DedupStatsResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            stats={"pending_reviews": 0},
+        ),
+    )
+    dedup_candidates: DedupCandidateResponse = field(
+        default_factory=lambda: DedupCandidateResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            candidates=[
+                DedupCandidate(
+                    candidate_id="dedup-1",
+                    version=1,
+                    source=DedupEntitySnapshot(
+                        id="00000000-0000-0000-0000-000000000001",
+                        name="Cartman",
+                        type="PERSON",
+                        metadata={"api_key": "[REDACTED]"},
+                    ),
+                    target=DedupEntitySnapshot(
+                        id="00000000-0000-0000-0000-000000000002",
+                        name="Eric Cartman",
+                        type="PERSON",
+                    ),
+                    similarity=0.94,
+                    reject_dry_run_token="reject-token",  # noqa: S106
+                    merge_dry_run_token="merge-token",  # noqa: S106
+                ),
+            ],
+            graph_snapshot_hash="snapshot-1",
+            expires_at="2026-06-29T00:15:00+00:00",
+        ),
+    )
+    dedup_apply: DedupApplyResponse = field(
+        default_factory=lambda: DedupApplyResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            operation="reject",
+            candidate_id="dedup-1",
+            candidate_version=1,
+            applied=True,
+            result={"rejected": True},
+            audit=DedupOperatorAudit(operator_id="admin-1", reason="not duplicate"),
+        ),
+    )
+    consolidation_dry_run: ConsolidationDryRunResponse = field(
+        default_factory=lambda: ConsolidationDryRunResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            operation="dedupe_entities",
+            dry_run=True,
+            report={"kind": "dedupe_entities", "token": "[REDACTED]"},
+            graph_snapshot_hash="consolidation-snapshot-1",
+            dry_run_token="consolidation-token",  # noqa: S106
+            expires_at="2026-06-29T00:15:00+00:00",
+        ),
+    )
+    consolidation_apply: ConsolidationApplyResponse = field(
+        default_factory=lambda: ConsolidationApplyResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            operation="dedupe_entities",
+            applied=True,
+            result={"merged": 2},
+            audit=DedupOperatorAudit(operator_id="admin-1", reason="reviewed"),
+        ),
+    )
+    graph_export: GraphExportResponse = field(
+        default_factory=lambda: GraphExportResponse(
+            scope=MemoryScope.model_validate(_scope_payload()),
+        ),
+    )
+    buffer_flush: BufferFlushResponse = field(
+        default_factory=lambda: BufferFlushResponse(
+            flushed=True,
+            status=BufferStatus(
+                write_mode="sync",
+                max_pending=200,
+                pending_writes=None,
+                write_errors=0,
+                status="ready",
+            ),
+        ),
+    )
+    entity_search: EntitySearchResponse = field(
+        default_factory=lambda: EntitySearchResponse(
+            entities=[EntityRecord(name="Cartman", type="PERSON")],
+        ),
+    )
+    fact_search: FactSearchResponse = field(
+        default_factory=lambda: FactSearchResponse(
+            facts=[
+                FactRecord(
+                    subject="Cartman",
+                    predicate="prefers",
+                    object="snacks",
+                ),
+            ],
+        ),
+    )
+    preference_search: PreferenceSearchResponse = field(
+        default_factory=lambda: PreferenceSearchResponse(
+            preferences=[
+                PreferenceRecord(category="style", preference="concise answers"),
+            ],
+        ),
+    )
     backend_available: bool = True
     messages: list[MessageWriteRequest] = field(default_factory=list)
     context_requests: list[ContextRequest] = field(default_factory=list)
     memory_context_requests: list[MemoryContextRequest] = field(default_factory=list)
     events: list[ClientEvent] = field(default_factory=list)
     graph_context_requests: list[GraphContextRequest] = field(default_factory=list)
+    sdk_stats_requests: list[SdkStatsRequest] = field(default_factory=list)
+    dedup_stats_requests: list[DedupStatsRequest] = field(default_factory=list)
+    dedup_candidate_requests: list[DedupCandidateRequest] = field(default_factory=list)
+    dedup_apply_requests: list[DedupApplyRequest] = field(default_factory=list)
+    consolidation_dry_run_requests: list[ConsolidationDryRunRequest] = field(
+        default_factory=list,
+    )
+    consolidation_apply_requests: list[ConsolidationApplyRequest] = field(
+        default_factory=list,
+    )
+    graph_export_requests: list[GraphExportRequest] = field(default_factory=list)
+    entity_search_requests: list[EntitySearchRequest] = field(default_factory=list)
+    fact_search_requests: list[FactSearchRequest] = field(default_factory=list)
+    preference_search_requests: list[PreferenceSearchRequest] = field(
+        default_factory=list,
+    )
+    entity_writes: list[EntityWriteRequest] = field(default_factory=list)
+    fact_writes: list[FactWriteRequest] = field(default_factory=list)
+    preference_writes: list[PreferenceWriteRequest] = field(default_factory=list)
     trace_starts: list[ReasoningTraceStartRequest] = field(default_factory=list)
     steps: list[ReasoningStepRequest] = field(default_factory=list)
     tool_calls: list[ReasoningToolCallRequest] = field(default_factory=list)
@@ -1387,10 +2925,32 @@ class RecordingBackend:
     reasoning_context_requests: list[ReasoningContextRequest] = field(
         default_factory=list,
     )
+    reasoning_trace_list_requests: list[ReasoningTraceListRequest] = field(
+        default_factory=list,
+    )
+    reasoning_trace_detail_requests: list[ReasoningTraceDetailRequest] = field(
+        default_factory=list,
+    )
+    reasoning_similar_trace_requests: list[ReasoningSimilarTracesRequest] = field(
+        default_factory=list,
+    )
+    reasoning_step_search_requests: list[ReasoningStepSearchRequest] = field(
+        default_factory=list,
+    )
+    reasoning_tool_stats_requests: list[ReasoningToolStatsRequest] = field(
+        default_factory=list,
+    )
+    preview_requests: list[ExtractionPreviewRequest] = field(default_factory=list)
+    preview_error: BackendRequestError | None = None
+    dedup_apply_error: BackendRequestError | None = None
+    consolidation_apply_error: BackendRequestError | None = None
+    graph_export_error: BackendCapabilityUnavailable | None = None
     duplicate_event_ids: set[str] = field(default_factory=set)
     skill_usages: list[SkillUsage] = field(default_factory=list)
     skill_list_requests: list[SkillListRequest] = field(default_factory=list)
     skill_proposals: list[SkillProposal] = field(default_factory=list)
+    buffer_flushes: int = 0
+    shutdowns: int = 0
     readiness_checks: int = 0
 
     async def readiness(self) -> BackendReadiness:
@@ -1399,9 +2959,20 @@ class RecordingBackend:
             return BackendReadiness(graph="ready", schema="ready")
         return BackendReadiness(graph="unavailable", schema="unavailable")
 
+    async def buffer_status(self) -> BufferStatus:
+        return self.buffer_flush.status
+
+    async def flush_buffer(self) -> BufferFlushResponse:
+        self.buffer_flushes += 1
+        return self.buffer_flush
+
+    async def shutdown(self) -> None:
+        self.shutdowns += 1
+
     def diagnostics(self, readiness: BackendReadiness) -> DiagnosticsResponse:
+        settings = Settings()
         return DiagnosticsResponse(
-            tenant_id="bromigos",
+            tenant_id=settings.agents_memory_tenant_id,
             config=DiagnosticsConfig(
                 neo4j_uri="bolt://neo4j.neo4j.svc.cluster.local:7687",
                 neo4j_username="neo4j",
@@ -1409,6 +2980,47 @@ class RecordingBackend:
                 memory_llm="openai/gemma4",
                 memory_embedding="local-qwen3-embedding-0.6b",
                 memory_embedding_dimensions=1024,
+                memory_audit_read=settings.memory_audit_read,
+                memory_conversation_ttl_days=settings.memory_conversation_ttl_days,
+                memory_write_mode=settings.memory_write_mode,
+                memory_max_pending=settings.memory_max_pending,
+                memory_fact_deduplication_enabled=(
+                    settings.memory_fact_deduplication_enabled
+                ),
+                memory_trace_embedding_enabled=settings.memory_trace_embedding_enabled,
+                memory_extract_entities_enabled=(
+                    settings.memory_extract_entities_enabled
+                ),
+                memory_extract_relations_enabled=(
+                    settings.memory_extract_relations_enabled
+                ),
+                memory_extraction_preview_enabled=(
+                    settings.memory_extraction_preview_enabled
+                ),
+                memory_extraction_batch_size=settings.memory_extraction_batch_size,
+                memory_extraction_max_concurrency=(
+                    settings.memory_extraction_max_concurrency
+                ),
+                memory_extraction_chunk_size=settings.memory_extraction_chunk_size,
+                memory_extraction_chunk_overlap=(
+                    settings.memory_extraction_chunk_overlap
+                ),
+                memory_ocr_enabled=settings.memory_ocr_enabled,
+                memory_ocr_model=settings.memory_ocr_model,
+                memory_ocr_max_image_bytes=settings.memory_ocr_max_image_bytes,
+                memory_rustfs_enabled=settings.memory_rustfs_enabled,
+                memory_rustfs_bucket=settings.memory_rustfs_bucket,
+                memory_rustfs_prefix=settings.memory_rustfs_prefix,
+                memory_rustfs_endpoint=settings.memory_rustfs_endpoint,
+                memory_rustfs_retention_days=settings.memory_rustfs_retention_days,
+                memory_prompt_entities_enabled=settings.memory_prompt_entities_enabled,
+                memory_prompt_preferences_enabled=(
+                    settings.memory_prompt_preferences_enabled
+                ),
+                memory_prompt_reasoning_enabled=settings.memory_prompt_reasoning_enabled,
+                memory_consolidation_schedule_enabled=(
+                    settings.memory_consolidation_schedule_enabled
+                ),
             ),
             backend=readiness,
         )
@@ -1416,6 +3028,40 @@ class RecordingBackend:
     async def add_message(self, request: MessageWriteRequest) -> MessageWriteResponse:
         self.messages.append(request)
         return MessageWriteResponse(accepted=True)
+
+    async def preview_extraction(
+        self,
+        request: ExtractionPreviewRequest,
+    ) -> ExtractionPreviewResponse:
+        self.preview_requests.append(request)
+        if self.preview_error is not None:
+            raise self.preview_error
+        return ExtractionPreviewResponse(
+            candidates=[
+                ExtractionCandidate(
+                    kind="text_chunk",
+                    text=request.raw_text_documents[0].text,
+                    source_id=request.raw_text_documents[0].source_id,
+                    confidence=1.0,
+                ),
+            ],
+            metrics=ExtractionPreviewMetrics(
+                documents=len(request.raw_text_documents),
+                chunks=len(request.raw_text_documents),
+                ocr_images=len(request.ocr_image_references),
+                rustfs_objects=len(request.rustfs_source_references),
+                batch_size=25,
+                max_concurrency=1,
+            ),
+            provenance=ExtractionPreviewProvenance(
+                source_ids=[
+                    document.source_id for document in request.raw_text_documents
+                ],
+                rustfs_objects=request.rustfs_source_references,
+            ),
+            extract_entities=request.extract_entities is True,
+            extract_relations=request.extract_relations is True,
+        )
 
     async def get_context(self, request: ContextRequest) -> ContextResponse:
         self.context_requests.append(request)
@@ -1453,6 +3099,113 @@ class RecordingBackend:
     ) -> GraphContextResponse:
         self.graph_context_requests.append(request)
         return GraphContextResponse(context=self.context)
+
+    async def get_sdk_stats(self, request: SdkStatsRequest) -> SdkStatsResponse:
+        self.sdk_stats_requests.append(request)
+        return self.sdk_stats.model_copy(update={"scope": request.scope})
+
+    async def get_dedup_stats(
+        self,
+        request: DedupStatsRequest,
+    ) -> DedupStatsResponse:
+        self.dedup_stats_requests.append(request)
+        return self.dedup_stats
+
+    async def find_dedup_candidates(
+        self,
+        request: DedupCandidateRequest,
+    ) -> DedupCandidateResponse:
+        self.dedup_candidate_requests.append(request)
+        return self.dedup_candidates
+
+    async def apply_dedup_candidate(
+        self,
+        request: DedupApplyRequest,
+    ) -> DedupApplyResponse:
+        self.dedup_apply_requests.append(request)
+        if self.dedup_apply_error is not None:
+            raise self.dedup_apply_error
+        return self.dedup_apply
+
+    async def dry_run_consolidation(
+        self,
+        request: ConsolidationDryRunRequest,
+    ) -> ConsolidationDryRunResponse:
+        self.consolidation_dry_run_requests.append(request)
+        return self.consolidation_dry_run
+
+    async def apply_consolidation(
+        self,
+        request: ConsolidationApplyRequest,
+    ) -> ConsolidationApplyResponse:
+        self.consolidation_apply_requests.append(request)
+        if self.consolidation_apply_error is not None:
+            raise self.consolidation_apply_error
+        return self.consolidation_apply
+
+    async def export_graph(self, request: GraphExportRequest) -> GraphExportResponse:
+        self.graph_export_requests.append(request)
+        if self.graph_export_error is not None:
+            raise self.graph_export_error
+        return self.graph_export
+
+    async def search_entities(
+        self,
+        request: EntitySearchRequest,
+    ) -> EntitySearchResponse:
+        self.entity_search_requests.append(request)
+        return self.entity_search
+
+    async def search_facts(self, request: FactSearchRequest) -> FactSearchResponse:
+        self.fact_search_requests.append(request)
+        return self.fact_search
+
+    async def search_preferences(
+        self,
+        request: PreferenceSearchRequest,
+    ) -> PreferenceSearchResponse:
+        self.preference_search_requests.append(request)
+        return self.preference_search
+
+    async def add_entity(self, request: EntityWriteRequest) -> EntityRecord:
+        self.entity_writes.append(request)
+        return EntityRecord(
+            name=request.name,
+            type=request.type,
+            subtype=request.subtype,
+            description=request.description,
+            confidence=request.confidence,
+            aliases=request.aliases,
+            attributes=request.attributes,
+            metadata=request.metadata,
+            provenance=request.provenance,
+        )
+
+    async def add_fact(self, request: FactWriteRequest) -> FactRecord:
+        self.fact_writes.append(request)
+        return FactRecord(
+            subject=request.subject,
+            predicate=request.predicate,
+            object=request.object,
+            confidence=request.confidence,
+            metadata=request.metadata,
+            provenance=request.provenance,
+        )
+
+    async def add_preference(
+        self,
+        request: PreferenceWriteRequest,
+    ) -> PreferenceRecord:
+        self.preference_writes.append(request)
+        return PreferenceRecord(
+            category=request.category,
+            preference=request.preference,
+            context=request.context,
+            confidence=request.confidence,
+            user_identifier=request.user_identifier,
+            metadata=request.metadata,
+            provenance=request.provenance,
+        )
 
     async def list_skills(self, request: SkillListRequest) -> SkillListResponse:
         self.skill_list_requests.append(request)
@@ -1533,16 +3286,53 @@ class RecordingBackend:
         self.reasoning_context_requests.append(request)
         return self.reasoning_context
 
+    async def list_reasoning_traces(
+        self,
+        request: ReasoningTraceListRequest,
+    ) -> ReasoningTraceListResponse:
+        self.reasoning_trace_list_requests.append(request)
+        return self.reasoning_trace_list
+
+    async def get_reasoning_trace(
+        self,
+        request: ReasoningTraceDetailRequest,
+    ) -> ReasoningTraceDetailResponse:
+        self.reasoning_trace_detail_requests.append(request)
+        return self.reasoning_trace_detail
+
+    async def find_similar_reasoning_traces(
+        self,
+        request: ReasoningSimilarTracesRequest,
+    ) -> ReasoningSimilarTracesResponse:
+        self.reasoning_similar_trace_requests.append(request)
+        return self.reasoning_similar_traces
+
+    async def search_reasoning_steps(
+        self,
+        request: ReasoningStepSearchRequest,
+    ) -> ReasoningStepSearchResponse:
+        self.reasoning_step_search_requests.append(request)
+        return self.reasoning_step_search
+
+    async def get_reasoning_tool_stats(
+        self,
+        request: ReasoningToolStatsRequest,
+    ) -> ReasoningToolStatsResponse:
+        self.reasoning_tool_stats_requests.append(request)
+        return self.reasoning_tool_stats
+
 
 @dataclass(frozen=True, slots=True)
 class ShortTermWrite:
     user_identifier: str
     metadata: dict[str, str]
+    extract_entities: bool
+    extract_relations: bool
 
 
 @dataclass(frozen=True, slots=True)
 class LongTermFactWrite:
-    metadata: dict[str, str]
+    metadata: JsonObject
     generate_embedding: bool
 
 
@@ -1570,7 +3360,12 @@ class RecordingShortTermMemory:
     ) -> None:
         _ = (session_id, role, content, extract_entities, extract_relations)
         self.messages.append(
-            ShortTermWrite(user_identifier=user_identifier, metadata=metadata),
+            ShortTermWrite(
+                user_identifier=user_identifier,
+                metadata=metadata,
+                extract_entities=extract_entities,
+                extract_relations=extract_relations,
+            ),
         )
 
     async def get_context(
@@ -1594,22 +3389,160 @@ class RecordingLongTermMemory:
     context_queries: list[str] = field(default_factory=list)
     context: str = "unscoped long-term context"
 
-    async def add_fact(
+    async def search_entities(
+        self,
+        query: str,
+        *,
+        entity_types: list[EntityType | str] | None = None,
+        limit: int = 10,
+        threshold: float = 0.7,
+    ) -> list[EntityRecord]:
+        _ = (query, entity_types, limit, threshold)
+        return []
+
+    async def search_facts(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        threshold: float = 0.7,
+    ) -> list[FactRecord]:
+        _ = (query, limit, threshold)
+        return []
+
+    async def search_preferences(
+        self,
+        query: str,
+        *,
+        category: str | None = None,
+        limit: int = 10,
+        threshold: float = 0.7,
+    ) -> list[PreferenceRecord]:
+        _ = (query, category, limit, threshold)
+        return []
+
+    async def add_entity(  # noqa: PLR0913 - Mirrors neo4j-agent-memory SDK API.
+        self,
+        name: str,
+        entity_type: EntityType | str,
+        *,
+        subtype: str | None = None,
+        description: str | None = None,
+        aliases: list[str] | None = None,
+        attributes: JsonObject | None = None,
+        resolve: bool = True,
+        generate_embedding: bool = True,
+        deduplicate: bool = True,
+        geocode: bool = True,
+        enrich: bool = True,
+        coordinates: tuple[float, float] | None = None,
+        metadata: JsonObject | None = None,
+    ) -> EntityRecord:
+        _ = (
+            name,
+            entity_type,
+            subtype,
+            description,
+            aliases,
+            attributes,
+            resolve,
+            generate_embedding,
+            deduplicate,
+            geocode,
+            enrich,
+            coordinates,
+            metadata,
+        )
+        return EntityRecord(name=name, type=str(entity_type))
+
+    async def add_fact(  # noqa: PLR0913 - Mirrors neo4j-agent-memory SDK API.
         self,
         subject: str,
         predicate: str,
         obj: str,
         *,
-        metadata: dict[str, str],
-        generate_embedding: bool,
-    ) -> None:
-        _ = (subject, predicate, obj)
+        confidence: float = 1.0,
+        valid_from: datetime | None = None,
+        valid_until: datetime | None = None,
+        generate_embedding: bool = True,
+        metadata: JsonObject | None = None,
+    ) -> FactRecord:
+        _ = (subject, predicate, obj, confidence, valid_from, valid_until)
         self.facts.append(
             LongTermFactWrite(
-                metadata=metadata,
+                metadata=metadata or {},
                 generate_embedding=generate_embedding,
             ),
         )
+        return FactRecord(subject=subject, predicate=predicate, object=obj)
+
+    async def add_preference(  # noqa: PLR0913 - Mirrors SDK API.
+        self,
+        category: str,
+        preference: str,
+        *,
+        context: str | None = None,
+        confidence: float = 1.0,
+        generate_embedding: bool = True,
+        metadata: JsonObject | None = None,
+        user_identifier: str | None = None,
+        applies_to: object | None = None,
+    ) -> PreferenceRecord:
+        _ = (
+            category,
+            preference,
+            context,
+            confidence,
+            generate_embedding,
+            metadata,
+            user_identifier,
+            applies_to,
+        )
+        return PreferenceRecord(category=category, preference=preference)
+
+    async def get_preferences_for(
+        self,
+        user_identifier: str,
+        *,
+        applies_to: object | None = None,
+        active_only: bool = True,
+        as_of: datetime | None = None,
+    ) -> list[PreferenceRecord]:
+        _ = (user_identifier, applies_to, active_only, as_of)
+        return []
+
+    async def get_facts_about(
+        self,
+        subject: str,
+        *,
+        limit: int = 100,
+    ) -> list[FactRecord]:
+        _ = (subject, limit)
+        return []
+
+    async def link_entity_to_message(  # noqa: PLR0913 - Mirrors SDK API.
+        self,
+        entity: EntityRecord | UUID,
+        message_id: UUID | str,
+        *,
+        confidence: float = 1.0,
+        start_pos: int | None = None,
+        end_pos: int | None = None,
+        context: str | None = None,
+    ) -> bool:
+        _ = (entity, message_id, confidence, start_pos, end_pos, context)
+        return True
+
+    async def link_entity_to_extractor(
+        self,
+        entity: EntityRecord | UUID,
+        extractor_name: str,
+        *,
+        confidence: float = 1.0,
+        extraction_time_ms: float | None = None,
+    ) -> bool:
+        _ = (entity, extractor_name, confidence, extraction_time_ms)
+        return True
 
     async def get_context(self, query: str, *, max_items: int) -> str:
         _ = max_items
@@ -1693,6 +3626,51 @@ class RecordingReasoningMemory:
             success=success,
         )
 
+    async def list_traces(
+        self,
+        *,
+        session_id: str | None = None,
+        success_only: bool | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[SdkReasoningTrace]:
+        _ = (session_id, success_only, limit, offset)
+        return []
+
+    async def get_trace(self, trace_id: UUID | str) -> SdkReasoningTrace | None:
+        _ = trace_id
+        return None
+
+    async def get_trace_with_steps(self, trace_id: UUID) -> SdkReasoningTrace | None:
+        _ = trace_id
+        return None
+
+    async def get_similar_traces(
+        self,
+        task: str,
+        *,
+        limit: int = 5,
+        success_only: bool = True,
+        threshold: float = 0.7,
+    ) -> list[SdkReasoningTrace]:
+        _ = (task, limit, success_only, threshold)
+        return []
+
+    async def search_steps(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        success_only: bool = True,
+        threshold: float = 0.7,
+    ) -> list[object]:
+        _ = (query, limit, success_only, threshold)
+        return []
+
+    async def get_tool_stats(self, tool_name: str | None = None) -> list[ToolStats]:
+        _ = tool_name
+        return []
+
 
 @dataclass(frozen=True, slots=True)
 class CypherCall:
@@ -1775,8 +3753,28 @@ def _settings() -> Settings:
     return Settings()
 
 
+def _json_object(value: object) -> JsonObject:
+    return _JSON_OBJECT_ADAPTER.validate_python(value)
+
+
 def _auth_header() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
+
+
+def _read_operator_auth_header() -> dict[str, str]:
+    return {"Authorization": "Bearer read-operator-token"}
+
+
+def _write_operator_auth_header() -> dict[str, str]:
+    return {"Authorization": "Bearer write-operator-token"}
+
+
+def _export_operator_auth_header() -> dict[str, str]:
+    return {"Authorization": "Bearer export-operator-token"}
+
+
+def _admin_operator_auth_header() -> dict[str, str]:
+    return {"Authorization": "Bearer admin-operator-token"}
 
 
 def _protected_post_endpoint_payloads() -> list[tuple[str, dict[str, object]]]:
@@ -1785,6 +3783,7 @@ def _protected_post_endpoint_payloads() -> list[tuple[str, dict[str, object]]]:
             "/v1/messages",
             {"scope": _scope_payload(), "role": "user", "content": "remember this"},
         ),
+        ("/v1/memory/extraction/preview", _extraction_preview_payload()),
         ("/v1/events", _client_event_payload()),
         ("/v1/events/batch", {"events": [_client_event_payload()]}),
         ("/v1/context", {"scope": _scope_payload(), "query": "what matters?"}),
@@ -1796,6 +3795,10 @@ def _protected_post_endpoint_payloads() -> list[tuple[str, dict[str, object]]]:
             "/v1/graph/context",
             {"scope": _scope_payload(), "query": "what matters?"},
         ),
+        ("/v1/sdk/stats", {"scope": _scope_payload()}),
+        ("/v1/memory/consolidation/dry-run", _consolidation_dry_run_payload()),
+        ("/v1/memory/consolidation/apply", _consolidation_apply_payload()),
+        ("/v1/memory/graph/export", {"scope": _scope_payload(), "limit": 10}),
         ("/v1/skills", {"tenant_id": "bromigos", "agent_id": "pc-principal"}),
         ("/v1/skills/proposals", _skill_proposal_payload()),
         ("/v1/skills/usage", _skill_usage_payload()),
@@ -1809,11 +3812,16 @@ def _protected_post_endpoint_payloads() -> list[tuple[str, dict[str, object]]]:
         ),
         (
             "/v1/reasoning/traces/trace-1/steps",
-            {"trace_id": "trace-1", "action": "get_memory_context"},
+            {
+                "scope": _scope_payload(),
+                "trace_id": "trace-1",
+                "action": "get_memory_context",
+            },
         ),
         (
             "/v1/reasoning/steps/step-1/tool-calls",
             {
+                "scope": _scope_payload(),
                 "trace_id": "trace-1",
                 "step_id": "step-1",
                 "tool_name": "memory.get_context",
@@ -1822,7 +3830,7 @@ def _protected_post_endpoint_payloads() -> list[tuple[str, dict[str, object]]]:
         ),
         (
             "/v1/reasoning/traces/trace-1/complete",
-            {"trace_id": "trace-1", "success": True},
+            {"scope": _scope_payload(), "trace_id": "trace-1", "success": True},
         ),
         (
             "/v1/reasoning/context",
@@ -1853,6 +3861,17 @@ def _scope_payload(
     return payload
 
 
+def _tenant_scope_payload() -> dict[str, str]:
+    return {
+        "tenant_id": "bromigos",
+        "space_id": "tenant",
+        "agent_id": "operator",
+        "session_id": "tenant:bromigos",
+        "user_id": "operator",
+        "visibility": "tenant",
+    }
+
+
 def _message_payload(
     *,
     scope: dict[str, str] | None = None,
@@ -1861,6 +3880,62 @@ def _message_payload(
         "scope": scope or _scope_payload(),
         "role": "user",
         "content": "remember this",
+    }
+
+
+def _dedup_apply_payload() -> dict[str, object]:
+    return {
+        "scope": _scope_payload(),
+        "apply": True,
+        "operation": "reject",
+        "candidate_id": "dedup-1",
+        "candidate_version": 1,
+        "graph_snapshot_hash": "snapshot-1",
+        "dry_run_token": "reject-token",
+        "idempotency_key": "dedup-apply-1",
+        "audit": {"operator_id": "admin-1", "reason": "not duplicate"},
+    }
+
+
+def _consolidation_dry_run_payload(
+    *,
+    scope: dict[str, str] | None = None,
+) -> dict[str, object]:
+    return {
+        "scope": scope or _scope_payload(),
+        "operation": "dedupe_entities",
+        "similarity_threshold": 0.91,
+        "max_pairs": 25,
+    }
+
+
+def _consolidation_apply_payload() -> dict[str, object]:
+    return {
+        "scope": _scope_payload(),
+        "apply": True,
+        "operation": "dedupe_entities",
+        "graph_snapshot_hash": "consolidation-snapshot-1",
+        "dry_run_token": "consolidation-token",
+        "idempotency_key": "consolidation-apply-1",
+        "audit": {"operator_id": "admin-1", "reason": "reviewed"},
+        "similarity_threshold": 0.91,
+        "max_pairs": 25,
+    }
+
+
+def _extraction_preview_payload(
+    *,
+    scope: dict[str, str] | None = None,
+) -> dict[str, object]:
+    return {
+        "scope": scope or _scope_payload(),
+        "raw_text_documents": [
+            {
+                "source_id": "doc-1",
+                "text": "Kenny prefers concise plans.",
+            },
+        ],
+        "extract_entities": True,
     }
 
 
