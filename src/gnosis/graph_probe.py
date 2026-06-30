@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Protocol, Self, override
 
 from neo4j.exceptions import Neo4jError
 
-from agents_memory.models import (
+from gnosis.models import (
     BackendReadiness,
     ClientEvent,
     EventIngestResult,
@@ -11,7 +11,7 @@ from agents_memory.models import (
     GraphContextResponse,
     JsonValue,
 )
-from agents_memory.settings import Settings
+from gnosis.settings import Settings
 
 type CypherParameters = dict[str, JsonValue]
 type CypherRow = dict[str, JsonValue]

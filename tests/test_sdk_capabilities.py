@@ -14,8 +14,8 @@ from neo4j_agent_memory.config.settings import ExtractionConfig, SchemaConfig
 from neo4j_agent_memory.memory.short_term import ShortTermMemory
 from pydantic import SecretStr
 
-import agents_memory.backend as backend_module
-from agents_memory.settings import Settings
+import gnosis.backend as backend_module
+from gnosis.settings import Settings
 
 NON_SECRET_TOKEN = "memory-token-sentinel"
 NON_SECRET_READ_OPERATOR_TOKEN = "read-operator-token"
@@ -74,11 +74,11 @@ def test_installed_sdk_version_and_project_pin_match_plan() -> None:
 
 def test_current_backend_assumptions_match_installed_sdk() -> None:
     settings = Settings(
-        agents_memory_token=NON_SECRET_TOKEN,
-        agents_memory_read_operator_token=NON_SECRET_READ_OPERATOR_TOKEN,
-        agents_memory_export_operator_token=NON_SECRET_EXPORT_OPERATOR_TOKEN,
-        agents_memory_write_operator_token=NON_SECRET_WRITE_OPERATOR_TOKEN,
-        agents_memory_admin_operator_token=NON_SECRET_ADMIN_OPERATOR_TOKEN,
+        gnosis_token=NON_SECRET_TOKEN,
+        gnosis_read_operator_token=NON_SECRET_READ_OPERATOR_TOKEN,
+        gnosis_export_operator_token=NON_SECRET_EXPORT_OPERATOR_TOKEN,
+        gnosis_write_operator_token=NON_SECRET_WRITE_OPERATOR_TOKEN,
+        gnosis_admin_operator_token=NON_SECRET_ADMIN_OPERATOR_TOKEN,
         neo4j_uri="bolt://neo4j.local:7687",
         neo4j_password=NON_SECRET_PASSWORD,
         litellm_base_url="http://litellm.local/v1",

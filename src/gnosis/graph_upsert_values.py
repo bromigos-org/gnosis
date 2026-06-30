@@ -1,5 +1,5 @@
-from agents_memory.graph_events import PlannedGraphEvent
-from agents_memory.models import ClientEventType, JsonValue
+from gnosis.graph_events import PlannedGraphEvent
+from gnosis.models import ClientEventType, JsonValue
 
 
 def category_name(event: PlannedGraphEvent) -> str:

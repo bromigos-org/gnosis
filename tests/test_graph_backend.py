@@ -4,17 +4,17 @@ from typing import Self
 
 import pytest
 
-from agents_memory.graph_cypher import (
+from gnosis.graph_cypher import (
     upsert_parameters,
 )
-from agents_memory.graph_events import plan_event
-from agents_memory.graph_schema import GRAPH_SCHEMA_CYPHER, graph_vector_schema_cypher
-from agents_memory.graph_store import (
+from gnosis.graph_events import plan_event
+from gnosis.graph_schema import GRAPH_SCHEMA_CYPHER, graph_vector_schema_cypher
+from gnosis.graph_store import (
     DirectNeo4jGraphStore,
     InMemoryGraphExecutor,
     Neo4jGraphExecutor,
 )
-from agents_memory.models import (
+from gnosis.models import (
     ClientEvent,
     ClientEventActor,
     ClientEventSubject,

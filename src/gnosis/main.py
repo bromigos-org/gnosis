@@ -5,15 +5,15 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
-from agents_memory.auth import Authenticator, build_authenticator
-from agents_memory.backend import (
+from gnosis.auth import Authenticator, build_authenticator
+from gnosis.backend import (
     BackendCapabilityUnavailable,
     BackendRequestError,
     ExtractionPreviewBackend,
     MemoryBackend,
     Neo4jAgentMemoryBackend,
 )
-from agents_memory.models import (
+from gnosis.models import (
     BackendReadiness,
     BufferFlushResponse,
     ClientEvent,
@@ -88,8 +88,8 @@ from agents_memory.models import (
     SkillProposal,
     SkillUsage,
 )
-from agents_memory.redaction import redact_secrets
-from agents_memory.settings import Settings, load_settings
+from gnosis.redaction import redact_secrets
+from gnosis.settings import Settings, load_settings
 
 
 def create_app(
@@ -107,7 +107,7 @@ def create_app(
         finally:
             await memory_backend.shutdown()
 
-    app = FastAPI(title="agents-memory", lifespan=lifespan)
+    app = FastAPI(title="gnosis", lifespan=lifespan)
     _register_exception_handlers(app)
 
     def get_backend() -> MemoryBackend:
@@ -168,7 +168,7 @@ def _register_readiness_routes(
     async def diagnostics(
         memory: Annotated[MemoryBackend, Depends(get_backend)],
     ) -> DiagnosticsResponse:
-        authenticator.require_tenant(settings.agents_memory_tenant_id)
+        authenticator.require_tenant(settings.gnosis_tenant_id)
         return memory.diagnostics(await memory.readiness())
 
 
@@ -712,7 +712,7 @@ def _redacted_context(context: str) -> str:
 
 
 def _tenant_stats_request(settings: Settings) -> SdkStatsRequest:
-    tenant_id = settings.agents_memory_tenant_id
+    tenant_id = settings.gnosis_tenant_id
     return SdkStatsRequest(
         scope=MemoryScope(
             tenant_id=tenant_id,

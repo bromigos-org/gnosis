@@ -12,8 +12,8 @@ from neo4j_agent_memory.memory.reasoning import ReasoningTrace as SdkReasoningTr
 from neo4j_agent_memory.memory.reasoning import ToolCall, ToolCallStatus, ToolStats
 from neo4j_agent_memory.schema.models import EntityRef
 
-from agents_memory.backend import Neo4jAgentMemoryBackend
-from agents_memory.models import (
+from gnosis.backend import Neo4jAgentMemoryBackend
+from gnosis.models import (
     BackendReadiness,
     EntityRecord,
     EventIngestResult,
@@ -29,10 +29,10 @@ from agents_memory.models import (
     MemoryVisibility,
     PreferenceRecord,
 )
-from agents_memory.settings import Settings
+from gnosis.settings import Settings
 
 if TYPE_CHECKING:
-    from agents_memory.backend import MemoryClientContext
+    from gnosis.backend import MemoryClientContext
 
 
 @pytest.mark.anyio
@@ -54,7 +54,7 @@ async def test_combined_context_includes_scoped_facts_preferences_entities() -> 
         ),
     )
     backend = Neo4jAgentMemoryBackend(
-        _settings(memory_prompt_entities_enabled=True),
+        _settings(gnosis_prompt_entities_enabled=True),
         memory_client_factory=MemoryClientFactory(client),
         graph_store=RecordingGraphStore(),
     )
@@ -572,19 +572,19 @@ class RecordingGraphStore:
         return GraphContextResponse(context="")
 
 
-def _settings(*, memory_prompt_entities_enabled: bool = False) -> Settings:
+def _settings(*, gnosis_prompt_entities_enabled: bool = False) -> Settings:
     settings_values: JsonObject = {
-        "agents_memory_token": "value",
-        "agents_memory_tenant_id": "bromigos",
+        "gnosis_token": "value",
+        "gnosis_tenant_id": "bromigos",
         "neo4j_uri": "bolt://neo4j.local:7687",
         "neo4j_username": "neo4j",
         "neo4j_password": "value",
         "litellm_base_url": "http://litellm.local/v1",
         "litellm_api_key": "value",
-        "memory_llm": "openai/gemma4",
-        "memory_embedding": "local-qwen3-embedding-0.6b",
-        "memory_embedding_dimensions": 1024,
-        "memory_prompt_entities_enabled": memory_prompt_entities_enabled,
+        "gnosis_llm": "openai/gemma4",
+        "gnosis_embedding": "local-qwen3-embedding-0.6b",
+        "gnosis_embedding_dimensions": 1024,
+        "gnosis_prompt_entities_enabled": gnosis_prompt_entities_enabled,
     }
     return Settings.model_validate(settings_values)
 

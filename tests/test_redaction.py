@@ -1,9 +1,9 @@
 from typing import TYPE_CHECKING
 
-from agents_memory.redaction import redact_secrets
+from gnosis.redaction import redact_secrets
 
 if TYPE_CHECKING:
-    from agents_memory.models import JsonObject
+    from gnosis.models import JsonObject
 
 
 def test_redacts_nested_tool_payload_secrets() -> None:

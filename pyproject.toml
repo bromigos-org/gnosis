@@ -1,5 +1,5 @@
 [project]
-name = "agents-memory"
+name = "gnosis"
 version = "0.1.0"
 description = "Scoped graph/vector memory API for homelab agents"
 readme = "README.md"

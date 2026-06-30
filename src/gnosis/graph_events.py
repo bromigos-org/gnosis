@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from agents_memory.models import (
+from gnosis.models import (
     ClientEvent,
     ClientEventType,
     GraphContextRequest,

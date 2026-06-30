@@ -1,8 +1,8 @@
 import json
 
-from agents_memory.graph_events import PlannedGraphEvent
-from agents_memory.graph_types import CypherParameters
-from agents_memory.graph_upsert_ids import (
+from gnosis.graph_events import PlannedGraphEvent
+from gnosis.graph_types import CypherParameters
+from gnosis.graph_upsert_ids import (
     category_id,
     member_role_ids,
     member_user_id,
@@ -12,7 +12,7 @@ from agents_memory.graph_upsert_ids import (
     role_id,
     user_id,
 )
-from agents_memory.graph_upsert_values import (
+from gnosis.graph_upsert_values import (
     category_name,
     channel_kind,
     channel_name,
@@ -23,7 +23,7 @@ from agents_memory.graph_upsert_values import (
     member_is_bot,
     string_payload,
 )
-from agents_memory.models import ClientEventType
+from gnosis.models import ClientEventType
 
 
 def upsert_parameters(event: PlannedGraphEvent) -> CypherParameters:

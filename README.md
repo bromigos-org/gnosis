@@ -1,6 +1,6 @@
-# agents-memory
+# gnosis
 
-`agents-memory` is the Bromigos policy gateway in front of Neo4j Agent Memory. It exposes a scoped HTTP API, enforces tenant and operator boundaries, applies redaction and rollout policy, and keeps other services away from direct Neo4j, Bolt, or SDK access.
+`gnosis` is the Bromigos policy gateway in front of Neo4j Agent Memory. It exposes a scoped HTTP API, enforces tenant and operator boundaries, applies redaction and rollout policy, and keeps other services away from direct Neo4j, Bolt, or SDK access.
 
 This repo is not a thin SDK wrapper. It is the memory control plane for Bromigos workloads.
 
@@ -18,7 +18,7 @@ This repo is not a thin SDK wrapper. It is the memory control plane for Bromigos
 ```mermaid
 flowchart LR
     Clients[PC-Principal and other Bromigos clients]
-    Gateway[agents-memory HTTP gateway]
+    Gateway[gnosis HTTP gateway]
     Policy[Scope checks, auth, redaction, rollout policy]
     SDK[neo4j-agent-memory SDK 0.5.0]
     Neo4j[(Neo4j)]
@@ -35,7 +35,7 @@ flowchart LR
 
 ## Gateway boundary
 
-- `agents-memory` is the only Bromigos service in this workspace that talks to Neo4j and the Python SDK directly.
+- `gnosis` is the only Bromigos service in this workspace that talks to Neo4j and the Python SDK directly.
 - Callers use HTTP only. They do not open Bolt connections, run Cypher, or import the SDK.
 - Scope policy lives here, not in prompt templates or client-side filtering.
 - The gateway redacts sensitive backend payloads before returning diagnostics, exports, consolidation reports, or reasoning results.
@@ -52,7 +52,7 @@ Reasoning memory is auditable, not free-form hidden thought. Trace endpoints sto
 
 ## How the memory systems work together
 
-`agents-memory` combines several memory stores into one prompt-safe response, but each store has a different job.
+`gnosis` combines several memory stores into one prompt-safe response, but each store has a different job.
 
 - `short_term` keeps recent conversational continuity for the active session. It answers questions like what was just said, which task is in progress, and what the assistant is already committed to.
 - `long_term` keeps durable recall such as stable user preferences, facts worth retaining, named entities, and other knowledge that should survive past one session.
@@ -105,7 +105,7 @@ In practice, this means callers can ask for one combined memory response while t
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant G as agents-memory
+    participant G as gnosis
     participant P as Policy layer
     participant S as SDK
     participant N as Neo4j
@@ -186,11 +186,11 @@ Every request is tenant-scoped through `MemoryScope`.
 
 Operator boundaries are split by token class.
 
-- `AGENTS_MEMORY_TOKEN` for normal caller routes.
-- `AGENTS_MEMORY_READ_OPERATOR_TOKEN` for diagnostics, stats, and search-style operator reads.
-- `AGENTS_MEMORY_EXPORT_OPERATOR_TOKEN` for graph export.
-- `AGENTS_MEMORY_WRITE_OPERATOR_TOKEN` for direct entity, fact, and preference writes.
-- `AGENTS_MEMORY_ADMIN_OPERATOR_TOKEN` for dedup apply, consolidation apply, and buffer flush.
+- `GNOSIS_TOKEN` for normal caller routes.
+- `GNOSIS_READ_OPERATOR_TOKEN` for diagnostics, stats, and search-style operator reads.
+- `GNOSIS_EXPORT_OPERATOR_TOKEN` for graph export.
+- `GNOSIS_WRITE_OPERATOR_TOKEN` for direct entity, fact, and preference writes.
+- `GNOSIS_ADMIN_OPERATOR_TOKEN` for dedup apply, consolidation apply, and buffer flush.
 
 Production should not rely on predictable token defaults. Operator tokens are expected to come from secret-backed deployment config.
 
@@ -225,54 +225,54 @@ Preview comes before persistence. If extraction work is being evaluated, use `PO
 
 ### Core settings
 
-- `AGENTS_MEMORY_TOKEN`
-- `AGENTS_MEMORY_READ_OPERATOR_TOKEN`
-- `AGENTS_MEMORY_EXPORT_OPERATOR_TOKEN`
-- `AGENTS_MEMORY_WRITE_OPERATOR_TOKEN`
-- `AGENTS_MEMORY_ADMIN_OPERATOR_TOKEN`
-- `AGENTS_MEMORY_TENANT_ID`
+- `GNOSIS_TOKEN`
+- `GNOSIS_READ_OPERATOR_TOKEN`
+- `GNOSIS_EXPORT_OPERATOR_TOKEN`
+- `GNOSIS_WRITE_OPERATOR_TOKEN`
+- `GNOSIS_ADMIN_OPERATOR_TOKEN`
+- `GNOSIS_TENANT_ID`
 - `NEO4J_URI`
 - `NEO4J_USERNAME`
 - `NEO4J_PASSWORD`
 - `LITELLM_BASE_URL`
 - `LITELLM_API_KEY`
-- `MEMORY_LLM`
-- `MEMORY_EMBEDDING`
-- `MEMORY_EMBEDDING_DIMENSIONS`
+- `GNOSIS_LLM`
+- `GNOSIS_EMBEDDING`
+- `GNOSIS_EMBEDDING_DIMENSIONS`
 
 ### Feature and policy settings
 
-- `MEMORY_AUDIT_READ`
-- `MEMORY_CONVERSATION_TTL_DAYS`
-- `MEMORY_WRITE_MODE`
-- `MEMORY_MAX_PENDING`
-- `MEMORY_FACT_DEDUPLICATION_ENABLED`
-- `MEMORY_TRACE_EMBEDDING_ENABLED`
-- `MEMORY_EXTRACT_ENTITIES_ENABLED`
-- `MEMORY_EXTRACT_RELATIONS_ENABLED`
-- `MEMORY_EXTRACTION_PREVIEW_ENABLED`
-- `MEMORY_EXTRACTION_BATCH_SIZE`
-- `MEMORY_EXTRACTION_MAX_CONCURRENCY`
-- `MEMORY_EXTRACTION_CHUNK_SIZE`
-- `MEMORY_EXTRACTION_CHUNK_OVERLAP`
-- `MEMORY_OCR_ENABLED`
-- `MEMORY_OCR_MODEL`
-- `MEMORY_OCR_MAX_IMAGE_BYTES`
-- `MEMORY_RUSTFS_ENABLED`
-- `MEMORY_RUSTFS_ENDPOINT`
-- `MEMORY_RUSTFS_BUCKET`
-- `MEMORY_RUSTFS_PREFIX`
-- `MEMORY_RUSTFS_RETENTION_DAYS`
-- `MEMORY_PROMPT_ENTITIES_ENABLED`
-- `MEMORY_PROMPT_PREFERENCES_ENABLED`
-- `MEMORY_PROMPT_REASONING_ENABLED`
-- `MEMORY_CONSOLIDATION_SCHEDULE_ENABLED`
+- `GNOSIS_AUDIT_READ`
+- `GNOSIS_CONVERSATION_TTL_DAYS`
+- `GNOSIS_WRITE_MODE`
+- `GNOSIS_MAX_PENDING`
+- `GNOSIS_FACT_DEDUPLICATION_ENABLED`
+- `GNOSIS_TRACE_EMBEDDING_ENABLED`
+- `GNOSIS_EXTRACT_ENTITIES_ENABLED`
+- `GNOSIS_EXTRACT_RELATIONS_ENABLED`
+- `GNOSIS_EXTRACTION_PREVIEW_ENABLED`
+- `GNOSIS_EXTRACTION_BATCH_SIZE`
+- `GNOSIS_EXTRACTION_MAX_CONCURRENCY`
+- `GNOSIS_EXTRACTION_CHUNK_SIZE`
+- `GNOSIS_EXTRACTION_CHUNK_OVERLAP`
+- `GNOSIS_OCR_ENABLED`
+- `GNOSIS_OCR_MODEL`
+- `GNOSIS_OCR_MAX_IMAGE_BYTES`
+- `GNOSIS_RUSTFS_ENABLED`
+- `GNOSIS_RUSTFS_ENDPOINT`
+- `GNOSIS_RUSTFS_BUCKET`
+- `GNOSIS_RUSTFS_PREFIX`
+- `GNOSIS_RUSTFS_RETENTION_DAYS`
+- `GNOSIS_PROMPT_ENTITIES_ENABLED`
+- `GNOSIS_PROMPT_PREFERENCES_ENABLED`
+- `GNOSIS_PROMPT_REASONING_ENABLED`
+- `GNOSIS_CONSOLIDATION_SCHEDULE_ENABLED`
 
 ## Local development
 
 ```bash
 uv sync
-uv run uvicorn agents_memory.main:app --host 0.0.0.0 --port 8080 --reload
+uv run uvicorn gnosis.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
 ## Verification commands

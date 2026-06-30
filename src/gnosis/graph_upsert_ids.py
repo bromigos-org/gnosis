@@ -1,6 +1,6 @@
-from agents_memory.graph_events import PlannedGraphEvent
-from agents_memory.graph_upsert_values import string_list_payload
-from agents_memory.models import ClientEventType
+from gnosis.graph_events import PlannedGraphEvent
+from gnosis.graph_upsert_values import string_list_payload
+from gnosis.models import ClientEventType
 
 
 def node_id(tenant_id: str, node_type: str, raw_id: str) -> str:

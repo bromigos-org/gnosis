@@ -30,10 +30,10 @@ from neo4j_agent_memory.memory.reasoning import ToolCall, ToolCallStatus, ToolSt
 from neo4j_agent_memory.schema.models import EntityRef
 from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
 
-from agents_memory.event_facts import EventFactPromoter
-from agents_memory.graph_probe import StructuredGraphStore, direct_neo4j_driver_factory
-from agents_memory.graph_store import DirectNeo4jGraphStore, Neo4jGraphExecutor
-from agents_memory.models import (
+from gnosis.event_facts import EventFactPromoter
+from gnosis.graph_probe import StructuredGraphStore, direct_neo4j_driver_factory
+from gnosis.graph_store import DirectNeo4jGraphStore, Neo4jGraphExecutor
+from gnosis.models import (
     BackendReadiness,
     BufferFlushResponse,
     BufferStatus,
@@ -121,9 +121,9 @@ from agents_memory.models import (
     SkillProposal,
     SkillUsage,
 )
-from agents_memory.redaction import redact_secrets
-from agents_memory.settings import Settings
-from agents_memory.skill_registry import InMemorySkillRegistry, SkillRegistry
+from gnosis.redaction import redact_secrets
+from gnosis.settings import Settings
+from gnosis.skill_registry import InMemorySkillRegistry, SkillRegistry
 
 _JSON_OBJECT_ADAPTER: Final[TypeAdapter[JsonObject]] = TypeAdapter(JsonObject)
 _ENTITY_RECORD_ADAPTER: Final[TypeAdapter[EntityRecord]] = TypeAdapter(EntityRecord)
@@ -882,15 +882,15 @@ class Neo4jAgentMemoryBackend:
         self._settings: MemorySettings = _build_memory_settings(settings)
         self._memory_client_factory: MemoryClientFactory | None = memory_client_factory
         embedding_provider = LiteLLMEmbeddingProvider(
-            litellm_embedding_model(settings.memory_embedding),
-            dimensions=settings.memory_embedding_dimensions,
+            litellm_embedding_model(settings.gnosis_embedding),
+            dimensions=settings.gnosis_embedding_dimensions,
             api_base=settings.litellm_base_url,
             api_key=settings.litellm_api_key,
         )
         self._graph_store: StructuredGraphStore = graph_store or DirectNeo4jGraphStore(
             executor=Neo4jGraphExecutor(
                 driver_factory=direct_neo4j_driver_factory(settings),
-                embedding_dimensions=settings.memory_embedding_dimensions,
+                embedding_dimensions=settings.gnosis_embedding_dimensions,
                 embedding_provider=embedding_provider,
             ),
         )
@@ -943,8 +943,8 @@ class Neo4jAgentMemoryBackend:
                 chunks=max(documents, 1),
                 ocr_images=len(request.ocr_image_references),
                 rustfs_objects=len(request.rustfs_source_references),
-                batch_size=self._app_settings.memory_extraction_batch_size,
-                max_concurrency=self._app_settings.memory_extraction_max_concurrency,
+                batch_size=self._app_settings.gnosis_extraction_batch_size,
+                max_concurrency=self._app_settings.gnosis_extraction_max_concurrency,
             ),
             provenance=ExtractionPreviewProvenance(
                 source_ids=_preview_source_ids(request),
@@ -964,8 +964,8 @@ class Neo4jAgentMemoryBackend:
     async def buffer_status(self) -> BufferStatus:
         write_errors = await self._buffer_write_error_count()
         return BufferStatus(
-            write_mode=self._app_settings.memory_write_mode,
-            max_pending=self._app_settings.memory_max_pending,
+            write_mode=self._app_settings.gnosis_write_mode,
+            max_pending=self._app_settings.gnosis_max_pending,
             pending_writes=None,
             write_errors=write_errors,
             status=_buffer_readiness_status(write_errors),
@@ -979,7 +979,7 @@ class Neo4jAgentMemoryBackend:
         return BufferFlushResponse(flushed=True, status=await self.buffer_status())
 
     async def shutdown(self) -> None:
-        if self._app_settings.memory_write_mode != "buffered":
+        if self._app_settings.gnosis_write_mode != "buffered":
             return
         async with self._memory_client() as client:
             if not isinstance(client, BufferPendingCapableMemoryClient):
@@ -994,72 +994,72 @@ class Neo4jAgentMemoryBackend:
 
     def diagnostics(self, readiness: BackendReadiness) -> DiagnosticsResponse:
         return DiagnosticsResponse(
-            tenant_id=self._app_settings.agents_memory_tenant_id,
+            tenant_id=self._app_settings.gnosis_tenant_id,
             config=DiagnosticsConfig(
                 neo4j_uri=self._app_settings.neo4j_uri,
                 neo4j_username=self._app_settings.neo4j_username,
                 litellm_base_url=self._app_settings.litellm_base_url,
-                memory_llm=self._app_settings.memory_llm,
-                memory_embedding=self._app_settings.memory_embedding,
-                memory_embedding_dimensions=(
-                    self._app_settings.memory_embedding_dimensions
+                gnosis_llm=self._app_settings.gnosis_llm,
+                gnosis_embedding=self._app_settings.gnosis_embedding,
+                gnosis_embedding_dimensions=(
+                    self._app_settings.gnosis_embedding_dimensions
                 ),
-                memory_audit_read=self._app_settings.memory_audit_read,
-                memory_conversation_ttl_days=(
-                    self._app_settings.memory_conversation_ttl_days
+                gnosis_audit_read=self._app_settings.gnosis_audit_read,
+                gnosis_conversation_ttl_days=(
+                    self._app_settings.gnosis_conversation_ttl_days
                 ),
-                memory_write_mode=self._app_settings.memory_write_mode,
-                memory_max_pending=self._app_settings.memory_max_pending,
-                memory_fact_deduplication_enabled=(
-                    self._app_settings.memory_fact_deduplication_enabled
+                gnosis_write_mode=self._app_settings.gnosis_write_mode,
+                gnosis_max_pending=self._app_settings.gnosis_max_pending,
+                gnosis_fact_deduplication_enabled=(
+                    self._app_settings.gnosis_fact_deduplication_enabled
                 ),
-                memory_trace_embedding_enabled=(
-                    self._app_settings.memory_trace_embedding_enabled
+                gnosis_trace_embedding_enabled=(
+                    self._app_settings.gnosis_trace_embedding_enabled
                 ),
-                memory_extract_entities_enabled=(
-                    self._app_settings.memory_extract_entities_enabled
+                gnosis_extract_entities_enabled=(
+                    self._app_settings.gnosis_extract_entities_enabled
                 ),
-                memory_extract_relations_enabled=(
-                    self._app_settings.memory_extract_relations_enabled
+                gnosis_extract_relations_enabled=(
+                    self._app_settings.gnosis_extract_relations_enabled
                 ),
-                memory_extraction_preview_enabled=(
-                    self._app_settings.memory_extraction_preview_enabled
+                gnosis_extraction_preview_enabled=(
+                    self._app_settings.gnosis_extraction_preview_enabled
                 ),
-                memory_extraction_batch_size=(
-                    self._app_settings.memory_extraction_batch_size
+                gnosis_extraction_batch_size=(
+                    self._app_settings.gnosis_extraction_batch_size
                 ),
-                memory_extraction_max_concurrency=(
-                    self._app_settings.memory_extraction_max_concurrency
+                gnosis_extraction_max_concurrency=(
+                    self._app_settings.gnosis_extraction_max_concurrency
                 ),
-                memory_extraction_chunk_size=(
-                    self._app_settings.memory_extraction_chunk_size
+                gnosis_extraction_chunk_size=(
+                    self._app_settings.gnosis_extraction_chunk_size
                 ),
-                memory_extraction_chunk_overlap=(
-                    self._app_settings.memory_extraction_chunk_overlap
+                gnosis_extraction_chunk_overlap=(
+                    self._app_settings.gnosis_extraction_chunk_overlap
                 ),
-                memory_ocr_enabled=self._app_settings.memory_ocr_enabled,
-                memory_ocr_model=self._app_settings.memory_ocr_model,
-                memory_ocr_max_image_bytes=(
-                    self._app_settings.memory_ocr_max_image_bytes
+                gnosis_ocr_enabled=self._app_settings.gnosis_ocr_enabled,
+                gnosis_ocr_model=self._app_settings.gnosis_ocr_model,
+                gnosis_ocr_max_image_bytes=(
+                    self._app_settings.gnosis_ocr_max_image_bytes
                 ),
-                memory_rustfs_enabled=self._app_settings.memory_rustfs_enabled,
-                memory_rustfs_bucket=self._app_settings.memory_rustfs_bucket,
-                memory_rustfs_prefix=self._app_settings.memory_rustfs_prefix,
-                memory_rustfs_endpoint=self._app_settings.memory_rustfs_endpoint,
-                memory_rustfs_retention_days=(
-                    self._app_settings.memory_rustfs_retention_days
+                gnosis_rustfs_enabled=self._app_settings.gnosis_rustfs_enabled,
+                gnosis_rustfs_bucket=self._app_settings.gnosis_rustfs_bucket,
+                gnosis_rustfs_prefix=self._app_settings.gnosis_rustfs_prefix,
+                gnosis_rustfs_endpoint=self._app_settings.gnosis_rustfs_endpoint,
+                gnosis_rustfs_retention_days=(
+                    self._app_settings.gnosis_rustfs_retention_days
                 ),
-                memory_prompt_entities_enabled=(
-                    self._app_settings.memory_prompt_entities_enabled
+                gnosis_prompt_entities_enabled=(
+                    self._app_settings.gnosis_prompt_entities_enabled
                 ),
-                memory_prompt_preferences_enabled=(
-                    self._app_settings.memory_prompt_preferences_enabled
+                gnosis_prompt_preferences_enabled=(
+                    self._app_settings.gnosis_prompt_preferences_enabled
                 ),
-                memory_prompt_reasoning_enabled=(
-                    self._app_settings.memory_prompt_reasoning_enabled
+                gnosis_prompt_reasoning_enabled=(
+                    self._app_settings.gnosis_prompt_reasoning_enabled
                 ),
-                memory_consolidation_schedule_enabled=(
-                    self._app_settings.memory_consolidation_schedule_enabled
+                gnosis_consolidation_schedule_enabled=(
+                    self._app_settings.gnosis_consolidation_schedule_enabled
                 ),
             ),
             backend=readiness,
@@ -1115,7 +1115,7 @@ class Neo4jAgentMemoryBackend:
 
             if (
                 request.include_reasoning
-                and self._app_settings.memory_prompt_reasoning_enabled
+                and self._app_settings.gnosis_prompt_reasoning_enabled
             ):
                 reasoning = await client.reasoning.get_context(
                     request.query,
@@ -1773,13 +1773,13 @@ def _build_memory_settings(settings: Settings) -> MemorySettings:
             password=SecretStr(settings.neo4j_password),
         ),
         llm=LiteLLMProvider(
-            settings.memory_llm,
+            settings.gnosis_llm,
             api_base=settings.litellm_base_url,
             api_key=settings.litellm_api_key,
         ),
         embedding=LiteLLMEmbeddingProvider(
-            litellm_embedding_model(settings.memory_embedding),
-            dimensions=settings.memory_embedding_dimensions,
+            litellm_embedding_model(settings.gnosis_embedding),
+            dimensions=settings.gnosis_embedding_dimensions,
             api_base=settings.litellm_base_url,
             api_key=settings.litellm_api_key,
         ),
@@ -1801,19 +1801,19 @@ def _build_memory_config(settings: Settings) -> MemoryConfig:
     config = MemoryConfigKwargs(multi_tenant=True)
     supported_fields = MemoryConfig.model_fields
     if "write_mode" in supported_fields:
-        config["write_mode"] = settings.memory_write_mode
+        config["write_mode"] = settings.gnosis_write_mode
     if "max_pending" in supported_fields:
-        config["max_pending"] = settings.memory_max_pending
+        config["max_pending"] = settings.gnosis_max_pending
     if "conversation_ttl_days" in supported_fields:
-        config["conversation_ttl_days"] = settings.memory_conversation_ttl_days
+        config["conversation_ttl_days"] = settings.gnosis_conversation_ttl_days
     if "audit_read" in supported_fields:
-        config["audit_read"] = settings.memory_audit_read
+        config["audit_read"] = settings.gnosis_audit_read
     if "fact_deduplication_enabled" in supported_fields:
         config["fact_deduplication_enabled"] = (
-            settings.memory_fact_deduplication_enabled
+            settings.gnosis_fact_deduplication_enabled
         )
     if "trace_embedding_enabled" in supported_fields:
-        config["trace_embedding_enabled"] = settings.memory_trace_embedding_enabled
+        config["trace_embedding_enabled"] = settings.gnosis_trace_embedding_enabled
     return MemoryConfig(**config)
 
 
@@ -1856,12 +1856,12 @@ def _extraction_policy(
     if extract_relations is True and extract_entities is not True:
         raise BackendRequestError(_RELATION_ENTITY_DETAIL)
     entities_enabled = (
-        extract_entities is True and settings.memory_extract_entities_enabled
+        extract_entities is True and settings.gnosis_extract_entities_enabled
     )
     relations_enabled = (
         extract_relations is True
         and entities_enabled
-        and settings.memory_extract_relations_enabled
+        and settings.gnosis_extract_relations_enabled
     )
     return ExtractionPolicy(
         extract_entities=entities_enabled,
@@ -1881,7 +1881,7 @@ def _require_ingestion_sources_allowed(
 
 
 def _require_preview_enabled(settings: Settings) -> None:
-    if not settings.memory_extraction_preview_enabled:
+    if not settings.gnosis_extraction_preview_enabled:
         raise BackendRequestError(_PREVIEW_DISABLED_DETAIL)
 
 
@@ -1889,10 +1889,10 @@ def _require_preview_sources_allowed(
     request: ExtractionPreviewRequest,
     settings: Settings,
 ) -> None:
-    if request.ocr_image_references and not settings.memory_ocr_enabled:
+    if request.ocr_image_references and not settings.gnosis_ocr_enabled:
         raise BackendRequestError(_OCR_DISABLED_DETAIL)
     for image in request.ocr_image_references:
-        if image.size_bytes > settings.memory_ocr_max_image_bytes:
+        if image.size_bytes > settings.gnosis_ocr_max_image_bytes:
             raise BackendRequestError(_OCR_SIZE_DETAIL)
         if image.rustfs is not None:
             _require_rustfs_references_allowed([image.rustfs], settings)
@@ -1905,16 +1905,16 @@ def _require_rustfs_references_allowed(
 ) -> None:
     if not references:
         return
-    if not settings.memory_rustfs_enabled:
+    if not settings.gnosis_rustfs_enabled:
         raise BackendRequestError(_RUSTFS_DISABLED_DETAIL)
     for reference in references:
         if (
-            settings.memory_rustfs_bucket
-            and reference.bucket != settings.memory_rustfs_bucket
+            settings.gnosis_rustfs_bucket
+            and reference.bucket != settings.gnosis_rustfs_bucket
         ):
             raise BackendRequestError(_RUSTFS_BUCKET_DETAIL)
-        if settings.memory_rustfs_prefix and not reference.object_key.startswith(
-            settings.memory_rustfs_prefix,
+        if settings.gnosis_rustfs_prefix and not reference.object_key.startswith(
+            settings.gnosis_rustfs_prefix,
         ):
             raise BackendRequestError(_RUSTFS_KEY_DETAIL)
 
@@ -1962,11 +1962,11 @@ def _preview_candidates(
         )
         for document in request.raw_text_documents
     )
-    if settings.memory_ocr_enabled:
+    if settings.gnosis_ocr_enabled:
         candidates.extend(
             ExtractionCandidate(
                 kind="ocr_text",
-                text=f"OCR preview placeholder via {settings.memory_ocr_model}",
+                text=f"OCR preview placeholder via {settings.gnosis_ocr_model}",
                 source_id=image.source_id,
                 confidence=0.0,
             )
@@ -2159,7 +2159,7 @@ def _dedup_token(
     payload_bytes = _canonical_json(payload).encode()
     encoded_payload = _urlsafe_b64encode(payload_bytes)
     signature = hmac.new(
-        settings.agents_memory_admin_operator_token.encode(),
+        settings.gnosis_admin_operator_token.encode(),
         payload_bytes,
         hashlib.sha256,
     ).hexdigest()
@@ -2216,7 +2216,7 @@ def _dedup_token_payload(settings: Settings, token: str) -> JsonObject:
     except ValueError as error:
         raise BackendRequestError(_DEDUP_TOKEN_DETAIL) from error
     expected_signature = hmac.new(
-        settings.agents_memory_admin_operator_token.encode(),
+        settings.gnosis_admin_operator_token.encode(),
         payload_bytes,
         hashlib.sha256,
     ).hexdigest()
@@ -2332,7 +2332,7 @@ def _consolidation_token(settings: Settings, claims: ConsolidationTokenClaims) -
     payload_bytes = _canonical_json(payload).encode()
     encoded_payload = _urlsafe_b64encode(payload_bytes)
     signature = hmac.new(
-        settings.agents_memory_admin_operator_token.encode(),
+        settings.gnosis_admin_operator_token.encode(),
         payload_bytes,
         hashlib.sha256,
     ).hexdigest()
@@ -2392,7 +2392,7 @@ def _consolidation_token_payload(settings: Settings, token: str) -> JsonObject:
     except ValueError as error:
         raise BackendRequestError(_CONSOLIDATION_TOKEN_DETAIL) from error
     expected_signature = hmac.new(
-        settings.agents_memory_admin_operator_token.encode(),
+        settings.gnosis_admin_operator_token.encode(),
         payload_bytes,
         hashlib.sha256,
     ).hexdigest()
@@ -2613,8 +2613,8 @@ def _redacted_text(value: str) -> str:
 
 def _long_term_enrichment_enabled(settings: Settings) -> bool:
     return (
-        settings.memory_prompt_entities_enabled
-        or settings.memory_prompt_preferences_enabled
+        settings.gnosis_prompt_entities_enabled
+        or settings.gnosis_prompt_preferences_enabled
     )
 
 

@@ -18,11 +18,11 @@ from neo4j_agent_memory.memory.reasoning import (
 from neo4j_agent_memory.memory.reasoning import ReasoningTrace as SdkReasoningTrace
 from neo4j_agent_memory.schema.models import EntityRef
 
-environ["AGENTS_MEMORY_TOKEN"] = "test-token"
-environ["AGENTS_MEMORY_READ_OPERATOR_TOKEN"] = "read-operator-token"
-environ["AGENTS_MEMORY_EXPORT_OPERATOR_TOKEN"] = "export-operator-token"
-environ["AGENTS_MEMORY_WRITE_OPERATOR_TOKEN"] = "write-operator-token"
-environ["AGENTS_MEMORY_ADMIN_OPERATOR_TOKEN"] = "admin-operator-token"
+environ["GNOSIS_TOKEN"] = "test-token"
+environ["GNOSIS_READ_OPERATOR_TOKEN"] = "read-operator-token"
+environ["GNOSIS_EXPORT_OPERATOR_TOKEN"] = "export-operator-token"
+environ["GNOSIS_WRITE_OPERATOR_TOKEN"] = "write-operator-token"
+environ["GNOSIS_ADMIN_OPERATOR_TOKEN"] = "admin-operator-token"
 environ["NEO4J_URI"] = "bolt://neo4j.local:7687"
 environ["NEO4J_PASSWORD"] = "test-password"
 environ["LITELLM_BASE_URL"] = "http://litellm.local/v1"
@@ -30,15 +30,15 @@ environ["LITELLM_API_KEY"] = "test-litellm-key"
 
 from pydantic import TypeAdapter, ValidationError
 
-from agents_memory.backend import (
+from gnosis.backend import (
     BackendCapabilityUnavailable,
     BackendRequestError,
     Neo4jAgentMemoryBackend,
     litellm_embedding_model,
 )
-from agents_memory.graph_probe import DirectNeo4jProbe, GraphPersistenceUnavailableError
-from agents_memory.graph_store import DirectNeo4jGraphStore, InMemoryGraphExecutor
-from agents_memory.models import (
+from gnosis.graph_probe import DirectNeo4jProbe, GraphPersistenceUnavailableError
+from gnosis.graph_store import DirectNeo4jGraphStore, InMemoryGraphExecutor
+from gnosis.models import (
     BackendReadiness,
     BufferFlushResponse,
     BufferStatus,
@@ -135,10 +135,10 @@ from agents_memory.models import (
     SkillUsage,
     SourceClient,
 )
-from agents_memory.settings import Settings
+from gnosis.settings import Settings
 
 if TYPE_CHECKING:
-    from agents_memory.backend import LongTermMemory, MemoryBackend, MemoryClientContext
+    from gnosis.backend import LongTermMemory, MemoryBackend, MemoryClientContext
 
 
 _JSON_OBJECT_ADAPTER: TypeAdapter[JsonObject] = TypeAdapter(JsonObject)
@@ -196,12 +196,12 @@ async def test_build_memory_settings_applies_supported_memory_feature_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: supported SDK memory policy fields are overridden by environment.
-    monkeypatch.setenv("MEMORY_WRITE_MODE", "buffered")
-    monkeypatch.setenv("MEMORY_MAX_PENDING", "7")
-    monkeypatch.setenv("MEMORY_CONVERSATION_TTL_DAYS", "30")
-    monkeypatch.setenv("MEMORY_AUDIT_READ", "true")
-    monkeypatch.setenv("MEMORY_FACT_DEDUPLICATION_ENABLED", "false")
-    monkeypatch.setenv("MEMORY_TRACE_EMBEDDING_ENABLED", "false")
+    monkeypatch.setenv("GNOSIS_WRITE_MODE", "buffered")
+    monkeypatch.setenv("GNOSIS_MAX_PENDING", "7")
+    monkeypatch.setenv("GNOSIS_CONVERSATION_TTL_DAYS", "30")
+    monkeypatch.setenv("GNOSIS_AUDIT_READ", "true")
+    monkeypatch.setenv("GNOSIS_FACT_DEDUPLICATION_ENABLED", "false")
+    monkeypatch.setenv("GNOSIS_TRACE_EMBEDDING_ENABLED", "false")
     memory_client_factory = CapturingMemoryClientFactory(RecordingMemoryClient())
     backend = Neo4jAgentMemoryBackend(
         Settings(),
@@ -227,8 +227,8 @@ async def test_buffer_status_reflects_buffered_policy_and_write_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: buffered writes are enabled and the SDK exposes write errors.
-    monkeypatch.setenv("MEMORY_WRITE_MODE", "buffered")
-    monkeypatch.setenv("MEMORY_MAX_PENDING", "7")
+    monkeypatch.setenv("GNOSIS_WRITE_MODE", "buffered")
+    monkeypatch.setenv("GNOSIS_MAX_PENDING", "7")
     fake_client = RecordingMemoryClient(write_errors=[{"message": "failed"}])
     backend = Neo4jAgentMemoryBackend(
         Settings(),
@@ -256,7 +256,7 @@ async def test_flush_buffer_calls_sdk_flush_and_returns_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: buffered writes are enabled and the SDK exposes flush.
-    monkeypatch.setenv("MEMORY_WRITE_MODE", "buffered")
+    monkeypatch.setenv("GNOSIS_WRITE_MODE", "buffered")
     fake_client = RecordingMemoryClient()
     backend = Neo4jAgentMemoryBackend(
         Settings(),
@@ -286,7 +286,7 @@ async def test_shutdown_flushes_pending_buffered_writes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: buffered writes are enabled and the SDK exposes wait_for_pending.
-    monkeypatch.setenv("MEMORY_WRITE_MODE", "buffered")
+    monkeypatch.setenv("GNOSIS_WRITE_MODE", "buffered")
     fake_client = RecordingMemoryClient()
     backend = Neo4jAgentMemoryBackend(
         Settings(),
@@ -325,7 +325,7 @@ async def test_add_message_enables_entity_extraction_when_policy_allows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: both the service policy and request opt into entity extraction.
-    monkeypatch.setenv("MEMORY_EXTRACT_ENTITIES_ENABLED", "true")
+    monkeypatch.setenv("GNOSIS_EXTRACT_ENTITIES_ENABLED", "true")
     fake_client = RecordingMemoryClient()
     backend = Neo4jAgentMemoryBackend(
         Settings(),
@@ -361,8 +361,8 @@ async def test_preview_extraction_returns_candidates_without_durable_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: preview is enabled with raw text input.
-    monkeypatch.setenv("MEMORY_EXTRACT_ENTITIES_ENABLED", "true")
-    monkeypatch.setenv("MEMORY_EXTRACTION_PREVIEW_ENABLED", "true")
+    monkeypatch.setenv("GNOSIS_EXTRACT_ENTITIES_ENABLED", "true")
+    monkeypatch.setenv("GNOSIS_EXTRACTION_PREVIEW_ENABLED", "true")
     fake_client = RecordingMemoryClient()
     backend = Neo4jAgentMemoryBackend(
         Settings(),
@@ -400,7 +400,7 @@ async def test_preview_extraction_rejects_ocr_when_policy_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: preview is enabled but OCR policy stays disabled.
-    monkeypatch.setenv("MEMORY_EXTRACTION_PREVIEW_ENABLED", "true")
+    monkeypatch.setenv("GNOSIS_EXTRACTION_PREVIEW_ENABLED", "true")
     backend = Neo4jAgentMemoryBackend(
         Settings(),
         memory_client_factory=MemoryClientFactory(RecordingMemoryClient()),
@@ -422,10 +422,10 @@ async def test_preview_extraction_accepts_ocr_when_policy_allows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: preview and OCR are explicitly enabled.
-    monkeypatch.setenv("MEMORY_EXTRACTION_PREVIEW_ENABLED", "true")
-    monkeypatch.setenv("MEMORY_OCR_ENABLED", "true")
-    monkeypatch.setenv("MEMORY_OCR_MODEL", "openai/unlimited-ocr")
-    monkeypatch.setenv("MEMORY_OCR_MAX_IMAGE_BYTES", "1024")
+    monkeypatch.setenv("GNOSIS_EXTRACTION_PREVIEW_ENABLED", "true")
+    monkeypatch.setenv("GNOSIS_OCR_ENABLED", "true")
+    monkeypatch.setenv("GNOSIS_OCR_MODEL", "openai/unlimited-ocr")
+    monkeypatch.setenv("GNOSIS_OCR_MAX_IMAGE_BYTES", "1024")
     backend = Neo4jAgentMemoryBackend(
         Settings(),
         memory_client_factory=MemoryClientFactory(RecordingMemoryClient()),
@@ -451,10 +451,10 @@ async def test_preview_extraction_enforces_rustfs_bucket_and_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: RustFS preview is limited to one bucket and object prefix.
-    monkeypatch.setenv("MEMORY_EXTRACTION_PREVIEW_ENABLED", "true")
-    monkeypatch.setenv("MEMORY_RUSTFS_ENABLED", "true")
-    monkeypatch.setenv("MEMORY_RUSTFS_BUCKET", "memory-private")
-    monkeypatch.setenv("MEMORY_RUSTFS_PREFIX", "agents-memory/")
+    monkeypatch.setenv("GNOSIS_EXTRACTION_PREVIEW_ENABLED", "true")
+    monkeypatch.setenv("GNOSIS_RUSTFS_ENABLED", "true")
+    monkeypatch.setenv("GNOSIS_RUSTFS_BUCKET", "memory-private")
+    monkeypatch.setenv("GNOSIS_RUSTFS_PREFIX", "gnosis/")
     backend = Neo4jAgentMemoryBackend(
         Settings(),
         memory_client_factory=MemoryClientFactory(RecordingMemoryClient()),
@@ -750,9 +750,9 @@ async def test_memory_context_combines_labeled_sections_in_order() -> None:
     graph_store = RecordingGraphStore(context="graph summary")
     backend = Neo4jAgentMemoryBackend(
         Settings(
-            memory_prompt_entities_enabled=True,
-            memory_prompt_preferences_enabled=True,
-            memory_prompt_reasoning_enabled=True,
+            gnosis_prompt_entities_enabled=True,
+            gnosis_prompt_preferences_enabled=True,
+            gnosis_prompt_reasoning_enabled=True,
         ),
         memory_client_factory=MemoryClientFactory(fake_client),
         graph_store=graph_store,
@@ -803,7 +803,7 @@ async def test_memory_context_omits_empty_sections_and_disabled_graph() -> None:
     )
     graph_store = RecordingGraphStore(context="graph summary")
     backend = Neo4jAgentMemoryBackend(
-        Settings(memory_prompt_entities_enabled=True),
+        Settings(gnosis_prompt_entities_enabled=True),
         memory_client_factory=MemoryClientFactory(fake_client),
         graph_store=graph_store,
     )
@@ -885,7 +885,7 @@ async def test_memory_context_redacts_reasoning_when_prompt_flag_enabled() -> No
         ),
     )
     backend = Neo4jAgentMemoryBackend(
-        Settings(memory_prompt_reasoning_enabled=True),
+        Settings(gnosis_prompt_reasoning_enabled=True),
         memory_client_factory=MemoryClientFactory(fake_client),
         graph_store=RecordingGraphStore(),
     )
@@ -1200,10 +1200,10 @@ def test_settings_require_explicit_operator_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: deploy-time operator tokens are absent from the environment.
-    monkeypatch.delenv("AGENTS_MEMORY_READ_OPERATOR_TOKEN", raising=False)
-    monkeypatch.delenv("AGENTS_MEMORY_EXPORT_OPERATOR_TOKEN", raising=False)
-    monkeypatch.delenv("AGENTS_MEMORY_WRITE_OPERATOR_TOKEN", raising=False)
-    monkeypatch.delenv("AGENTS_MEMORY_ADMIN_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("GNOSIS_READ_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("GNOSIS_EXPORT_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("GNOSIS_WRITE_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("GNOSIS_ADMIN_OPERATOR_TOKEN", raising=False)
 
     # When / Then: settings refuse predictable built-in operator credentials.
     with pytest.raises(ValidationError):
@@ -2165,54 +2165,54 @@ class RecordingBackend:
     def diagnostics(self, readiness: BackendReadiness) -> DiagnosticsResponse:
         settings = Settings()
         return DiagnosticsResponse(
-            tenant_id=settings.agents_memory_tenant_id,
+            tenant_id=settings.gnosis_tenant_id,
             config=DiagnosticsConfig(
                 neo4j_uri=settings.neo4j_uri,
                 neo4j_username=settings.neo4j_username,
                 litellm_base_url=settings.litellm_base_url,
-                memory_llm=settings.memory_llm,
-                memory_embedding=settings.memory_embedding,
-                memory_embedding_dimensions=settings.memory_embedding_dimensions,
-                memory_audit_read=settings.memory_audit_read,
-                memory_conversation_ttl_days=settings.memory_conversation_ttl_days,
-                memory_write_mode=settings.memory_write_mode,
-                memory_max_pending=settings.memory_max_pending,
-                memory_fact_deduplication_enabled=(
-                    settings.memory_fact_deduplication_enabled
+                gnosis_llm=settings.gnosis_llm,
+                gnosis_embedding=settings.gnosis_embedding,
+                gnosis_embedding_dimensions=settings.gnosis_embedding_dimensions,
+                gnosis_audit_read=settings.gnosis_audit_read,
+                gnosis_conversation_ttl_days=settings.gnosis_conversation_ttl_days,
+                gnosis_write_mode=settings.gnosis_write_mode,
+                gnosis_max_pending=settings.gnosis_max_pending,
+                gnosis_fact_deduplication_enabled=(
+                    settings.gnosis_fact_deduplication_enabled
                 ),
-                memory_trace_embedding_enabled=settings.memory_trace_embedding_enabled,
-                memory_extract_entities_enabled=(
-                    settings.memory_extract_entities_enabled
+                gnosis_trace_embedding_enabled=settings.gnosis_trace_embedding_enabled,
+                gnosis_extract_entities_enabled=(
+                    settings.gnosis_extract_entities_enabled
                 ),
-                memory_extract_relations_enabled=(
-                    settings.memory_extract_relations_enabled
+                gnosis_extract_relations_enabled=(
+                    settings.gnosis_extract_relations_enabled
                 ),
-                memory_extraction_preview_enabled=(
-                    settings.memory_extraction_preview_enabled
+                gnosis_extraction_preview_enabled=(
+                    settings.gnosis_extraction_preview_enabled
                 ),
-                memory_extraction_batch_size=settings.memory_extraction_batch_size,
-                memory_extraction_max_concurrency=(
-                    settings.memory_extraction_max_concurrency
+                gnosis_extraction_batch_size=settings.gnosis_extraction_batch_size,
+                gnosis_extraction_max_concurrency=(
+                    settings.gnosis_extraction_max_concurrency
                 ),
-                memory_extraction_chunk_size=settings.memory_extraction_chunk_size,
-                memory_extraction_chunk_overlap=(
-                    settings.memory_extraction_chunk_overlap
+                gnosis_extraction_chunk_size=settings.gnosis_extraction_chunk_size,
+                gnosis_extraction_chunk_overlap=(
+                    settings.gnosis_extraction_chunk_overlap
                 ),
-                memory_ocr_enabled=settings.memory_ocr_enabled,
-                memory_ocr_model=settings.memory_ocr_model,
-                memory_ocr_max_image_bytes=settings.memory_ocr_max_image_bytes,
-                memory_rustfs_enabled=settings.memory_rustfs_enabled,
-                memory_rustfs_bucket=settings.memory_rustfs_bucket,
-                memory_rustfs_prefix=settings.memory_rustfs_prefix,
-                memory_rustfs_endpoint=settings.memory_rustfs_endpoint,
-                memory_rustfs_retention_days=settings.memory_rustfs_retention_days,
-                memory_prompt_entities_enabled=settings.memory_prompt_entities_enabled,
-                memory_prompt_preferences_enabled=(
-                    settings.memory_prompt_preferences_enabled
+                gnosis_ocr_enabled=settings.gnosis_ocr_enabled,
+                gnosis_ocr_model=settings.gnosis_ocr_model,
+                gnosis_ocr_max_image_bytes=settings.gnosis_ocr_max_image_bytes,
+                gnosis_rustfs_enabled=settings.gnosis_rustfs_enabled,
+                gnosis_rustfs_bucket=settings.gnosis_rustfs_bucket,
+                gnosis_rustfs_prefix=settings.gnosis_rustfs_prefix,
+                gnosis_rustfs_endpoint=settings.gnosis_rustfs_endpoint,
+                gnosis_rustfs_retention_days=settings.gnosis_rustfs_retention_days,
+                gnosis_prompt_entities_enabled=settings.gnosis_prompt_entities_enabled,
+                gnosis_prompt_preferences_enabled=(
+                    settings.gnosis_prompt_preferences_enabled
                 ),
-                memory_prompt_reasoning_enabled=settings.memory_prompt_reasoning_enabled,
-                memory_consolidation_schedule_enabled=(
-                    settings.memory_consolidation_schedule_enabled
+                gnosis_prompt_reasoning_enabled=settings.gnosis_prompt_reasoning_enabled,
+                gnosis_consolidation_schedule_enabled=(
+                    settings.gnosis_consolidation_schedule_enabled
                 ),
             ),
             backend=readiness,
@@ -3289,7 +3289,7 @@ def _ocr_reference() -> OcrImageReference:
 
 def _rustfs_reference(
     *,
-    object_key: str = "agents-memory/image-1.png",
+    object_key: str = "gnosis/image-1.png",
 ) -> RustFSSourceReference:
     return RustFSSourceReference(
         bucket="memory-private",

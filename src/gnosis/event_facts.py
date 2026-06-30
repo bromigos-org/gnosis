@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Protocol, Self
 
-from agents_memory.graph_events import PlannedGraphEvent, plan_event
-from agents_memory.models import (
+from gnosis.graph_events import PlannedGraphEvent, plan_event
+from gnosis.models import (
     ClientEvent,
     EventIngestResult,
     EventIngestStatus,

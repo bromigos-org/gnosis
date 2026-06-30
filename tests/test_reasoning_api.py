@@ -3,18 +3,18 @@ from os import environ
 
 from fastapi.testclient import TestClient
 
-_ = environ.setdefault("AGENTS_MEMORY_TOKEN", "reasoning-access")
-_ = environ.setdefault("AGENTS_MEMORY_READ_OPERATOR_TOKEN", "read-operator-token")
-_ = environ.setdefault("AGENTS_MEMORY_EXPORT_OPERATOR_TOKEN", "export-operator-token")
-_ = environ.setdefault("AGENTS_MEMORY_WRITE_OPERATOR_TOKEN", "write-operator-token")
-_ = environ.setdefault("AGENTS_MEMORY_ADMIN_OPERATOR_TOKEN", "admin-operator-token")
+_ = environ.setdefault("GNOSIS_TOKEN", "reasoning-access")
+_ = environ.setdefault("GNOSIS_READ_OPERATOR_TOKEN", "read-operator-token")
+_ = environ.setdefault("GNOSIS_EXPORT_OPERATOR_TOKEN", "export-operator-token")
+_ = environ.setdefault("GNOSIS_WRITE_OPERATOR_TOKEN", "write-operator-token")
+_ = environ.setdefault("GNOSIS_ADMIN_OPERATOR_TOKEN", "admin-operator-token")
 _ = environ.setdefault("NEO4J_URI", "bolt://neo4j.local:7687")
 _ = environ.setdefault("NEO4J_PASSWORD", "inert-password")
 _ = environ.setdefault("LITELLM_BASE_URL", "http://litellm.local/v1")
 _ = environ.setdefault("LITELLM_API_KEY", "inert-litellm-key")
 
-from agents_memory.main import create_app  # noqa: E402
-from agents_memory.models import (  # noqa: E402
+from gnosis.main import create_app  # noqa: E402
+from gnosis.models import (  # noqa: E402
     BackendReadiness,
     BufferFlushResponse,
     BufferStatus,
@@ -84,7 +84,7 @@ from agents_memory.models import (  # noqa: E402
     SkillProposal,
     SkillUsage,
 )
-from agents_memory.settings import Settings  # noqa: E402
+from gnosis.settings import Settings  # noqa: E402
 
 
 def test_reasoning_lifecycle_when_request_is_scoped() -> None:
@@ -439,54 +439,54 @@ class RecordingBackend:
     def diagnostics(self, readiness: BackendReadiness) -> DiagnosticsResponse:
         settings = Settings()
         return DiagnosticsResponse(
-            tenant_id=settings.agents_memory_tenant_id,
+            tenant_id=settings.gnosis_tenant_id,
             config=DiagnosticsConfig(
                 neo4j_uri=settings.neo4j_uri,
                 neo4j_username=settings.neo4j_username,
                 litellm_base_url=settings.litellm_base_url,
-                memory_llm=settings.memory_llm,
-                memory_embedding=settings.memory_embedding,
-                memory_embedding_dimensions=settings.memory_embedding_dimensions,
-                memory_audit_read=settings.memory_audit_read,
-                memory_conversation_ttl_days=settings.memory_conversation_ttl_days,
-                memory_write_mode=settings.memory_write_mode,
-                memory_max_pending=settings.memory_max_pending,
-                memory_fact_deduplication_enabled=(
-                    settings.memory_fact_deduplication_enabled
+                gnosis_llm=settings.gnosis_llm,
+                gnosis_embedding=settings.gnosis_embedding,
+                gnosis_embedding_dimensions=settings.gnosis_embedding_dimensions,
+                gnosis_audit_read=settings.gnosis_audit_read,
+                gnosis_conversation_ttl_days=settings.gnosis_conversation_ttl_days,
+                gnosis_write_mode=settings.gnosis_write_mode,
+                gnosis_max_pending=settings.gnosis_max_pending,
+                gnosis_fact_deduplication_enabled=(
+                    settings.gnosis_fact_deduplication_enabled
                 ),
-                memory_trace_embedding_enabled=settings.memory_trace_embedding_enabled,
-                memory_extract_entities_enabled=(
-                    settings.memory_extract_entities_enabled
+                gnosis_trace_embedding_enabled=settings.gnosis_trace_embedding_enabled,
+                gnosis_extract_entities_enabled=(
+                    settings.gnosis_extract_entities_enabled
                 ),
-                memory_extract_relations_enabled=(
-                    settings.memory_extract_relations_enabled
+                gnosis_extract_relations_enabled=(
+                    settings.gnosis_extract_relations_enabled
                 ),
-                memory_extraction_preview_enabled=(
-                    settings.memory_extraction_preview_enabled
+                gnosis_extraction_preview_enabled=(
+                    settings.gnosis_extraction_preview_enabled
                 ),
-                memory_extraction_batch_size=settings.memory_extraction_batch_size,
-                memory_extraction_max_concurrency=(
-                    settings.memory_extraction_max_concurrency
+                gnosis_extraction_batch_size=settings.gnosis_extraction_batch_size,
+                gnosis_extraction_max_concurrency=(
+                    settings.gnosis_extraction_max_concurrency
                 ),
-                memory_extraction_chunk_size=settings.memory_extraction_chunk_size,
-                memory_extraction_chunk_overlap=(
-                    settings.memory_extraction_chunk_overlap
+                gnosis_extraction_chunk_size=settings.gnosis_extraction_chunk_size,
+                gnosis_extraction_chunk_overlap=(
+                    settings.gnosis_extraction_chunk_overlap
                 ),
-                memory_ocr_enabled=settings.memory_ocr_enabled,
-                memory_ocr_model=settings.memory_ocr_model,
-                memory_ocr_max_image_bytes=settings.memory_ocr_max_image_bytes,
-                memory_rustfs_enabled=settings.memory_rustfs_enabled,
-                memory_rustfs_bucket=settings.memory_rustfs_bucket,
-                memory_rustfs_prefix=settings.memory_rustfs_prefix,
-                memory_rustfs_endpoint=settings.memory_rustfs_endpoint,
-                memory_rustfs_retention_days=settings.memory_rustfs_retention_days,
-                memory_prompt_entities_enabled=settings.memory_prompt_entities_enabled,
-                memory_prompt_preferences_enabled=(
-                    settings.memory_prompt_preferences_enabled
+                gnosis_ocr_enabled=settings.gnosis_ocr_enabled,
+                gnosis_ocr_model=settings.gnosis_ocr_model,
+                gnosis_ocr_max_image_bytes=settings.gnosis_ocr_max_image_bytes,
+                gnosis_rustfs_enabled=settings.gnosis_rustfs_enabled,
+                gnosis_rustfs_bucket=settings.gnosis_rustfs_bucket,
+                gnosis_rustfs_prefix=settings.gnosis_rustfs_prefix,
+                gnosis_rustfs_endpoint=settings.gnosis_rustfs_endpoint,
+                gnosis_rustfs_retention_days=settings.gnosis_rustfs_retention_days,
+                gnosis_prompt_entities_enabled=settings.gnosis_prompt_entities_enabled,
+                gnosis_prompt_preferences_enabled=(
+                    settings.gnosis_prompt_preferences_enabled
                 ),
-                memory_prompt_reasoning_enabled=settings.memory_prompt_reasoning_enabled,
-                memory_consolidation_schedule_enabled=(
-                    settings.memory_consolidation_schedule_enabled
+                gnosis_prompt_reasoning_enabled=settings.gnosis_prompt_reasoning_enabled,
+                gnosis_consolidation_schedule_enabled=(
+                    settings.gnosis_consolidation_schedule_enabled
                 ),
             ),
             backend=readiness,
@@ -646,7 +646,7 @@ def _settings() -> Settings:
 
 
 def _auth_header() -> dict[str, str]:
-    return {"Authorization": f"Bearer {environ['AGENTS_MEMORY_TOKEN']}"}
+    return {"Authorization": f"Bearer {environ['GNOSIS_TOKEN']}"}
 
 
 def _scope_payload(*, tenant_id: str = "bromigos") -> dict[str, str]:

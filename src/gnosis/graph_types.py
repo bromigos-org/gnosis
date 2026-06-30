@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from agents_memory.models import JsonValue
+from gnosis.models import JsonValue
 
 type CypherParameters = dict[str, JsonValue]
 

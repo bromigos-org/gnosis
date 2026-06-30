@@ -4,7 +4,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agents_memory.models import JsonValue
+    from gnosis.models import JsonValue
 
 _REDACTED = "[REDACTED]"
 _BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{6,}\b")

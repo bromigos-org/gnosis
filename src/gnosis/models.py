@@ -791,34 +791,34 @@ class DiagnosticsConfig(ContractModel):
     neo4j_uri: str
     neo4j_username: str
     litellm_base_url: str
-    memory_llm: str
-    memory_embedding: str
-    memory_embedding_dimensions: int
-    memory_audit_read: bool
-    memory_conversation_ttl_days: int | None
-    memory_write_mode: str
-    memory_max_pending: int
-    memory_fact_deduplication_enabled: bool
-    memory_trace_embedding_enabled: bool
-    memory_extract_entities_enabled: bool
-    memory_extract_relations_enabled: bool
-    memory_extraction_preview_enabled: bool
-    memory_extraction_batch_size: int
-    memory_extraction_max_concurrency: int
-    memory_extraction_chunk_size: int
-    memory_extraction_chunk_overlap: int
-    memory_ocr_enabled: bool
-    memory_ocr_model: str
-    memory_ocr_max_image_bytes: int
-    memory_rustfs_enabled: bool
-    memory_rustfs_bucket: str
-    memory_rustfs_prefix: str
-    memory_rustfs_endpoint: str
-    memory_rustfs_retention_days: int | None
-    memory_prompt_entities_enabled: bool
-    memory_prompt_preferences_enabled: bool
-    memory_prompt_reasoning_enabled: bool
-    memory_consolidation_schedule_enabled: bool
+    gnosis_llm: str
+    gnosis_embedding: str
+    gnosis_embedding_dimensions: int
+    gnosis_audit_read: bool
+    gnosis_conversation_ttl_days: int | None
+    gnosis_write_mode: str
+    gnosis_max_pending: int
+    gnosis_fact_deduplication_enabled: bool
+    gnosis_trace_embedding_enabled: bool
+    gnosis_extract_entities_enabled: bool
+    gnosis_extract_relations_enabled: bool
+    gnosis_extraction_preview_enabled: bool
+    gnosis_extraction_batch_size: int
+    gnosis_extraction_max_concurrency: int
+    gnosis_extraction_chunk_size: int
+    gnosis_extraction_chunk_overlap: int
+    gnosis_ocr_enabled: bool
+    gnosis_ocr_model: str
+    gnosis_ocr_max_image_bytes: int
+    gnosis_rustfs_enabled: bool
+    gnosis_rustfs_bucket: str
+    gnosis_rustfs_prefix: str
+    gnosis_rustfs_endpoint: str
+    gnosis_rustfs_retention_days: int | None
+    gnosis_prompt_entities_enabled: bool
+    gnosis_prompt_preferences_enabled: bool
+    gnosis_prompt_reasoning_enabled: bool
+    gnosis_consolidation_schedule_enabled: bool
 
 
 class DiagnosticsResponse(ContractModel):

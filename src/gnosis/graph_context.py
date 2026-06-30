@@ -1,8 +1,8 @@
 from collections.abc import Sequence
 from typing import Final
 
-from agents_memory.graph_types import CypherParameters, vector_parameter
-from agents_memory.models import GraphContextRequest, JsonValue
+from gnosis.graph_types import CypherParameters, vector_parameter
+from gnosis.models import GraphContextRequest, JsonValue
 
 
 def context_parameters(

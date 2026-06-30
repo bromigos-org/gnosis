@@ -5,8 +5,8 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from agents_memory.models import MemoryScope
-from agents_memory.settings import Settings
+from gnosis.models import MemoryScope
+from gnosis.settings import Settings
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -106,10 +106,10 @@ class Authenticator:
 
 def build_authenticator(settings: Settings) -> Authenticator:
     return Authenticator(
-        token=settings.agents_memory_token,
-        read_operator_token=settings.agents_memory_read_operator_token,
-        export_operator_token=settings.agents_memory_export_operator_token,
-        write_operator_token=settings.agents_memory_write_operator_token,
-        admin_operator_token=settings.agents_memory_admin_operator_token,
-        tenant_id=settings.agents_memory_tenant_id,
+        token=settings.gnosis_token,
+        read_operator_token=settings.gnosis_read_operator_token,
+        export_operator_token=settings.gnosis_export_operator_token,
+        write_operator_token=settings.gnosis_write_operator_token,
+        admin_operator_token=settings.gnosis_admin_operator_token,
+        tenant_id=settings.gnosis_tenant_id,
     )

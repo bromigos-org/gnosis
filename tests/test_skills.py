@@ -2,18 +2,18 @@ from os import environ
 
 import pytest
 
-environ["AGENTS_MEMORY_TOKEN"] = "test-token"
-environ["AGENTS_MEMORY_READ_OPERATOR_TOKEN"] = "read-operator-token"
-environ["AGENTS_MEMORY_EXPORT_OPERATOR_TOKEN"] = "export-operator-token"
-environ["AGENTS_MEMORY_WRITE_OPERATOR_TOKEN"] = "write-operator-token"
-environ["AGENTS_MEMORY_ADMIN_OPERATOR_TOKEN"] = "admin-operator-token"
+environ["GNOSIS_TOKEN"] = "test-token"
+environ["GNOSIS_READ_OPERATOR_TOKEN"] = "read-operator-token"
+environ["GNOSIS_EXPORT_OPERATOR_TOKEN"] = "export-operator-token"
+environ["GNOSIS_WRITE_OPERATOR_TOKEN"] = "write-operator-token"
+environ["GNOSIS_ADMIN_OPERATOR_TOKEN"] = "admin-operator-token"
 environ["NEO4J_URI"] = "bolt://neo4j.neo4j.svc.cluster.local:7687"
 environ["NEO4J_PASSWORD"] = "test-password"
 environ["LITELLM_BASE_URL"] = "http://litellm.litellm.svc.cluster.local:4000/v1"
 environ["LITELLM_API_KEY"] = "test-litellm-key"
 
-from agents_memory.backend import Neo4jAgentMemoryBackend
-from agents_memory.models import (
+from gnosis.backend import Neo4jAgentMemoryBackend
+from gnosis.models import (
     BackendReadiness,
     ClientEvent,
     EventIngestResult,
@@ -27,8 +27,8 @@ from agents_memory.models import (
     SkillStatus,
     SkillUsage,
 )
-from agents_memory.settings import Settings
-from agents_memory.skill_registry import InMemorySkillRegistry
+from gnosis.settings import Settings
+from gnosis.skill_registry import InMemorySkillRegistry
 
 
 @pytest.mark.anyio

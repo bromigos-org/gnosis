@@ -1,12 +1,12 @@
-from agents_memory.graph_context import (
+from gnosis.graph_context import (
     CONTEXT_CYPHER,
     SEMANTIC_CONTEXT_CYPHER,
     context_parameters,
     is_duplicate_result,
 )
-from agents_memory.graph_types import CypherParameters
-from agents_memory.graph_upsert import upsert_parameters
-from agents_memory.graph_upsert_cypher import UPSERT_EVENT_CYPHER
+from gnosis.graph_types import CypherParameters
+from gnosis.graph_upsert import upsert_parameters
+from gnosis.graph_upsert_cypher import UPSERT_EVENT_CYPHER
 
 __all__ = [
     "CONTEXT_CYPHER",

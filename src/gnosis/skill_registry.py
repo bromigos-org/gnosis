@@ -2,7 +2,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from agents_memory.models import (
+from gnosis.models import (
     EventIngestResult,
     EventIngestStatus,
     SkillListRequest,

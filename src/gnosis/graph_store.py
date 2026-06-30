@@ -4,7 +4,7 @@ from typing import Protocol, Self
 
 from neo4j.exceptions import Neo4jError
 
-from agents_memory.graph_cypher import (
+from gnosis.graph_cypher import (
     CONTEXT_CYPHER,
     SEMANTIC_CONTEXT_CYPHER,
     UPSERT_EVENT_CYPHER,
@@ -13,7 +13,7 @@ from agents_memory.graph_cypher import (
     is_duplicate_result,
     upsert_parameters,
 )
-from agents_memory.graph_events import (
+from gnosis.graph_events import (
     GraphNode,
     PlannedGraphEvent,
     context_allows_node,
@@ -21,9 +21,9 @@ from agents_memory.graph_events import (
     node_from_row,
     plan_event,
 )
-from agents_memory.graph_schema import GRAPH_SCHEMA_CYPHER, graph_vector_schema_cypher
-from agents_memory.graph_types import vector_parameter
-from agents_memory.models import (
+from gnosis.graph_schema import GRAPH_SCHEMA_CYPHER, graph_vector_schema_cypher
+from gnosis.graph_types import vector_parameter
+from gnosis.models import (
     BackendReadiness,
     ClientEvent,
     EventIngestResult,

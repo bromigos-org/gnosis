@@ -1,9 +1,9 @@
 import pytest
 
-from agents_memory.graph_cypher import UPSERT_EVENT_CYPHER, upsert_parameters
-from agents_memory.graph_events import plan_event
-from agents_memory.graph_store import DirectNeo4jGraphStore, InMemoryGraphExecutor
-from agents_memory.models import (
+from gnosis.graph_cypher import UPSERT_EVENT_CYPHER, upsert_parameters
+from gnosis.graph_events import plan_event
+from gnosis.graph_store import DirectNeo4jGraphStore, InMemoryGraphExecutor
+from gnosis.models import (
     ClientEvent,
     ClientEventActor,
     ClientEventSubject,

@@ -4,11 +4,11 @@ from typing import Self
 
 import pytest
 
-from agents_memory.graph_cypher import SEMANTIC_CONTEXT_CYPHER
-from agents_memory.graph_events import plan_event
-from agents_memory.graph_store import Neo4jGraphExecutor
-from agents_memory.graph_types import CypherParameters
-from agents_memory.models import (
+from gnosis.graph_cypher import SEMANTIC_CONTEXT_CYPHER
+from gnosis.graph_events import plan_event
+from gnosis.graph_store import Neo4jGraphExecutor
+from gnosis.graph_types import CypherParameters
+from gnosis.models import (
     ClientEvent,
     ClientEventActor,
     ClientEventSubject,
