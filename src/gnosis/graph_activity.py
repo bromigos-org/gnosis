@@ -28,7 +28,8 @@ ORDER BY message_count DESC, coalesce(ch.name, ch.channel_id) ASC
 WITH collect({user: u, channel: ch, message_count: message_count})[..$limit] AS rows
 UNWIND range(0, size(rows) - 1) AS index
 WITH rows[index] AS row, index + 1 AS rank
-WITH row.user AS u, row.channel AS ch, row.message_count AS message_count, rank,
+WITH row.user AS u, row.channel AS ch, row.message_count AS message_count, rank
+WITH u, ch, message_count, rank,
   coalesce(u.display_name, u.user_id) AS user_name,
   coalesce(ch.name, ch.channel_id) AS channel_name
 RETURN 'aggregate:' + $tenant_id + ':' + coalesce($guild_id, 'global') + ':'
