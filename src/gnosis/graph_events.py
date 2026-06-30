@@ -107,24 +107,41 @@ def context_allows_node(request: GraphContextRequest, node: GraphNode) -> bool:
 
 
 def fact_from_node(node: GraphNode) -> JsonObject:
-    return {
+    fact: JsonObject = {
         "id": node.id,
         "type": node.node_type,
         "scope": node.scope.visibility.value,
         "summary": node.summary,
         "deleted": node.deleted,
     }
+    if node.node_type == "channel_activity":
+        fact.update(node.payload)
+    return fact
 
 
 def node_from_row(row: dict[str, JsonValue], scope: MemoryScope) -> GraphNode:
+    node_type = _row_string(row, "type")
     return GraphNode(
         id=_row_string(row, "id"),
-        node_type=_row_string(row, "type"),
+        node_type=node_type,
         scope=scope,
         summary=_row_string(row, "summary"),
         deleted=row.get("deleted", False) is True,
-        payload={},
+        payload=_row_payload(row, node_type),
     )
+
+
+def _row_payload(row: dict[str, JsonValue], node_type: str) -> JsonObject:
+    if node_type != "channel_activity":
+        return {}
+    return {
+        "rank": _row_int(row, "rank"),
+        "user_id": _row_string(row, "user_id"),
+        "user_display_name": _row_string(row, "user_display_name"),
+        "channel_id": _row_string(row, "channel_id"),
+        "channel_name": _row_string(row, "channel_name"),
+        "message_count": _row_int(row, "message_count"),
+    }
 
 
 def _summary(event: ClientEvent, node_type: str) -> str:
@@ -379,3 +396,10 @@ def _row_string(row: dict[str, JsonValue], key: str) -> str:
     if isinstance(value, str):
         return value
     return ""
+
+
+def _row_int(row: dict[str, JsonValue], key: str) -> int:
+    value = row.get(key, 0)
+    if isinstance(value, int):
+        return value
+    return 0
