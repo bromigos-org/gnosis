@@ -2,7 +2,12 @@ from dataclasses import dataclass, field
 from typing import Protocol, Self
 
 from agents_memory.graph_events import PlannedGraphEvent, plan_event
-from agents_memory.models import ClientEvent, EventIngestResult, EventIngestStatus
+from agents_memory.models import (
+    ClientEvent,
+    EventIngestResult,
+    EventIngestStatus,
+    JsonObject,
+)
 
 
 class LongTermFactWriter(Protocol):
@@ -12,7 +17,7 @@ class LongTermFactWriter(Protocol):
         predicate: str,
         obj: str,
         *,
-        metadata: dict[str, str],
+        metadata: JsonObject,
         generate_embedding: bool,
     ) -> object: ...
 
@@ -29,8 +34,8 @@ class MemoryClientContext(Protocol):
     ) -> None: ...
 
 
-def event_metadata(event: ClientEvent) -> dict[str, str]:
-    metadata = {
+def event_metadata(event: ClientEvent) -> JsonObject:
+    metadata: JsonObject = {
         "event_id": event.event_id,
         "idempotency_key": event.idempotency_key,
         "event_type": event.event_type.value,
