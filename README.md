@@ -50,6 +50,56 @@ The primary prompt-facing route is `POST /v1/memory/context`.
 
 Reasoning memory is auditable, not free-form hidden thought. Trace endpoints store lifecycle data, steps, tool calls, and outcomes, but prompt recall must omit chain-of-thought style fields such as `thought` or `chain_of_thought`.
 
+## How the memory systems work together
+
+`agents-memory` combines several memory stores into one prompt-safe response, but each store has a different job.
+
+- `short_term` keeps recent conversational continuity for the active session. It answers questions like what was just said, which task is in progress, and what the assistant is already committed to.
+- `long_term` keeps durable recall such as stable user preferences, facts worth retaining, named entities, and other knowledge that should survive past one session.
+- Graph facts are the structured part of long-term memory. They give callers scoped facts and relationships that can be rendered deterministically or searched by operators.
+- Events capture ambient activity that is useful for memory building and audit, even when it is not itself a direct conversation turn.
+- `reasoning` stores lifecycle context about traces, steps, tool calls, and outcomes so prior successful work can be reviewed and selectively recalled without exposing hidden chain-of-thought.
+
+The gateway's job is to turn those different stores into one scoped response. A caller sends a `MemoryScope`, the gateway checks auth and scope boundaries, reads the allowed memory types, removes unsafe fields, and returns labeled sections that are safe to render into prompts.
+
+### Combined memory, one request and separate internal layers
+
+`POST /v1/memory/context` is the one-request prompt path, not one merged memory bucket. Callers send a scoped request that conceptually includes:
+
+- `MemoryScope` for tenant, space, agent, session, user, and visibility boundaries.
+- The current query or message that needs recall.
+- Limits and options that shape how much short-term, long-term, graph-backed, or reasoning context can be considered.
+
+Inside the gateway, those memory classes still stay separate.
+
+- `short_term` is read for recent continuity.
+- `long_term` is read for durable recall.
+- Graph facts, entities, and preferences are read as structured long-term enrichment.
+- `reasoning` is read as prompt-safe lifecycle, tool, and outcome context, not hidden chain-of-thought.
+
+The response is assembled only after scope checks, policy checks, and redaction. Instead of exposing raw backend payloads, the gateway returns prompt-safe `sections[]` entries with labeled fields such as `memory_type`, `source`, `content`, and optional `facts`. That gives clients one scoped response to render while keeping the underlying storage layers separate, auditable, and policy-controlled.
+
+Scope and redaction live here on purpose.
+
+- Scope decides which tenant, space, agent, session, user, guild, channel, and visibility boundary a request is allowed to cross.
+- Redaction removes secrets and prompt-unsafe backend payloads before context, diagnostics, exports, or operator reports leave the service.
+- Prompt-safe reasoning recall is a filtered view. Audit data may include trace lifecycle detail, but prompt recall must not replay hidden thought fields.
+
+The write paths also serve different purposes.
+
+- Conversation writes through `POST /v1/messages` keep recent turns flowing into short-term memory and any enabled extraction pipeline.
+- Event writes through `POST /v1/events` and `POST /v1/events/batch` capture structured activity that can later support recall, extraction, or operator review.
+- Operator writes through the entity, fact, and preference endpoints are explicit long-term edits for curated memory updates.
+- Reasoning lifecycle writes through the trace, step, tool-call, and complete endpoints record how work was performed and how it ended.
+
+Operator workflows stay review-first.
+
+- Dedup does not silently rewrite memory. Operators inspect candidates first, then apply `merge` or `reject` decisions with scoped dry-run tokens and snapshot checks.
+- Consolidation also starts with a dry run. Read operators review the proposed change set, and admin operators apply it only with an explicit follow-up request.
+- Direct entity, fact, and preference writes exist for deliberate curation, not as a substitute for broad automatic mutation.
+
+In practice, this means callers can ask for one combined memory response while the gateway keeps the underlying storage classes separate, auditable, and policy-controlled.
+
 ## Request and data flow
 
 ```mermaid
