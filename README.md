@@ -1,86 +1,278 @@
 # agents-memory
 
-`agents-memory` is the shared homelab memory service for PC Principal and future agents. It exposes policy-scoped HTTP endpoints instead of giving agents direct Neo4j access.
+`agents-memory` is the Bromigos policy gateway in front of Neo4j Agent Memory. It exposes a scoped HTTP API, enforces tenant and operator boundaries, applies redaction and rollout policy, and keeps other services away from direct Neo4j, Bolt, or SDK access.
 
-## API
+This repo is not a thin SDK wrapper. It is the memory control plane for Bromigos workloads.
 
-- `GET /health` returns shallow liveness as `{"status":"ok"}` without checking dependencies.
-- `GET /ready` is unauthenticated Kubernetes readiness. It returns `{"status":"ready"}` only after the structured graph backend can connect and bootstrap schema.
-- `GET /v1/diagnostics` returns bearer-protected, non-secret tenant, config, and backend readiness details.
-- `POST /v1/messages` records a scoped message for extraction into memory.
-- `POST /v1/context` remains the legacy short-term context endpoint for backward compatibility. It still returns the historical `{"context": ...}` shape.
-- `POST /v1/memory/context` is the combined official-style context endpoint for prompt-facing retrieval. It returns labeled sections for short-term memory, explicit long-term facts, upstream long-term preferences and entities, reasoning trace context, and optional local graph recall.
-- `POST /v1/events` and `POST /v1/events/batch` ingest scoped structured events such as Discord messages, topology updates, reactions, links, and attachment metadata.
-- `POST /v1/graph/context` returns scoped graph facts for a query. This is a custom local `GraphNode` and vector recall extension, using the configured embedding model when Neo4j vector schema is available.
-- `POST /v1/skills` lists reviewed skill context for one tenant and agent.
-- `POST /v1/skills/proposals` stores a proposed skill for human review.
-- `POST /v1/skills/usage` records usage only for approved reviewed skills.
+## What it does
 
-All endpoints except `/health` and `/ready` require `Authorization: Bearer <AGENTS_MEMORY_TOKEN>`.
+- Accepts scoped message and event writes over HTTP.
+- Builds prompt-safe memory context across `short_term`, `long_term`, `reasoning`, and graph-backed facts.
+- Exposes operator-only search and write APIs for entities, facts, and preferences.
+- Supports graph export, stats, dedup review and apply, consolidation dry runs and apply, and buffered write flush.
+- Stores reasoning traces for audit and reuse, while keeping hidden chain-of-thought out of prompt recall and public memory.
+- Applies redaction, feature flags, and safe defaults before the SDK or database sees a request.
 
-## Memory layers and local extensions
+## Architecture
 
-- `POST /v1/memory/context` is the operator-facing combined endpoint. It keeps the official-style layered contract in one response so callers do not have to stitch memory pieces together themselves.
-- `POST /v1/context` stays available as the legacy short-term-only path. Existing callers can keep using it, but new prompt assembly should prefer `/v1/memory/context`.
-- Long-term facts are included explicitly in the combined response because the upstream long-term formatter separates preferences and entities from fact formatting. Local event promotion already writes scoped facts, so the combined endpoint surfaces them as their own labeled section.
-- Reasoning trace context is limited to high-level action, observation, and tool records. It must not store raw chain-of-thought, raw prompt internals, or secrets.
-- `POST /v1/graph/context` stays separate as a local extension. It returns scoped `GraphNode` recall and vector-backed graph facts without changing the graph endpoint's own response shape.
-- `POST /v1/skills`, `POST /v1/skills/proposals`, and `POST /v1/skills/usage` stay separate from reasoning. Reviewed skills remain reviewed guidance, not hidden memory traces or self-modifying behavior.
+```mermaid
+flowchart LR
+    Clients[PC-Principal and other Bromigos clients]
+    Gateway[agents-memory HTTP gateway]
+    Policy[Scope checks, auth, redaction, rollout policy]
+    SDK[neo4j-agent-memory SDK 0.5.0]
+    Neo4j[(Neo4j)]
+    LiteLLM[LiteLLM]
+    RustFS[Private RustFS objects]
 
-## Discord memory scope and privacy
+    Clients --> Gateway
+    Gateway --> Policy
+    Policy --> SDK
+    SDK --> Neo4j
+    Gateway --> LiteLLM
+    Gateway -. optional provenance .-> RustFS
+```
 
-- `agents-memory` is policy-scoped first. Clients must send tenant, agent, session, user, and visibility metadata on every message, event, or query.
-- PC Principal uses tenant `bromigos` and agent `pc-principal` by default, so recall stays inside that tenant and agent boundary.
-- Visibility is enforced in the backend. `private_user` stays tied to the matching user, `channel` stays tied to the matching guild and channel, `guild` stays inside that guild, `agent_shared` stays within the same agent, and `global` is the only broad scope.
-- Channel-scoped graph recall does not cross into sibling channels. This prevents cross-channel graph recall even when two channels live in the same guild.
-- Topology deletes and renames are preserved as tombstones or event history, not hard-deleted facts. That keeps the audit trail while still reflecting current state.
-- Structured event ingestion bootstraps Neo4j constraints, scalar indexes, and the `GraphNode.embedding` vector index before graph writes. Accepted events are written to graph state and promoted to embedded long-term facts through `MemoryClient.long_term.add_fact(..., generate_embedding=True)` with event, tenant, agent, session, user, visibility, guild, and channel metadata. Duplicate event deliveries repair current graph state but are not promoted to long-term facts again.
+## Gateway boundary
 
-## Reviewed skill workflow
+- `agents-memory` is the only Bromigos service in this workspace that talks to Neo4j and the Python SDK directly.
+- Callers use HTTP only. They do not open Bolt connections, run Cypher, or import the SDK.
+- Scope policy lives here, not in prompt templates or client-side filtering.
+- The gateway redacts sensitive backend payloads before returning diagnostics, exports, consolidation reports, or reasoning results.
 
-- Skills are not self-modifying executable behavior. The intended workflow is observe, propose, ask for approval, save an approved reviewed skill, then expose that approved record as non-executable context.
-- `/v1/skills*` remains intentionally separate from `/v1/memory/context` and reasoning trace data. Operators should review it as approved guidance, not as an automatic memory layer.
-- `list_skills` only returns approved skills whose metadata marks them as reviewed.
-- Proposals are stored for review, but they are not returned as runnable context.
-- Usage recording is rejected for unapproved skills, with the backend returning `skill is not approved`.
+## Memory model
 
-## Attachments and Discord event posture
+The primary prompt-facing route is `POST /v1/memory/context`.
 
-- The current Discord rollout is metadata-first. PC Principal sends attachment filename, content type, size, dimensions, spoiler status, and sanitized URLs, plus sanitized link discoveries.
-- Attachment bytes are not copied by default. If an operator later enables a copy policy in PC Principal, that is a separate rollout decision from the default memory service behavior.
-- RustFS is only relevant for a future intentional copy path. The current shared-memory contract assumes metadata-only attachment ingestion.
+- `short_term` covers recent turns and active session continuity.
+- `long_term` covers durable facts, preferences, entities, and graph-backed recall.
+- `reasoning` covers prior successful traces and tool-use summaries.
+
+Reasoning memory is auditable, not free-form hidden thought. Trace endpoints store lifecycle data, steps, tool calls, and outcomes, but prompt recall must omit chain-of-thought style fields such as `thought` or `chain_of_thought`.
+
+## Request and data flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant G as agents-memory
+    participant P as Policy layer
+    participant S as SDK
+    participant N as Neo4j
+
+    C->>G: POST /v1/memory/context with scope and query
+    G->>P: Validate bearer token and scope
+    P->>S: Request short_term, long_term, reasoning, graph context
+    S->>N: Read scoped memory
+    N-->>S: Records and graph facts
+    S-->>P: Structured context
+    P-->>G: Redacted, labeled sections
+    G-->>C: sections[] with source, memory_type, content, facts
+```
+
+## API surface
+
+### Health and diagnostics
+
+- `GET /health` for shallow liveness.
+- `GET /ready` for readiness after backend connection, schema bootstrap, and buffer readiness.
+- `GET /v1/diagnostics` for authenticated non-secret configuration and backend readiness.
+
+### Prompt and recall routes
+
+- `POST /v1/context` keeps the legacy short-term contract.
+- `POST /v1/memory/context` is the main combined memory endpoint.
+- `POST /v1/graph/context` returns graph recall and scoped facts.
+- `POST /v1/reasoning/context` returns prompt-safe reasoning recall.
+
+### Message and event ingestion
+
+- `POST /v1/messages` writes scoped user, assistant, or system messages.
+- `POST /v1/events` writes one structured client event.
+- `POST /v1/events/batch` writes up to 100 structured events per request.
+- `POST /v1/memory/extraction/preview` previews extraction candidates before durable writes.
+
+### Operator routes
+
+- `GET /v1/memory/stats`
+- `POST /v1/memory/graph/export`
+- `POST /v1/memory/entities/search`
+- `POST /v1/memory/facts/search`
+- `POST /v1/memory/preferences/search`
+- `POST /v1/memory/entities`
+- `POST /v1/memory/facts`
+- `POST /v1/memory/preferences`
+- `GET /v1/memory/dedup/stats`
+- `POST /v1/memory/dedup/candidates`
+- `POST /v1/memory/dedup/apply`
+- `POST /v1/memory/consolidation/dry-run`
+- `POST /v1/memory/consolidation/apply`
+- `POST /v1/memory/buffer/flush`
+
+### Skill and reasoning routes
+
+- `POST /v1/skills`
+- `POST /v1/skills/proposals`
+- `POST /v1/skills/usage`
+- `POST /v1/reasoning/traces`
+- `POST /v1/reasoning/traces/{trace_id}/steps`
+- `POST /v1/reasoning/steps/{step_id}/tool-calls`
+- `POST /v1/reasoning/traces/{trace_id}/complete`
+- `POST /v1/reasoning/traces/list`
+- `POST /v1/reasoning/traces/{trace_id}/detail`
+- `POST /v1/reasoning/traces/similar`
+- `POST /v1/reasoning/steps/search`
+- `POST /v1/reasoning/tools/stats`
+
+All routes except `/health` and `/ready` require `Authorization: Bearer <token>`.
+
+## Auth and scope model
+
+Every request is tenant-scoped through `MemoryScope`.
+
+- `tenant_id`, `space_id`, `agent_id`, `session_id`, `user_id`, and `visibility` are required.
+- Optional `guild_id` and `channel_id` support Discord-aware scoping.
+- The gateway rejects scope mismatches before the backend runs.
+
+Operator boundaries are split by token class.
+
+- `AGENTS_MEMORY_TOKEN` for normal caller routes.
+- `AGENTS_MEMORY_READ_OPERATOR_TOKEN` for diagnostics, stats, and search-style operator reads.
+- `AGENTS_MEMORY_EXPORT_OPERATOR_TOKEN` for graph export.
+- `AGENTS_MEMORY_WRITE_OPERATOR_TOKEN` for direct entity, fact, and preference writes.
+- `AGENTS_MEMORY_ADMIN_OPERATOR_TOKEN` for dedup apply, consolidation apply, and buffer flush.
+
+Production should not rely on predictable token defaults. Operator tokens are expected to come from secret-backed deployment config.
+
+## Safe defaults and rollout posture
+
+Several features exist, but they are controlled and not silently enabled.
+
+- Extraction is off by default.
+- Relation extraction is off by default and depends on entity extraction.
+- OCR is off by default.
+- RustFS source references are off by default.
+- Prompt enrichment from entities, preferences, and reasoning is off by default.
+- Consolidation scheduling is off by default.
+- Buffered writes exist, but the default write mode is `sync`.
+
+Preview comes before persistence. If extraction work is being evaluated, use `POST /v1/memory/extraction/preview` first.
+
+## Extraction, OCR, and RustFS
+
+- `POST /v1/messages` and `POST /v1/memory/extraction/preview` can carry raw text documents, OCR image references, and RustFS source references.
+- OCR calls go through LiteLLM when enabled, with the homelab OCR alias configured as `unlimited-ocr`.
+- RustFS is for private source artifacts and provenance, not public attachment dumping.
+- Neo4j stores extracted text, provenance, checksums, source URIs, and metadata. It should not store raw media bytes.
+
+## Dedup, consolidation, and buffering
+
+- Dedup is review-first. Operators fetch candidate sets and apply a scoped `merge` or `reject` using dry-run tokens, snapshot hashes, and idempotency keys.
+- Consolidation is also review-first. Dry runs are read-operator operations, apply requires admin operator auth and an explicit `apply=true` request.
+- Buffered writes are available, but they are not the silent default. Operators can flush pending writes with `POST /v1/memory/buffer/flush`.
+
+## Configuration
+
+### Core settings
+
+- `AGENTS_MEMORY_TOKEN`
+- `AGENTS_MEMORY_READ_OPERATOR_TOKEN`
+- `AGENTS_MEMORY_EXPORT_OPERATOR_TOKEN`
+- `AGENTS_MEMORY_WRITE_OPERATOR_TOKEN`
+- `AGENTS_MEMORY_ADMIN_OPERATOR_TOKEN`
+- `AGENTS_MEMORY_TENANT_ID`
+- `NEO4J_URI`
+- `NEO4J_USERNAME`
+- `NEO4J_PASSWORD`
+- `LITELLM_BASE_URL`
+- `LITELLM_API_KEY`
+- `MEMORY_LLM`
+- `MEMORY_EMBEDDING`
+- `MEMORY_EMBEDDING_DIMENSIONS`
+
+### Feature and policy settings
+
+- `MEMORY_AUDIT_READ`
+- `MEMORY_CONVERSATION_TTL_DAYS`
+- `MEMORY_WRITE_MODE`
+- `MEMORY_MAX_PENDING`
+- `MEMORY_FACT_DEDUPLICATION_ENABLED`
+- `MEMORY_TRACE_EMBEDDING_ENABLED`
+- `MEMORY_EXTRACT_ENTITIES_ENABLED`
+- `MEMORY_EXTRACT_RELATIONS_ENABLED`
+- `MEMORY_EXTRACTION_PREVIEW_ENABLED`
+- `MEMORY_EXTRACTION_BATCH_SIZE`
+- `MEMORY_EXTRACTION_MAX_CONCURRENCY`
+- `MEMORY_EXTRACTION_CHUNK_SIZE`
+- `MEMORY_EXTRACTION_CHUNK_OVERLAP`
+- `MEMORY_OCR_ENABLED`
+- `MEMORY_OCR_MODEL`
+- `MEMORY_OCR_MAX_IMAGE_BYTES`
+- `MEMORY_RUSTFS_ENABLED`
+- `MEMORY_RUSTFS_ENDPOINT`
+- `MEMORY_RUSTFS_BUCKET`
+- `MEMORY_RUSTFS_PREFIX`
+- `MEMORY_RUSTFS_RETENTION_DAYS`
+- `MEMORY_PROMPT_ENTITIES_ENABLED`
+- `MEMORY_PROMPT_PREFERENCES_ENABLED`
+- `MEMORY_PROMPT_REASONING_ENABLED`
+- `MEMORY_CONSOLIDATION_SCHEDULE_ENABLED`
 
 ## Local development
 
 ```bash
 uv sync
 uv run uvicorn agents_memory.main:app --host 0.0.0.0 --port 8080 --reload
-uv run pytest
 ```
 
-## Configuration
+## Verification commands
 
-- `AGENTS_MEMORY_TOKEN`: bearer token required by API clients.
-- `AGENTS_MEMORY_TENANT_ID`: default tenant, usually `bromigos`.
-- `NEO4J_URI`: in-cluster Bolt URI, for example `bolt://neo4j.neo4j.svc.cluster.local:7687`.
-- `NEO4J_USERNAME`: Neo4j username, usually `neo4j`.
-- `NEO4J_PASSWORD`: Neo4j password from Vault/ESO.
-- `LITELLM_BASE_URL`: OpenAI-compatible LiteLLM endpoint.
-- `LITELLM_API_KEY`: LiteLLM master key or service token.
-- `MEMORY_LLM`: extraction/reasoning model alias.
-- `MEMORY_EMBEDDING`: embedding model alias. Homelab deployments use the local-only LiteLLM alias `local-qwen3-embedding-0.6b`, backed by `Qwen/Qwen3-Embedding-0.6B` with 1024 dimensions through an in-cluster OpenAI-compatible `/v1` endpoint.
-- `MEMORY_EMBEDDING_DIMENSIONS`: embedding vector dimensions. This must match the selected embedding model; `local-qwen3-embedding-0.6b` uses `1024`.
+```bash
+uv run pytest tests/test_api.py -q
+uv run pytest
+uv run basedpyright
+uv run ruff check .
+```
 
-Neo4j agent memory embeddings must stay behind LiteLLM. Do not point PC Principal or `agents-memory` directly at an embedding runtime, and do not use OpenAI/Copilot aliases for memory embeddings. Before rolling out `local-qwen3-embedding-0.6b`, ensure the local embedding runtime serves `Qwen/Qwen3-Embedding-0.6B` at the in-cluster endpoint configured in the homelab LiteLLM wrapper chart.
+## Deployment and GitOps
 
-The first API layer is intentionally small: agents pass scope metadata with every request, and future backend adapters enforce that scope before touching graph/vector memory.
+Homelab deployment assumes an internal service plus ingress, not a public load balancer.
 
-For operators, keep the deployment path GitOps-only. Update the calling service's Helm values or manifests in Git, push to the tracked branch, and let ArgoCD reconcile. Don't bypass tracked services with manual cluster apply steps or manual chart install or upgrade steps.
+- Kubernetes service type is `ClusterIP`.
+- External access is exposed through Traefik `IngressRoute`.
+- Operator tokens and backend credentials are wired through Helm and External Secrets Operator.
+- ArgoCD is the expected reconciler for rollout and rollback.
 
-## Rollout and rollback posture
+### Rollout
 
-- Treat `/v1/memory/context` as the new prompt-facing contract. Keep `/v1/context` available during rollout so older callers can continue using the short-term legacy response.
-- Roll out combined context first, then any optional features that depend on it, such as graph recall or reasoning trace consumption in callers.
-- Keep the service private. The intended homelab posture remains `ClusterIP` plus the existing private Traefik and GitOps flow.
-- If operators need to back out, revert the smallest Git change or chart value that introduced the behavior, push the change, and let ArgoCD reconcile.
-- A rollback should preserve endpoint compatibility. `/v1/context` stays available for old clients, `/v1/memory/context` can be disabled at the caller side, and `/v1/graph/context` plus `/v1/skills*` remain separate surfaces.
+1. Land the code or Helm change in Git.
+2. Keep optional memory features disabled unless the rollout calls for them.
+3. Let ArgoCD reconcile.
+4. Verify `GET /ready`, authenticated `GET /v1/diagnostics`, and any changed dry-run or operator route.
+5. For extraction work, verify `POST /v1/memory/extraction/preview` before enabling durable extraction paths.
+
+### Rollback
+
+1. Revert the smallest Git or Helm change that introduced the behavior.
+2. Let ArgoCD reconcile.
+3. Preserve compatibility by keeping legacy `/v1/context` available while callers back away from optional combined sections.
+
+## Current guarantees and non-goals
+
+### Current guarantees
+
+- HTTP is the supported client boundary.
+- Scope and tenant checks happen before backend access.
+- Reasoning traces are available for audit and retrieval without exposing raw hidden thought.
+- Export, dedup, and consolidation responses are redacted before leaving the gateway.
+
+### Non-goals in this repo
+
+- Direct client access to Neo4j or Bolt.
+- SDK passthrough without gateway policy.
+- Public storage of raw media bytes inside Neo4j.
+- Silent enablement of extraction, OCR, prompt enrichment, consolidation scheduling, or buffered writes.
+
+## Upstream attribution
+
+This service is built on top of `neo4j-agent-memory==0.5.0`, but the Bromigos-specific value here is the gateway layer: HTTP contracts, auth model, scope enforcement, rollout controls, and redaction policy.
