@@ -3,6 +3,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import logging
 from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -236,6 +237,7 @@ _SCOPE_METADATA_KEYS: Final[frozenset[str]] = frozenset(
         "channel_id",
     },
 )
+_LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
 
 class MemoryConfigKwargs(TypedDict, total=False):
@@ -1083,13 +1085,17 @@ class Neo4jAgentMemoryBackend:
         long_term_facts = LongTermFactsContext()
         async with self._memory_client() as client:
             if request.include_short_term:
-                short_term = await client.short_term.get_context(
-                    request.query,
-                    session_id=_session_id(request.scope),
-                    max_messages=request.max_items,
-                    metadata_filters=_scope_metadata(request.scope),
-                )
-                _append_context_section(sections, "short_term", short_term)
+                try:
+                    short_term = await client.short_term.get_context(
+                        request.query,
+                        session_id=_session_id(request.scope),
+                        max_messages=request.max_items,
+                        metadata_filters=_scope_metadata(request.scope),
+                    )
+                except (ValueError, ValidationError) as error:
+                    _LOGGER.warning("short-term memory context skipped: %s", error)
+                else:
+                    _append_context_section(sections, "short_term", short_term)
 
             if request.include_long_term:
                 long_term_facts = await self._get_long_term_facts_context(

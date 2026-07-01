@@ -872,6 +872,55 @@ async def test_memory_context_uses_short_term_and_facts_by_default() -> None:
 
 
 @pytest.mark.anyio
+async def test_memory_context_preserves_graph_when_short_term_recall_fails() -> None:
+    # Given: short-term SDK recall fails while graph context has ranked facts.
+    fake_client = RecordingMemoryClient(
+        short_term=RecordingShortTermMemory(
+            context_error=ValueError("badly formed hexadecimal UUID string"),
+        ),
+    )
+    graph_store = RecordingGraphStore(
+        context="BlackDave active channel #1: general-chat",
+    )
+    backend = Neo4jAgentMemoryBackend(
+        Settings(),
+        memory_client_factory=MemoryClientFactory(fake_client),
+        graph_store=graph_store,
+    )
+
+    # When: combined memory context includes short-term and graph recall.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=_scope(),
+            query="@BlackDave top 5 most active channels??",
+            include_long_term=False,
+            include_reasoning=False,
+        ),
+    )
+
+    # Then: the failing short-term section is omitted without suppressing graph facts.
+    assert response == MemoryContextResponse(
+        sections=[
+            MemoryContextSection(
+                source="graph",
+                content="BlackDave active channel #1: general-chat",
+                facts=[{"kind": "graph"}],
+            ),
+        ],
+    )
+    assert fake_client.short_term.context_queries == [
+        "@BlackDave top 5 most active channels??",
+    ]
+    assert graph_store.context_requests == [
+        GraphContextRequest(
+            scope=_scope(),
+            query="@BlackDave top 5 most active channels??",
+            limit=8,
+        ),
+    ]
+
+
+@pytest.mark.anyio
 async def test_memory_context_redacts_reasoning_when_prompt_flag_enabled() -> None:
     # Given: reasoning recall returns safe summaries mixed with inert secret-like text.
     fake_client = RecordingMemoryClient(
@@ -2715,6 +2764,7 @@ class PromotionFailureError(Exception):
 @dataclass(slots=True)
 class RecordingShortTermMemory:
     context: str = ""
+    context_error: ValueError | ValidationError | None = None
     messages: list[ShortTermMessageWrite] = field(default_factory=list)
     context_queries: list[str] = field(default_factory=list)
 
@@ -2747,6 +2797,8 @@ class RecordingShortTermMemory:
     ) -> str:
         _ = (session_id, max_messages, metadata_filters)
         self.context_queries.append(query)
+        if self.context_error is not None:
+            raise self.context_error
         return self.context
 
 
