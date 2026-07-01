@@ -25,6 +25,7 @@ from gnosis.graph_events import (
     plan_event,
 )
 from gnosis.graph_memory_store import InMemoryGraphExecutor
+from gnosis.graph_query_execution import plan_graph_query, rows_to_graph_nodes
 from gnosis.graph_query_qa import GraphQueryPlanner
 from gnosis.graph_query_validation import (
     GraphQueryValidationError,
@@ -166,7 +167,7 @@ class Neo4jGraphExecutor:
     ) -> Sequence[GraphNode]:
         if self.graph_query_planner is None:
             return ()
-        plan = await self.graph_query_planner.plan_query(request)
+        plan = await plan_graph_query(self.graph_query_planner, request)
         if plan is None:
             return ()
         try:
@@ -183,8 +184,24 @@ class Neo4jGraphExecutor:
                 },
             )
             return ()
-        async with self.driver_factory() as driver:
-            rows = await driver.execute_query(validated.cypher, validated.parameters)
+        try:
+            async with self.driver_factory() as driver:
+                rows = await driver.execute_query(
+                    validated.cypher,
+                    validated.parameters,
+                )
+        except (Neo4jError, OSError) as error:
+            _LOGGER.info(
+                "graph QA query failed",
+                extra={
+                    "answer_kind": validated.answer_kind,
+                    "error_type": type(error).__name__,
+                    "tenant_id": request.scope.tenant_id,
+                    "guild_id": request.scope.guild_id,
+                    "channel_id": request.scope.channel_id,
+                },
+            )
+            return ()
         _LOGGER.info(
             "graph QA query executed",
             extra={
@@ -195,7 +212,7 @@ class Neo4jGraphExecutor:
                 "channel_id": request.scope.channel_id,
             },
         )
-        return tuple(node_from_row(row, request.scope) for row in rows)
+        return rows_to_graph_nodes(rows, request, validated)
 
     async def _bootstrap_schema(self) -> None:
         if self._schema_bootstrapped:

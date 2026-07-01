@@ -18,7 +18,7 @@ async def test_dynamic_graph_query_runs_after_activity_aggregate_miss() -> None:
         plan=GraphQueryPlan(
             cypher="""
             MATCH (ch:Channel {tenant_id: $tenant_id})
-            WHERE ch.guild_id = $guild_id
+            WHERE ch.guild_id = $guild_id AND ch.channel_id = $channel_id
             RETURN ch.id AS id, 'graph_query' AS type,
               coalesce(ch.name, ch.channel_id) AS summary, false AS deleted
             ORDER BY summary ASC
@@ -48,6 +48,57 @@ async def test_dynamic_graph_query_runs_after_activity_aggregate_miss() -> None:
     assert planner.requests == [request]
     assert driver.parameters[-1]["tenant_id"] == "bromigos"
     assert driver.parameters[-1]["guild_id"] == "guild-123"
+
+
+@pytest.mark.anyio
+async def test_dynamic_graph_query_falls_back_when_planner_fails() -> None:
+    # Given: the planner fails, but basic graph context can still answer.
+    driver = RecordingCypherDriver(rows_by_query=[[_graph_row()]])
+    executor = Neo4jGraphExecutor(
+        driver_factory=RecordingDriverFactory(driver),
+        embedding_dimensions=3,
+        graph_query_planner=FailingGraphQueryPlanner(),
+    )
+    request = GraphContextRequest(scope=_scope(), query="Which channel?", limit=5)
+
+    # When: graph context is requested.
+    nodes = await executor.get_context(request)
+
+    # Then: the planner failure is non-fatal and fallback context is returned.
+    assert len(nodes) == 1
+    assert nodes[0].summary == "general-chat"
+
+
+@pytest.mark.anyio
+async def test_dynamic_graph_query_falls_back_when_rows_have_bad_shape() -> None:
+    # Given: the planned query returns a row missing the required graph shape.
+    driver = RecordingCypherDriver(rows_by_query=[[{"id": "bad"}], [_graph_row()]])
+    planner = StaticGraphQueryPlanner(
+        plan=GraphQueryPlan(
+            cypher="""
+            MATCH (ch:Channel {tenant_id: $tenant_id, agent_id: $agent_id})
+            WHERE ch.guild_id = $guild_id AND ch.channel_id = $channel_id
+            RETURN ch.id AS id, 'graph_query' AS type,
+              ch.name AS summary, false AS deleted
+            LIMIT $limit
+            """,
+            parameters={},
+            answer_kind="channels_by_guild",
+        ),
+    )
+    executor = Neo4jGraphExecutor(
+        driver_factory=RecordingDriverFactory(driver),
+        embedding_dimensions=3,
+        graph_query_planner=planner,
+    )
+    request = GraphContextRequest(scope=_scope(), query="Which channel?", limit=5)
+
+    # When: graph context is requested.
+    nodes = await executor.get_context(request)
+
+    # Then: malformed dynamic rows do not suppress fallback context.
+    assert len(nodes) == 1
+    assert nodes[0].summary == "general-chat"
 
 
 def _scope() -> MemoryScope:
@@ -85,7 +136,11 @@ class RecordingCypherDriver:
     ) -> Sequence[dict[str, JsonValue]]:
         self.queries.append(query)
         self.parameters.append(parameters)
-        if "graph_query" not in query and "channel_activity" not in query:
+        if (
+            "graph_query" not in query
+            and "channel_activity" not in query
+            and "RETURN n.id AS id" not in query
+        ):
             return []
         if self.rows_by_query:
             return self.rows_by_query.pop(0)
@@ -123,3 +178,12 @@ class StaticGraphQueryPlanner(GraphQueryPlanner):
     async def plan_query(self, request: GraphContextRequest) -> GraphQueryPlan | None:
         self.requests.append(request)
         return self.plan
+
+
+@dataclass(frozen=True, slots=True)
+class FailingGraphQueryPlanner(GraphQueryPlanner):
+    @override
+    async def plan_query(self, request: GraphContextRequest) -> GraphQueryPlan | None:
+        _ = request
+        reason = "planner failed"
+        raise RuntimeError(reason)
