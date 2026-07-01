@@ -68,6 +68,14 @@ async def test_neo4j_executor_uses_activity_aggregate_before_embeddings() -> Non
     assert embedding_provider.embedded_texts == []
 
 
+def test_top_active_channels_cypher_uses_graph_guild_membership() -> None:
+    # Given: channel properties can be poisoned by Discord channel/guild ID collisions.
+    # When: gnosis ranks channel activity for a guild.
+    # Then: the aggregate can recover channels through graph guild membership.
+    assert "OPTIONAL MATCH (ch)-[:IN_GUILD]->(guild:Guild" in TOP_ACTIVE_CHANNELS_CYPHER
+    assert "$guild_id IN guild_ids" in TOP_ACTIVE_CHANNELS_CYPHER
+
+
 @pytest.mark.anyio
 async def test_neo4j_executor_embeds_graph_node_on_upsert() -> None:
     driver = RecordingCypherDriver()

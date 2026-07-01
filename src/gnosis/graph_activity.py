@@ -12,7 +12,9 @@ TOP_ACTIVE_CHANNELS_CYPHER: Final = """
 MATCH (u:User {tenant_id: $tenant_id})-[:AUTHORED]->(m:Message)-[:IN_CHANNEL]->(
   ch:Channel
 )
-WHERE ($guild_id IS NULL OR ch.guild_id = $guild_id)
+OPTIONAL MATCH (ch)-[:IN_GUILD]->(guild:Guild {tenant_id: $tenant_id})
+WITH u, m, ch, collect(DISTINCT guild.guild_id) AS guild_ids
+WHERE ($guild_id IS NULL OR ch.guild_id = $guild_id OR $guild_id IN guild_ids)
   AND (
     toLower(
       replace(replace(replace(coalesce(u.user_id, ''), ' ', ''), '-', ''), '_', '')
