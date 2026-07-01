@@ -33,6 +33,7 @@ from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
 
 from gnosis.event_facts import EventFactPromoter
 from gnosis.graph_probe import StructuredGraphStore, direct_neo4j_driver_factory
+from gnosis.graph_query_qa import LiteLLMGraphQueryPlanner
 from gnosis.graph_store import DirectNeo4jGraphStore, Neo4jGraphExecutor
 from gnosis.models import (
     BackendReadiness,
@@ -872,6 +873,27 @@ class LongTermFactsContext:
     markers: set[str] = field(default_factory=set)
 
 
+def build_direct_graph_store(settings: Settings) -> DirectNeo4jGraphStore:
+    embedding_provider = LiteLLMEmbeddingProvider(
+        litellm_embedding_model(settings.gnosis_embedding),
+        dimensions=settings.gnosis_embedding_dimensions,
+        api_base=settings.litellm_base_url,
+        api_key=settings.litellm_api_key,
+    )
+    return DirectNeo4jGraphStore(
+        executor=Neo4jGraphExecutor(
+            driver_factory=direct_neo4j_driver_factory(settings),
+            embedding_dimensions=settings.gnosis_embedding_dimensions,
+            embedding_provider=embedding_provider,
+            graph_query_planner=LiteLLMGraphQueryPlanner(
+                model=settings.gnosis_llm,
+                base_url=settings.litellm_base_url,
+                api_key=settings.litellm_api_key,
+            ),
+        ),
+    )
+
+
 class Neo4jAgentMemoryBackend:
     def __init__(
         self,
@@ -883,18 +905,8 @@ class Neo4jAgentMemoryBackend:
         self._app_settings: Settings = settings
         self._settings: MemorySettings = _build_memory_settings(settings)
         self._memory_client_factory: MemoryClientFactory | None = memory_client_factory
-        embedding_provider = LiteLLMEmbeddingProvider(
-            litellm_embedding_model(settings.gnosis_embedding),
-            dimensions=settings.gnosis_embedding_dimensions,
-            api_base=settings.litellm_base_url,
-            api_key=settings.litellm_api_key,
-        )
-        self._graph_store: StructuredGraphStore = graph_store or DirectNeo4jGraphStore(
-            executor=Neo4jGraphExecutor(
-                driver_factory=direct_neo4j_driver_factory(settings),
-                embedding_dimensions=settings.gnosis_embedding_dimensions,
-                embedding_provider=embedding_provider,
-            ),
+        self._graph_store: StructuredGraphStore = (
+            graph_store or build_direct_graph_store(settings)
         )
         self._skill_registry: SkillRegistry = skill_registry or InMemorySkillRegistry()
         self._event_fact_promoter: EventFactPromoter = EventFactPromoter()

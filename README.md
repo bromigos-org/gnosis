@@ -40,6 +40,19 @@ flowchart LR
 - Scope policy lives here, not in prompt templates or client-side filtering.
 - The gateway redacts sensitive backend payloads before returning diagnostics, exports, consolidation reports, or reasoning results.
 
+## Dynamic graph QA
+
+Graph context has two read paths. Known high-value questions can use deterministic Cypher first, such as top active channel aggregates. Other natural-language graph questions can be planned by `GNOSIS_LLM` through the LiteLLM OpenAI-compatible API, then validated before Neo4j sees the query.
+
+The graph QA planner follows the same guidance as Neo4j skill-style Cypher helpers: expose a compact schema guide, require parameterized scope values, return a predictable result shape, and keep write operations out of the prompt contract. The validator is the enforcement boundary, not the prompt.
+
+- Generated Cypher must be read-only and start from `MATCH`, `OPTIONAL MATCH`, `WITH`, or a subquery block.
+- Generated Cypher must use `$tenant_id` and must also honor `$guild_id` or `$channel_id` when those scope fields are present.
+- Generated Cypher must use `LIMIT $limit` and return rows with `id`, `type`, `summary`, and `deleted`.
+- Generated Cypher must use only approved graph labels, relationships, and properties from gnosis' event graph schema.
+- Generated Cypher must never use write clauses, unsafe procedures, or raw scope literals.
+- PC-Principal and other callers ask natural-language questions over HTTP; only gnosis plans, validates, logs, and executes Cypher.
+
 ## Memory model
 
 The primary prompt-facing route is `POST /v1/memory/context`.
