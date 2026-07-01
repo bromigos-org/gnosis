@@ -1,0 +1,125 @@
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Self, override
+
+import pytest
+
+from gnosis.graph_query_qa import GraphQueryPlan, GraphQueryPlanner
+from gnosis.graph_store import Neo4jGraphExecutor
+from gnosis.graph_types import CypherParameters
+from gnosis.models import GraphContextRequest, JsonValue, MemoryScope, MemoryVisibility
+
+
+@pytest.mark.anyio
+async def test_dynamic_graph_query_runs_after_activity_aggregate_miss() -> None:
+    # Given: the deterministic activity query finds no rows, and a planner can answer.
+    driver = RecordingCypherDriver(rows_by_query=[[], [_graph_row()]])
+    planner = StaticGraphQueryPlanner(
+        plan=GraphQueryPlan(
+            cypher="""
+            MATCH (ch:Channel {tenant_id: $tenant_id})
+            WHERE ch.guild_id = $guild_id
+            RETURN ch.id AS id, 'graph_query' AS type,
+              coalesce(ch.name, ch.channel_id) AS summary, false AS deleted
+            ORDER BY summary ASC
+            LIMIT $limit
+            """,
+            parameters={},
+            answer_kind="channels_by_guild",
+        ),
+    )
+    executor = Neo4jGraphExecutor(
+        driver_factory=RecordingDriverFactory(driver),
+        embedding_dimensions=3,
+        graph_query_planner=planner,
+    )
+    request = GraphContextRequest(
+        scope=_scope(),
+        query="@cartman top 5 active channels and list channels if none",
+        limit=5,
+    )
+
+    # When: graph context is requested.
+    nodes = await executor.get_context(request)
+
+    # Then: gnosis tries deterministic Cypher first, then executes the safe plan.
+    assert len(nodes) == 1
+    assert nodes[0].summary == "general-chat"
+    assert planner.requests == [request]
+    assert driver.parameters[-1]["tenant_id"] == "bromigos"
+    assert driver.parameters[-1]["guild_id"] == "guild-123"
+
+
+def _scope() -> MemoryScope:
+    return MemoryScope(
+        tenant_id="bromigos",
+        space_id="discord",
+        agent_id="pc-principal",
+        session_id="guild:guild-123:channel:channel-456",
+        user_id="user-789",
+        visibility=MemoryVisibility.CHANNEL,
+        guild_id="guild-123",
+        channel_id="channel-456",
+    )
+
+
+def _graph_row() -> dict[str, JsonValue]:
+    return {
+        "id": "tenant:bromigos:channel:channel-456",
+        "type": "graph_query",
+        "summary": "general-chat",
+        "deleted": False,
+    }
+
+
+@dataclass(slots=True)
+class RecordingCypherDriver:
+    rows_by_query: list[Sequence[dict[str, JsonValue]]]
+    queries: list[str] = field(default_factory=list)
+    parameters: list[CypherParameters] = field(default_factory=list)
+
+    async def execute_query(
+        self,
+        query: str,
+        parameters: CypherParameters,
+    ) -> Sequence[dict[str, JsonValue]]:
+        self.queries.append(query)
+        self.parameters.append(parameters)
+        if "graph_query" not in query and "channel_activity" not in query:
+            return []
+        if self.rows_by_query:
+            return self.rows_by_query.pop(0)
+        return []
+
+    async def verify_connectivity(self) -> None:
+        self.queries.append("verify_connectivity")
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: object,
+        exc_val: object,
+        exc_tb: object,
+    ) -> None:
+        _ = (exc_type, exc_val, exc_tb)
+
+
+@dataclass(frozen=True, slots=True)
+class RecordingDriverFactory:
+    driver: RecordingCypherDriver
+
+    def __call__(self) -> RecordingCypherDriver:
+        return self.driver
+
+
+@dataclass(slots=True)
+class StaticGraphQueryPlanner(GraphQueryPlanner):
+    plan: GraphQueryPlan | None
+    requests: list[GraphContextRequest] = field(default_factory=list)
+
+    @override
+    async def plan_query(self, request: GraphContextRequest) -> GraphQueryPlan | None:
+        self.requests.append(request)
+        return self.plan
