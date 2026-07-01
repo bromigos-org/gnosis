@@ -323,6 +323,10 @@ def test_graph_schema_cypher_declares_constraints_and_indexes() -> None:
     )
     assert "CREATE CONSTRAINT event_idempotency IF NOT EXISTS" in statements
     assert "CREATE CONSTRAINT graph_node_id IF NOT EXISTS" in statements
+    assert "MATCH (n:GraphNode {type: 'message'})" in statements
+    assert "SET n:Message" in statements
+    assert "MERGE (u)-[:AUTHORED]->(m)" in statements
+    assert "MERGE (m)-[:IN_CHANNEL]->(ch)" in statements
     assert "CREATE INDEX graph_node_scope IF NOT EXISTS" in statements
 
 

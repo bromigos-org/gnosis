@@ -37,6 +37,61 @@ GRAPH_SCHEMA_CYPHER: Final[tuple[str, ...]] = (
     FOR (n:GraphNode) REQUIRE n.id IS UNIQUE
     """,
     """
+    MATCH (n:GraphNode {type: 'message'})
+    WHERE n.tenant_id IS NOT NULL
+      AND n.id IS NOT NULL
+      AND n.user_id IS NOT NULL
+      AND n.channel_id IS NOT NULL
+      AND NOT n:Message
+    MATCH (m:Message {id: n.id})
+    WHERE elementId(m) <> elementId(n)
+    SET m.tenant_id = coalesce(m.tenant_id, n.tenant_id),
+      m.message_id = coalesce(m.message_id, last(split(n.id, ':'))),
+      m.updated_at = datetime()
+    WITH n, m
+    OPTIONAL MATCH (e:Event)-[:AFFECTS]->(n)
+    WITH n, m, collect(e) AS events
+    FOREACH (event IN events | MERGE (event)-[:AFFECTS]->(m))
+    MERGE (u:User {id: 'tenant:' + n.tenant_id + ':user:' + n.user_id})
+    SET u.tenant_id = n.tenant_id,
+      u.user_id = coalesce(u.user_id, n.user_id),
+      u.updated_at = datetime()
+    MERGE (ch:Channel {id: 'tenant:' + n.tenant_id + ':channel:' + n.channel_id})
+    SET ch.tenant_id = n.tenant_id,
+      ch.guild_id = coalesce(ch.guild_id, n.guild_id),
+      ch.channel_id = coalesce(ch.channel_id, n.channel_id),
+      ch.updated_at = datetime()
+    MERGE (u)-[:AUTHORED]->(m)
+    MERGE (m)-[:IN_CHANNEL]->(ch)
+    DETACH DELETE n
+    """,
+    """
+    MATCH (n:GraphNode {type: 'message'})
+    WHERE n.tenant_id IS NOT NULL
+      AND n.id IS NOT NULL
+      AND n.user_id IS NOT NULL
+      AND n.channel_id IS NOT NULL
+      AND NOT n:Message
+    OPTIONAL MATCH (existing:Message {id: n.id})
+    WITH n, existing
+    WHERE existing IS NULL
+    SET n:Message,
+      n.message_id = coalesce(n.message_id, last(split(n.id, ':'))),
+      n.updated_at = datetime()
+    WITH n AS m
+    MERGE (u:User {id: 'tenant:' + m.tenant_id + ':user:' + m.user_id})
+    SET u.tenant_id = m.tenant_id,
+      u.user_id = coalesce(u.user_id, m.user_id),
+      u.updated_at = datetime()
+    MERGE (ch:Channel {id: 'tenant:' + m.tenant_id + ':channel:' + m.channel_id})
+    SET ch.tenant_id = m.tenant_id,
+      ch.guild_id = coalesce(ch.guild_id, m.guild_id),
+      ch.channel_id = coalesce(ch.channel_id, m.channel_id),
+      ch.updated_at = datetime()
+    MERGE (u)-[:AUTHORED]->(m)
+    MERGE (m)-[:IN_CHANNEL]->(ch)
+    """,
+    """
     CREATE CONSTRAINT tenant_id IF NOT EXISTS
     FOR (t:Tenant) REQUIRE t.id IS UNIQUE
     """,
