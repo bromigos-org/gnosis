@@ -1,10 +1,10 @@
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, Self
 
 from neo4j.exceptions import Neo4jError
 
-from gnosis.graph_activity import top_active_channel_nodes
 from gnosis.graph_cypher import (
     CONTEXT_CYPHER,
     SEMANTIC_CONTEXT_CYPHER,
@@ -20,10 +20,16 @@ from gnosis.graph_cypher import (
 from gnosis.graph_events import (
     GraphNode,
     PlannedGraphEvent,
-    context_allows_node,
     fact_from_node,
     node_from_row,
     plan_event,
+)
+from gnosis.graph_memory_store import InMemoryGraphExecutor
+from gnosis.graph_query_execution import plan_graph_query, rows_to_graph_nodes
+from gnosis.graph_query_qa import GraphQueryPlanner
+from gnosis.graph_query_validation import (
+    GraphQueryValidationError,
+    SafeGraphQueryValidator,
 )
 from gnosis.graph_schema import GRAPH_SCHEMA_CYPHER, graph_vector_schema_cypher
 from gnosis.graph_types import vector_parameter
@@ -36,6 +42,17 @@ from gnosis.models import (
     GraphContextResponse,
     JsonValue,
 )
+
+_LOGGER = logging.getLogger(__name__)
+__all__ = [
+    "CypherDriver",
+    "CypherDriverFactory",
+    "DirectNeo4jGraphStore",
+    "GraphExecutor",
+    "InMemoryGraphExecutor",
+    "Neo4jGraphExecutor",
+    "TextEmbeddingProvider",
+]
 
 
 class CypherDriver(Protocol):
@@ -77,6 +94,7 @@ class Neo4jGraphExecutor:
     driver_factory: CypherDriverFactory
     embedding_dimensions: int
     embedding_provider: TextEmbeddingProvider | None = None
+    graph_query_planner: GraphQueryPlanner | None = None
     _schema_bootstrapped: bool = False
 
     async def require_available(self) -> None:
@@ -122,7 +140,12 @@ class Neo4jGraphExecutor:
                     TOP_ACTIVE_CHANNELS_CYPHER,
                     top_active_channel_parameters(request),
                 )
-            return tuple(node_from_row(row, request.scope) for row in rows)
+            if rows:
+                return tuple(node_from_row(row, request.scope) for row in rows)
+        if self.graph_query_planner is not None:
+            planned_nodes = await self._get_planned_graph_context(request)
+            if planned_nodes:
+                return planned_nodes
         query = CONTEXT_CYPHER
         parameters = context_parameters(request)
         if self.embedding_provider is not None:
@@ -137,6 +160,59 @@ class Neo4jGraphExecutor:
                 parameters,
             )
         return tuple(node_from_row(row, request.scope) for row in rows)
+
+    async def _get_planned_graph_context(
+        self,
+        request: GraphContextRequest,
+    ) -> Sequence[GraphNode]:
+        if self.graph_query_planner is None:
+            return ()
+        plan = await plan_graph_query(self.graph_query_planner, request)
+        if plan is None:
+            return ()
+        try:
+            validated = SafeGraphQueryValidator().validate(plan, request)
+        except GraphQueryValidationError as error:
+            _LOGGER.info(
+                "graph QA generated query rejected",
+                extra={
+                    "answer_kind": plan.answer_kind,
+                    "reason": error.reason,
+                    "tenant_id": request.scope.tenant_id,
+                    "guild_id": request.scope.guild_id,
+                    "channel_id": request.scope.channel_id,
+                },
+            )
+            return ()
+        try:
+            async with self.driver_factory() as driver:
+                rows = await driver.execute_query(
+                    validated.cypher,
+                    validated.parameters,
+                )
+        except (Neo4jError, OSError) as error:
+            _LOGGER.info(
+                "graph QA query failed",
+                extra={
+                    "answer_kind": validated.answer_kind,
+                    "error_type": type(error).__name__,
+                    "tenant_id": request.scope.tenant_id,
+                    "guild_id": request.scope.guild_id,
+                    "channel_id": request.scope.channel_id,
+                },
+            )
+            return ()
+        _LOGGER.info(
+            "graph QA query executed",
+            extra={
+                "answer_kind": validated.answer_kind,
+                "row_count": len(rows),
+                "tenant_id": request.scope.tenant_id,
+                "guild_id": request.scope.guild_id,
+                "channel_id": request.scope.channel_id,
+            },
+        )
+        return rows_to_graph_nodes(rows, request, validated)
 
     async def _bootstrap_schema(self) -> None:
         if self._schema_bootstrapped:
@@ -177,68 +253,3 @@ class DirectNeo4jGraphStore:
         if isinstance(self.executor, InMemoryGraphExecutor):
             return self.executor.event_count
         return 0
-
-
-class InMemoryGraphExecutor:
-    def __init__(self) -> None:
-        self._idempotency_keys: set[str] = set()
-        self._events: list[ClientEvent] = []
-        self._nodes: dict[str, GraphNode] = {}
-        self._semantic_node_ids: set[str] = set()
-        self._schema_bootstrapped: bool = False
-        self._schema_bootstrap_count: int = 0
-
-    @property
-    def event_count(self) -> int:
-        return len(self._events)
-
-    async def require_available(self) -> None:
-        await self._bootstrap_schema()
-
-    async def readiness(self) -> BackendReadiness:
-        await self.require_available()
-        return BackendReadiness(graph="ready", schema="ready")
-
-    async def upsert_event(self, event: PlannedGraphEvent) -> EventIngestResult:
-        await self._bootstrap_schema()
-        if event.event.idempotency_key in self._idempotency_keys:
-            self._nodes[event.node.id] = event.node
-            self._semantic_node_ids.update(event.semantic_node_ids)
-            return EventIngestResult(
-                event_id=event.event.event_id,
-                status=EventIngestStatus.DUPLICATE,
-                reason="idempotency key already ingested",
-            )
-        self._idempotency_keys.add(event.event.idempotency_key)
-        self._events.append(event.event)
-        self._nodes[event.node.id] = event.node
-        self._semantic_node_ids.update(event.semantic_node_ids)
-        return EventIngestResult(
-            event_id=event.event.event_id,
-            status=EventIngestStatus.ACCEPTED,
-        )
-
-    async def get_context(self, request: GraphContextRequest) -> Sequence[GraphNode]:
-        await self._bootstrap_schema()
-        if is_top_active_channels_request(request):
-            return top_active_channel_nodes(request, self._events)
-        scoped_nodes = [
-            node for node in self._nodes.values() if context_allows_node(request, node)
-        ]
-        return scoped_nodes[: request.limit]
-
-    def clear_current_nodes_for_test(self) -> None:
-        self._nodes.clear()
-        self._semantic_node_ids.clear()
-
-    def semantic_node_ids_for_test(self) -> set[str]:
-        return set(self._semantic_node_ids)
-
-    def schema_bootstrap_count_for_test(self) -> int:
-        return self._schema_bootstrap_count
-
-    async def _bootstrap_schema(self) -> None:
-        if self._schema_bootstrapped:
-            return
-        self._schema_bootstrapped = True
-        self._schema_bootstrap_count += 1

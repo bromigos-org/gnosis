@@ -34,10 +34,15 @@ from gnosis.backend import (
     BackendCapabilityUnavailable,
     BackendRequestError,
     Neo4jAgentMemoryBackend,
+    build_direct_graph_store,
     litellm_embedding_model,
 )
 from gnosis.graph_probe import DirectNeo4jProbe, GraphPersistenceUnavailableError
-from gnosis.graph_store import DirectNeo4jGraphStore, InMemoryGraphExecutor
+from gnosis.graph_store import (
+    DirectNeo4jGraphStore,
+    InMemoryGraphExecutor,
+    Neo4jGraphExecutor,
+)
 from gnosis.models import (
     BackendReadiness,
     BufferFlushResponse,
@@ -139,6 +144,7 @@ from gnosis.settings import Settings
 
 if TYPE_CHECKING:
     from gnosis.backend import LongTermMemory, MemoryBackend, MemoryClientContext
+    from gnosis.graph_query_qa import LiteLLMGraphQueryPlanner
 
 
 _JSON_OBJECT_ADAPTER: TypeAdapter[JsonObject] = TypeAdapter(JsonObject)
@@ -165,6 +171,24 @@ def test_litellm_embedding_model_when_embedding_alias_is_qualified() -> None:
 
     # Then: the configured provider prefix is preserved without double-prefixing.
     assert sdk_model == "openai/local-qwen3-embedding-0.6b"
+
+
+def test_backend_default_graph_store_uses_gnosis_graph_query_planner() -> None:
+    # Given: gnosis has its own LiteLLM graph QA settings.
+    settings = Settings(
+        gnosis_llm="openai/gpt-5.5",
+        litellm_base_url="http://litellm.test/v1",
+        litellm_api_key="test-graph-key",
+    )
+
+    # When: the backend builds its default direct graph store.
+    store = build_direct_graph_store(settings)
+
+    # Then: graph context can plan safe dynamic Cypher through gnosis LiteLLM envs.
+    executor = cast("Neo4jGraphExecutor", store.executor)
+    planner = cast("LiteLLMGraphQueryPlanner", executor.graph_query_planner)
+    assert planner.model == "openai/gpt-5.5"
+    assert planner.base_url == "http://litellm.test/v1"
 
 
 @pytest.mark.anyio
