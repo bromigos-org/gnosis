@@ -36,7 +36,7 @@ class GraphQueryPlan(BaseModel):
 
     cypher: str = Field(min_length=1)
     parameters: CypherParameters = Field(default_factory=dict)
-    answer_kind: str = Field(min_length=1)
+    answer_kind: str = Field(min_length=1, max_length=64)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,14 +61,14 @@ class LiteLLMGraphQueryPlanner:
 
     async def plan_query(self, request: GraphContextRequest) -> GraphQueryPlan | None:
         start = time.perf_counter()
-        client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
-        response = await client.beta.chat.completions.parse(
-            messages=_messages(request),
-            model=self.model,
-            temperature=0,
-            max_tokens=700,
-            response_format=GraphQueryPlan,
-        )
+        async with AsyncOpenAI(api_key=self.api_key, base_url=self.base_url) as client:
+            response = await client.beta.chat.completions.parse(
+                messages=_messages(request),
+                model=self.model,
+                temperature=0,
+                max_tokens=700,
+                response_format=GraphQueryPlan,
+            )
         plan = response.choices[0].message.parsed
         if plan is None:
             _LOGGER.info(
