@@ -59,6 +59,111 @@ def test_validator_rejects_unsafe_generated_cypher(cypher: str) -> None:
         _ = SafeGraphQueryValidator().validate(plan, request)
 
 
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        """
+        MATCH (t:Tenant {tenant_id: $tenant_id})
+        WITH t
+        MATCH (m:Message)
+        RETURN m.id AS id, 'graph_query' AS type,
+          m.summary AS summary, false AS deleted
+        LIMIT $limit
+        """,
+        """
+        WITH $tenant_id AS tenant_id
+        MATCH (m:Message)
+        WHERE tenant_id = $tenant_id
+        RETURN m.id AS id, 'graph_query' AS type,
+          m.summary AS summary, false AS deleted
+        LIMIT $limit
+        """,
+        """
+        MATCH (m:Message {tenant_id: $tenant_id})
+        WHERE m.guild_id = $guild_id
+        RETURN m.id AS id, 'graph_query' AS type,
+          m.summary AS summary, false AS deleted
+        LIMIT $limit
+        """,
+    ],
+)
+def test_validator_rejects_scope_bypass_queries(cypher: str) -> None:
+    # Given: generated Cypher mentions scope without applying full runtime scope.
+    request = GraphContextRequest(scope=_scope(), query="messages", limit=5)
+    plan = GraphQueryPlan(cypher=cypher, parameters={}, answer_kind="messages")
+
+    # When / Then: validation blocks the query before Neo4j can execute it.
+    with pytest.raises(GraphQueryValidationError):
+        _ = SafeGraphQueryValidator().validate(plan, request)
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        """
+        MATCH (m:Message {tenant_id: $tenant_id, agent_id: $agent_id})
+        WHERE m.guild_id = $guild_id AND m.channel_id = $channel_id
+        MATCH (m)-[r:SECRET_REL]->(u:User)
+        RETURN m.id AS id, 'graph_query' AS type,
+          m.summary AS summary, false AS deleted
+        LIMIT $limit
+        """,
+        """
+        MATCH (m:`Secret` {tenant_id: $tenant_id, agent_id: $agent_id})
+        WHERE m.guild_id = $guild_id AND m.channel_id = $channel_id
+        RETURN m.id AS id, 'graph_query' AS type,
+          m.summary AS summary, false AS deleted
+        LIMIT $limit
+        """,
+        """
+        MATCH (m:Message {tenant_id: $tenant_id, agent_id: $agent_id})
+        WHERE m.guild_id = $guild_id AND m.channel_id = $channel_id
+        RETURN m.id AS id, 'graph_query' AS type,
+          m.`secret` AS summary, false AS deleted
+        LIMIT $limit
+        """,
+        """
+        MATCH (m:Message {tenant_id: $tenant_id, agent_id: $agent_id})
+        WHERE m.guild_id = $guild_id AND m.channel_id = $channel_id
+        RETURN m.id AS id, 'graph_query' AS type,
+          properties(m) AS summary, false AS deleted
+        LIMIT $limit
+        """,
+    ],
+)
+def test_validator_rejects_unsupported_schema_syntax(cypher: str) -> None:
+    # Given: generated Cypher uses syntax outside the regex allowlist contract.
+    request = GraphContextRequest(scope=_scope(), query="messages", limit=5)
+    plan = GraphQueryPlan(cypher=cypher, parameters={}, answer_kind="messages")
+
+    # When / Then: validation rejects the unsupported schema access.
+    with pytest.raises(GraphQueryValidationError):
+        _ = SafeGraphQueryValidator().validate(plan, request)
+
+
+def test_validator_accepts_fully_scoped_message_query() -> None:
+    # Given: a message query applies every runtime scope field to the read alias.
+    request = GraphContextRequest(scope=_scope(), query="messages", limit=5)
+    plan = GraphQueryPlan(
+        cypher="""
+        MATCH (m:Message {tenant_id: $tenant_id, agent_id: $agent_id})
+        WHERE m.guild_id = $guild_id AND m.channel_id = $channel_id
+        RETURN m.id AS id, 'graph_query' AS type,
+          m.summary AS summary, false AS deleted
+        ORDER BY m.updated_at DESC
+        LIMIT $limit
+        """,
+        parameters={},
+        answer_kind="messages_by_channel",
+    )
+
+    # When: gnosis validates the generated query.
+    validated = SafeGraphQueryValidator().validate(plan, request)
+
+    # Then: the query survives with trusted runtime scope parameters.
+    assert validated.parameters["channel_id"] == "channel-456"
+
+
 def _scope() -> MemoryScope:
     return MemoryScope(
         tenant_id="bromigos",
