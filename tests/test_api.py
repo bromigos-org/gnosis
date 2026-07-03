@@ -221,6 +221,345 @@ def test_all_memory_endpoints_require_bearer_token() -> None:
     assert client.get("/ready").status_code == 200
 
 
+def test_add_memories_returns_stable_ids() -> None:
+    # Given: an authenticated caller adding a verbatim memory.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the memory is added.
+    response = client.post(
+        "/v1/memories",
+        headers=_auth_header(),
+        json=_memory_add_payload(),
+    )
+
+    # Then: the add result carries a stable memory id and event.
+    assert response.status_code == 200
+    assert response.json() == {
+        "results": [
+            {
+                "memory_id": "00000000-0000-0000-0000-0000000000aa",
+                "content": "remember this",
+                "event": "ADD",
+                "metadata": {},
+            },
+        ],
+    }
+    assert backend.memory_add_requests[0].content == "Cartman prefers cheesy poofs"
+    assert backend.memory_add_requests[0].infer is False
+
+
+def test_add_memories_rejects_foreign_tenant_scope() -> None:
+    # Given: a caller holding a token for another tenant's scope.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the caller adds a memory with a foreign tenant scope.
+    response = client.post(
+        "/v1/memories",
+        headers=_auth_header(),
+        json=_memory_add_payload(scope=_scope_payload(tenant_id="evil")),
+    )
+
+    # Then: the request is rejected before the backend runs.
+    assert response.status_code == 403
+    assert backend.memory_add_requests == []
+
+
+def test_add_memories_maps_mode_errors_to_bad_request() -> None:
+    # Given: the backend rejects the add mode combination.
+    backend = RecordingBackend()
+    backend.memory_add_error = BackendRequestError(
+        "Provide messages with infer=true or content with infer=false.",
+    )
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the caller sends the invalid combination.
+    response = client.post(
+        "/v1/memories",
+        headers=_auth_header(),
+        json=_memory_add_payload(),
+    )
+
+    # Then: the caller receives a 400 with the policy detail.
+    assert response.status_code == 400
+    assert "infer" in response.json()["detail"]
+
+
+def test_search_memories_returns_ranked_results() -> None:
+    # Given: an authenticated caller searching long-term memories.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the caller searches with filters and a score floor.
+    response = client.post(
+        "/v1/memories/search",
+        headers=_auth_header(),
+        json={
+            "scope": _scope_payload(),
+            "query": "what snacks?",
+            "filters": {"metadata.topic": "snacks"},
+            "limit": 5,
+            "min_score": 0.5,
+        },
+    )
+
+    # Then: scored results return and the backend saw the full request.
+    assert response.status_code == 200
+    assert response.json() == {
+        "results": [
+            {
+                "memory_id": "00000000-0000-0000-0000-0000000000aa",
+                "content": "remember this",
+                "score": 0.91,
+                "metadata": {"topic": "snacks"},
+                "created_at": "2026-06-27T01:02:03+00:00",
+                "updated_at": None,
+            },
+        ],
+    }
+    request = backend.memory_search_requests[0]
+    assert request.limit == 5
+    assert request.min_score == 0.5
+    assert request.filters == {"metadata.topic": "snacks"}
+
+
+def test_search_memories_rejects_foreign_tenant_scope() -> None:
+    # Given: a caller holding a token for another tenant's scope.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the caller searches with a foreign tenant scope.
+    response = client.post(
+        "/v1/memories/search",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(tenant_id="evil"), "query": "secrets"},
+    )
+
+    # Then: the request is rejected before the backend runs.
+    assert response.status_code == 403
+    assert backend.memory_search_requests == []
+
+
+def test_list_memories_returns_deterministic_page() -> None:
+    # Given: an authenticated caller listing memories.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the caller lists page two.
+    response = client.post(
+        "/v1/memories/list",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(), "page": 2, "page_size": 10},
+    )
+
+    # Then: paging metadata is echoed with the results.
+    assert response.status_code == 200
+    assert response.json() == {
+        "results": [
+            {
+                "memory_id": "00000000-0000-0000-0000-0000000000aa",
+                "content": "remember this",
+                "metadata": {"topic": "snacks"},
+                "created_at": "2026-06-27T01:02:03+00:00",
+                "updated_at": None,
+            },
+        ],
+        "total": 1,
+        "page": 2,
+        "page_size": 10,
+    }
+
+
+def test_list_memories_rejects_foreign_tenant_scope() -> None:
+    # Given: a caller holding a token for another tenant's scope.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the caller lists with a foreign tenant scope.
+    response = client.post(
+        "/v1/memories/list",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(tenant_id="evil")},
+    )
+
+    # Then: the request is rejected before the backend runs.
+    assert response.status_code == 403
+    assert backend.memory_list_requests == []
+
+
+def test_update_memory_is_disabled_by_default() -> None:
+    # Given: the default safe rollout posture.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a caller attempts a memory update.
+    response = client.patch(
+        "/v1/memories/00000000-0000-0000-0000-0000000000aa",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(), "content": "rewritten"},
+    )
+
+    # Then: the edit surface stays disabled with a clear message.
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Memory editing is disabled by service policy."
+    assert backend.memory_update_requests == []
+
+
+def test_update_memory_when_edit_flag_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: memory editing is explicitly enabled.
+    monkeypatch.setenv("GNOSIS_MEMORY_EDIT_ENABLED", "true")
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the caller updates a memory in scope.
+    response = client.patch(
+        "/v1/memories/00000000-0000-0000-0000-0000000000aa",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(), "content": "rewritten"},
+    )
+
+    # Then: the update succeeds with an UPDATE event.
+    assert response.status_code == 200
+    assert response.json() == {
+        "memory_id": "00000000-0000-0000-0000-0000000000aa",
+        "content": "rewritten",
+        "event": "UPDATE",
+    }
+    memory_id, request = backend.memory_update_requests[0]
+    assert memory_id == "00000000-0000-0000-0000-0000000000aa"
+    assert request.content == "rewritten"
+
+
+def test_update_memory_returns_not_found_outside_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: editing is enabled but the memory is not in the caller's scope.
+    monkeypatch.setenv("GNOSIS_MEMORY_EDIT_ENABLED", "true")
+    backend = RecordingBackend()
+    backend.missing_memory_ids.add("00000000-0000-0000-0000-0000000000bb")
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the caller updates the out-of-scope memory.
+    response = client.patch(
+        "/v1/memories/00000000-0000-0000-0000-0000000000bb",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(), "content": "hijack"},
+    )
+
+    # Then: the caller learns nothing beyond not-found.
+    assert response.status_code == 404
+    assert response.json()["detail"] == "memory not found in scope"
+
+
+def test_update_memory_rejects_foreign_tenant_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: editing is enabled but the scope belongs to another tenant.
+    monkeypatch.setenv("GNOSIS_MEMORY_EDIT_ENABLED", "true")
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the caller updates with a foreign tenant scope.
+    response = client.patch(
+        "/v1/memories/00000000-0000-0000-0000-0000000000aa",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(tenant_id="evil"), "content": "hijack"},
+    )
+
+    # Then: the request is rejected before the backend runs.
+    assert response.status_code == 403
+    assert backend.memory_update_requests == []
+
+
+def test_delete_memory_is_disabled_by_default() -> None:
+    # Given: the default safe rollout posture.
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: a caller attempts a memory delete.
+    response = client.request(
+        "DELETE",
+        "/v1/memories/00000000-0000-0000-0000-0000000000aa",
+        headers=_auth_header(),
+        json={"scope": _scope_payload()},
+    )
+
+    # Then: the edit surface stays disabled with a clear message.
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Memory editing is disabled by service policy."
+    assert backend.memory_delete_requests == []
+
+
+def test_delete_memory_when_edit_flag_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: memory editing is explicitly enabled.
+    monkeypatch.setenv("GNOSIS_MEMORY_EDIT_ENABLED", "true")
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the caller deletes a memory in scope.
+    response = client.request(
+        "DELETE",
+        "/v1/memories/00000000-0000-0000-0000-0000000000aa",
+        headers=_auth_header(),
+        json={"scope": _scope_payload()},
+    )
+
+    # Then: the delete succeeds with a DELETE event.
+    assert response.status_code == 200
+    assert response.json() == {
+        "memory_id": "00000000-0000-0000-0000-0000000000aa",
+        "event": "DELETE",
+    }
+
+
+def test_delete_memory_returns_not_found_outside_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: deleting is enabled but the memory is not in the caller's scope.
+    monkeypatch.setenv("GNOSIS_MEMORY_EDIT_ENABLED", "true")
+    backend = RecordingBackend()
+    backend.missing_memory_ids.add("00000000-0000-0000-0000-0000000000bb")
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the caller deletes the out-of-scope memory.
+    response = client.request(
+        "DELETE",
+        "/v1/memories/00000000-0000-0000-0000-0000000000bb",
+        headers=_auth_header(),
+        json={"scope": _scope_payload()},
+    )
+
+    # Then: the caller learns nothing beyond not-found.
+    assert response.status_code == 404
+    assert response.json()["detail"] == "memory not found in scope"
+
+
+def test_delete_memory_rejects_foreign_tenant_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: deleting is enabled but the scope belongs to another tenant.
+    monkeypatch.setenv("GNOSIS_MEMORY_EDIT_ENABLED", "true")
+    backend = RecordingBackend()
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: the caller deletes with a foreign tenant scope.
+    response = client.request(
+        "DELETE",
+        "/v1/memories/00000000-0000-0000-0000-0000000000aa",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(tenant_id="evil")},
+    )
+
+    # Then: the request is rejected before the backend runs.
+    assert response.status_code == 403
+    assert backend.memory_delete_requests == []
+
+
 def test_diagnostics_returns_safe_readiness_details() -> None:
     # Given: an authenticated operator and available backend.
     backend = RecordingBackend()
@@ -3889,6 +4228,12 @@ def _protected_post_endpoint_payloads() -> list[tuple[str, dict[str, object]]]:
             {"scope": _scope_payload(), "role": "user", "content": "remember this"},
         ),
         ("/v1/memory/extraction/preview", _extraction_preview_payload()),
+        ("/v1/memories", _memory_add_payload()),
+        (
+            "/v1/memories/search",
+            {"scope": _scope_payload(), "query": "what matters?"},
+        ),
+        ("/v1/memories/list", {"scope": _scope_payload()}),
         ("/v1/events", _client_event_payload()),
         ("/v1/events/batch", {"events": [_client_event_payload()]}),
         ("/v1/context", {"scope": _scope_payload(), "query": "what matters?"}),
@@ -3985,6 +4330,18 @@ def _message_payload(
         "scope": scope or _scope_payload(),
         "role": "user",
         "content": "remember this",
+    }
+
+
+def _memory_add_payload(
+    *,
+    scope: dict[str, str] | None = None,
+) -> dict[str, object]:
+    return {
+        "scope": scope or _scope_payload(),
+        "content": "Cartman prefers cheesy poofs",
+        "infer": False,
+        "metadata": {"topic": "snacks"},
     }
 
 
