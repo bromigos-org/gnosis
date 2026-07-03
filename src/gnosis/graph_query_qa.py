@@ -53,6 +53,16 @@ class GraphQueryPlanner(Protocol):
     ) -> GraphQueryPlan | None: ...
 
 
+def proxy_model_name(model: str) -> str:
+    """Normalize a litellm-library model name for an OpenAI-compatible proxy.
+
+    The SDK's LiteLLMProvider wants provider-prefixed names such as
+    ``openai/gpt-5.5``, but the proxy behind ``base_url`` registers bare
+    model ids and rejects the prefixed form with a 400.
+    """
+    return model.removeprefix("openai/")
+
+
 @dataclass(frozen=True, slots=True)
 class LiteLLMGraphQueryPlanner:
     model: str
@@ -64,7 +74,7 @@ class LiteLLMGraphQueryPlanner:
         async with AsyncOpenAI(api_key=self.api_key, base_url=self.base_url) as client:
             response = await client.beta.chat.completions.parse(
                 messages=_messages(request),
-                model=self.model,
+                model=proxy_model_name(self.model),
                 temperature=0,
                 max_tokens=700,
                 response_format=GraphQueryPlan,
