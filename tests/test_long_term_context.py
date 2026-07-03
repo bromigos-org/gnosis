@@ -26,6 +26,7 @@ from gnosis.models import (
     MemoryContextRequest,
     MemoryContextSection,
     MemoryScope,
+    MemorySearchRequest,
     MemoryVisibility,
     PreferenceRecord,
 )
@@ -97,11 +98,10 @@ async def test_combined_context_includes_scoped_facts_preferences_entities() -> 
     assert "tenant:bromigos:message:one" not in response.sections[1].content
     assert client.long_term.context_queries == ["what should I remember?"]
     assert client.query.cypher_calls[0].parameters == {
-        "limit": 5,
+        "candidate_limit": 100,
         "metadata_fragments": [
             '"tenant_id": "bromigos"',
             '"agent_id": "pc-principal"',
-            '"session_id": "guild:123:channel:456"',
             '"user_id": "789"',
             '"visibility": "channel"',
             '"guild_id": "123"',
@@ -173,6 +173,160 @@ async def test_fact_context_does_not_cross_tenant_or_channel_scope() -> None:
     assert "wrong channel note" not in content
 
 
+@pytest.mark.anyio
+async def test_fact_context_dates_prefer_stored_session_date() -> None:
+    # Given: one fact tagged with a stored session date and one without any tag.
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:tagged",
+                        predicate="said_user",
+                        object_value="we went hiking yesterday",
+                        metadata=(
+                            _scope_metadata(scope) | {"session_date": "7 May 2023"}
+                        ),
+                        created_at="2026-06-27T01:02:03Z",
+                    ),
+                },
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:untagged",
+                        predicate="said_assistant",
+                        object_value="hiking sounds great",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T09:10:11.123000000Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: combined memory context is requested.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="when did they go hiking?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: every rendered fact carries its temporal anchor, metadata first.
+    content = response.sections[0].content
+    assert "  date: 7 May 2023" in content
+    assert "  date: 2026-06-28" in content
+    assert "date: 2026-06-27" not in content
+
+
+@pytest.mark.anyio
+async def test_fact_context_spans_sessions_and_matches_search_item_count() -> None:
+    # Given: the same five turn facts stored under five different sessions.
+    scope = _scope()
+    rows: list[JsonObject] = []
+    search_results: list[FactRecord] = []
+    for index in range(5):
+        subject = f"tenant:bromigos:message:{index}"
+        content_value = f"turn {index} of the conversation"
+        metadata = _scope_metadata(scope) | {"session_id": f"session-{index}"}
+        rows.append(
+            {
+                "f": _fact_row(
+                    subject=subject,
+                    predicate="said_user",
+                    object_value=content_value,
+                    metadata=metadata,
+                    created_at=f"2023-05-0{index + 1}T00:00:00Z",
+                ),
+            },
+        )
+        search_results.append(
+            FactRecord(
+                id=subject,
+                subject=subject,
+                predicate="said_user",
+                object=content_value,
+                metadata=cast("JsonObject", dict(metadata)),
+            ),
+        )
+    client = RecordingMemoryClient(
+        query=RecordingQuery(rows=rows),
+        long_term=RecordingLongTermMemory(search_results=search_results),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: search and context read the same data with the same item budget.
+    search = await backend.search_memories(
+        MemorySearchRequest(scope=scope, query="conversation", limit=5),
+    )
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="conversation",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+            max_items=5,
+        ),
+    )
+
+    # Then: context renders exactly as many items as search returns.
+    content = response.sections[0].content
+    assert len(search.results) == 5
+    assert content.count("- subject:") == len(search.results)
+
+
+@pytest.mark.anyio
+async def test_fact_context_truncates_to_max_items_after_scope_filter() -> None:
+    # Given: more scoped candidate facts than the requested item budget.
+    scope = _scope()
+    rows: list[JsonObject] = [
+        {
+            "f": _fact_row(
+                subject=f"tenant:bromigos:message:{index}",
+                predicate="said_user",
+                object_value=f"note {index}",
+                metadata=_scope_metadata(scope),
+                created_at=f"2023-05-0{index + 1}T00:00:00Z",
+            ),
+        }
+        for index in range(3)
+    ]
+    client = RecordingMemoryClient(query=RecordingQuery(rows=rows))
+    backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: combined memory context is requested with max_items below supply.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="notes",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+            max_items=2,
+        ),
+    )
+
+    # Then: the item budget bounds the rendered facts after scope filtering.
+    assert response.sections[0].content.count("- subject:") == 2
+
+
 @dataclass(frozen=True, slots=True)
 class CypherCall:
     statement: str
@@ -199,6 +353,7 @@ class RecordingQuery:
 class RecordingLongTermMemory:
     context: str = ""
     context_queries: list[str] = field(default_factory=list)
+    search_results: list[FactRecord] = field(default_factory=list)
 
     async def search_entities(
         self,
@@ -219,7 +374,7 @@ class RecordingLongTermMemory:
         threshold: float = 0.7,
     ) -> list[FactRecord]:
         _ = (query, limit, threshold)
-        return []
+        return list(self.search_results)
 
     async def search_preferences(
         self,
@@ -624,6 +779,7 @@ def _fact_row(
     predicate: str,
     object_value: str,
     metadata: dict[str, str],
+    created_at: str | None = None,
 ) -> JsonObject:
     return {
         "id": subject,
@@ -631,6 +787,6 @@ def _fact_row(
         "predicate": predicate,
         "object": object_value,
         "confidence": 1.0,
-        "created_at": None,
+        "created_at": created_at,
         "metadata": json.dumps(metadata),
     }
