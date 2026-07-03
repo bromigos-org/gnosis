@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from typing import Final
 
 from neo4j.exceptions import Neo4jError
+from openai import OpenAIError
 
 from gnosis.graph_events import GraphNode, node_from_row
 from gnosis.graph_query_qa import GraphQueryPlan, GraphQueryPlanner, ValidatedGraphQuery
@@ -21,7 +22,7 @@ async def plan_graph_query(
 ) -> GraphQueryPlan | None:
     try:
         return await planner.plan_query(request)
-    except (RuntimeError, OSError, Neo4jError) as error:
+    except (RuntimeError, OSError, Neo4jError, OpenAIError) as error:
         _LOGGER.info(
             "graph QA planner failed",
             extra=_error_context(error, request),
@@ -54,7 +55,7 @@ def _rows_have_graph_query_shape(rows: Sequence[dict[str, JsonValue]]) -> bool:
 
 
 def _error_context(
-    error: RuntimeError | OSError | Neo4jError,
+    error: RuntimeError | OSError | Neo4jError | OpenAIError,
     request: GraphContextRequest,
 ) -> CypherParameters:
     return {

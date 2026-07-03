@@ -1,6 +1,9 @@
+import httpx
 import pytest
+from openai import APIConnectionError
 
-from gnosis.graph_query_qa import GraphQueryPlan
+from gnosis.graph_query_execution import plan_graph_query
+from gnosis.graph_query_qa import GraphQueryPlan, proxy_model_name
 from gnosis.graph_query_validation import (
     GraphQueryValidationError,
     SafeGraphQueryValidator,
@@ -175,3 +178,29 @@ def _scope() -> MemoryScope:
         guild_id="guild-123",
         channel_id="channel-456",
     )
+
+
+def test_proxy_model_name_strips_litellm_openai_prefix() -> None:
+    # Given: the SDK-facing setting uses litellm provider-prefixed names.
+    # Then: the raw OpenAI proxy client receives the bare model id.
+    assert proxy_model_name("openai/gpt-5.5") == "gpt-5.5"
+    assert proxy_model_name("openai/gemma4") == "gemma4"
+    assert proxy_model_name("gpt-5.5") == "gpt-5.5"
+
+
+class _ExplodingPlanner:
+    async def plan_query(self, request: GraphContextRequest) -> GraphQueryPlan | None:
+        del request
+        raise APIConnectionError(request=httpx.Request("POST", "http://litellm.test"))
+
+
+@pytest.mark.anyio
+async def test_plan_graph_query_swallows_openai_errors() -> None:
+    # Given: the upstream proxy rejects or drops the planner call.
+    request = GraphContextRequest(scope=_scope(), query="Which roles exist?", limit=5)
+
+    # When: gnosis plans a graph query.
+    plan = await plan_graph_query(_ExplodingPlanner(), request)
+
+    # Then: planner failures degrade to no graph context, never an error.
+    assert plan is None
