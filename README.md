@@ -171,6 +171,12 @@ Update and delete are gated behind `GNOSIS_MEMORY_EDIT_ENABLED` (default off) an
 
 When `GNOSIS_MCP_ENABLED` is on, gnosis mounts a streamable-HTTP MCP server at `/mcp` behind the same bearer token. It exposes exactly six tools: `add_memory`, `search_memory`, `get_context`, `list_memories`, `delete_memory`, and `get_status`. Tools construct the scope server-side: tenant from settings, `space_id` `mcp`, agent from `GNOSIS_MCP_AGENT_ID`, and `private_user` visibility. The MCP layer stays thin and delegates to the same backend operations as the HTTP routes; `delete_memory` honors `GNOSIS_MEMORY_EDIT_ENABLED`.
 
+### Clients
+
+- **PC-Principal** (Discord bot) uses the full gateway surface: combined memory context, message write-back, event batch ingestion, skills, and reasoning traces.
+- **hermes-agent** (bromigo, nolgia) connects through the [`hermes-gnosis`](https://github.com/bromigos-org/hermes-gnosis) memory-provider plugin, which drives the `/v1/memories` surface.
+- **MCP clients** (Claude, Cursor, and similar) connect to `/mcp` when `GNOSIS_MCP_ENABLED` is on.
+
 ### Operator routes
 
 - `GET /v1/memory/stats`
