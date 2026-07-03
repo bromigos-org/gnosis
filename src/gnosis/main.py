@@ -14,6 +14,7 @@ from gnosis.backend import (
     MemoryNotFoundError,
     Neo4jAgentMemoryBackend,
 )
+from gnosis.mcp_server import BearerTokenMiddleware, build_mcp_server
 from gnosis.models import (
     BackendReadiness,
     BufferFlushResponse,
@@ -111,18 +112,37 @@ def create_app(
     memory_backend = backend or Neo4jAgentMemoryBackend(settings)
     authenticator = build_authenticator(settings)
 
+    def get_backend() -> MemoryBackend:
+        return memory_backend
+
+    mcp_server = (
+        build_mcp_server(settings, get_backend)
+        if settings.gnosis_mcp_enabled
+        else None
+    )
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         try:
-            yield
+            if mcp_server is None:
+                yield
+            else:
+                async with mcp_server.session_manager.run():
+                    yield
         finally:
             await memory_backend.shutdown()
 
     app = FastAPI(title="gnosis", lifespan=lifespan)
     _register_exception_handlers(app)
 
-    def get_backend() -> MemoryBackend:
-        return memory_backend
+    if mcp_server is not None:
+        app.mount(
+            "/mcp",
+            BearerTokenMiddleware(
+                app=mcp_server.streamable_http_app(),
+                token=settings.gnosis_token,
+            ),
+        )
 
     _register_health_route(app)
     _register_readiness_routes(app, settings, authenticator, get_backend)
