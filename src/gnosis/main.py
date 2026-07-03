@@ -1,8 +1,9 @@
+import logging
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Final
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 
 from gnosis.auth import Authenticator, build_authenticator
@@ -102,6 +103,36 @@ from gnosis.models import (
 )
 from gnosis.redaction import redact_secrets
 from gnosis.settings import Settings, load_settings
+
+_LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
+
+_LEGACY_CONTEXT_ROUTE: Final = "/v1/context"
+_MEMORY_CONTEXT_ROUTE: Final = "/v1/memory/context"
+_LEGACY_CONTEXT_SUCCESSOR_LINK: Final = (
+    f'<{_MEMORY_CONTEXT_ROUTE}>; rel="successor-version"'
+)
+
+
+def _legacy_context_warning() -> Callable[[], None]:
+    """Build a warner that logs deprecated /v1/context usage once per process."""
+    emitted = False
+
+    def warn() -> None:
+        nonlocal emitted
+        if emitted:
+            return
+        emitted = True
+        _LOGGER.warning(
+            "Deprecated route %s was called; migrate to %s.",
+            _LEGACY_CONTEXT_ROUTE,
+            _MEMORY_CONTEXT_ROUTE,
+            extra={
+                "deprecated_route": _LEGACY_CONTEXT_ROUTE,
+                "successor_route": _MEMORY_CONTEXT_ROUTE,
+            },
+        )
+
+    return warn
 
 
 def create_app(
@@ -411,19 +442,26 @@ def _register_context_routes(
     authenticator: Authenticator,
     get_backend: Callable[[], MemoryBackend],
 ) -> None:
+    warn_legacy_context_route_used = _legacy_context_warning()
+
     @app.post(
-        "/v1/context",
+        _LEGACY_CONTEXT_ROUTE,
         dependencies=[Depends(authenticator.require_token)],
+        deprecated=True,
     )
     async def get_context(
         request: ContextRequest,
+        response: Response,
         memory: Annotated[MemoryBackend, Depends(get_backend)],
     ) -> ContextResponse:
         authenticator.require_scope(request.scope)
+        warn_legacy_context_route_used()
+        response.headers["Deprecation"] = "true"
+        response.headers["Link"] = _LEGACY_CONTEXT_SUCCESSOR_LINK
         return await memory.get_context(request)
 
     @app.post(
-        "/v1/memory/context",
+        _MEMORY_CONTEXT_ROUTE,
         dependencies=[Depends(authenticator.require_token)],
     )
     async def get_memory_context(

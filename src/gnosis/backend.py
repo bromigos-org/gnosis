@@ -1170,14 +1170,8 @@ class Neo4jAgentMemoryBackend:
         )
 
     async def get_context(self, request: ContextRequest) -> ContextResponse:
-        async with self._memory_client() as client:
-            context = await client.short_term.get_context(
-                request.query,
-                session_id=_session_id(request.scope),
-                max_messages=request.limit,
-                metadata_filters=_scope_metadata(request.scope),
-            )
-        return ContextResponse(context=context)
+        combined = await self.get_memory_context(_legacy_context_request(request))
+        return _legacy_context_response(combined)
 
     async def get_memory_context(
         self,
@@ -3281,3 +3275,29 @@ def _append_context_section(
 ) -> None:
     if content:
         sections.append(MemoryContextSection(source=source, content=content))
+
+
+def _legacy_context_request(request: ContextRequest) -> MemoryContextRequest:
+    """Map a legacy /v1/context request onto the combined memory-context path."""
+    return MemoryContextRequest(
+        scope=request.scope,
+        query=request.query,
+        include_short_term=True,
+        include_long_term=False,
+        include_reasoning=False,
+        include_graph=False,
+        max_items=request.limit,
+    )
+
+
+def _legacy_context_response(response: MemoryContextResponse) -> ContextResponse:
+    """Reduce a combined memory-context response to the legacy short-term shape."""
+    context = next(
+        (
+            section.content
+            for section in response.sections
+            if section.source == "short_term"
+        ),
+        "",
+    )
+    return ContextResponse(context=context)

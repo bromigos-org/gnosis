@@ -143,10 +143,29 @@ sequenceDiagram
 
 ### Prompt and recall routes
 
-- `POST /v1/context` keeps the legacy short-term contract.
+- `POST /v1/context` keeps the legacy short-term contract. It is deprecated; see [Migrating from /v1/context](#migrating-from-v1context).
 - `POST /v1/memory/context` is the main combined memory endpoint.
 - `POST /v1/graph/context` returns graph recall and scoped facts.
 - `POST /v1/reasoning/context` returns prompt-safe reasoning recall.
+
+### Migrating from /v1/context
+
+`POST /v1/context` is deprecated in favor of `POST /v1/memory/context`. The legacy route now delegates to the same combined memory-context path with only the short-term section enabled, answers with `Deprecation: true` and `Link: </v1/memory/context>; rel="successor-version"` headers, and is marked deprecated in the OpenAPI schema.
+
+Request fields map as follows:
+
+| `/v1/context` field | `/v1/memory/context` field | Notes |
+| --- | --- | --- |
+| `scope` | `scope` | Unchanged. |
+| `query` | `query` | Unchanged. |
+| `limit` | `max_items` | Legacy default `8`, max `30`; successor allows up to `100`. |
+| n/a | `include_short_term` | Use `true` to match the legacy behavior. |
+| n/a | `include_long_term`, `include_reasoning`, `include_graph` | Use `false` to match the legacy behavior; enable as needed. |
+| n/a | `graph_limit` | Only relevant when `include_graph` is `true`. |
+
+The legacy response `{"context": "..."}` corresponds to the `content` of the `short_term` section in the successor response `{"sections": [...]}`; an empty legacy `context` corresponds to that section being absent.
+
+Deprecation policy: `/v1/context` stays available until operator logs show no remaining traffic (each process logs a structured warning on first use of the route), after which it will be removed in a future minor release.
 
 ### Message and event ingestion
 
