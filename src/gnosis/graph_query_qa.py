@@ -76,7 +76,9 @@ class LiteLLMGraphQueryPlanner:
                 messages=_messages(request),
                 model=proxy_model_name(self.model),
                 temperature=0,
-                max_tokens=700,
+                # Structured-output plans truncated at the old 700-token cap
+                # raised LengthFinishReasonError and wasted the whole call.
+                max_tokens=1500,
                 response_format=GraphQueryPlan,
             )
         plan = response.choices[0].message.parsed

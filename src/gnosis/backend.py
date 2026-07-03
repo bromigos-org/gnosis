@@ -1254,10 +1254,17 @@ class Neo4jAgentMemoryBackend:
         request: MemoryContextRequest,
         client: MemoryClientContext,
     ) -> "LongTermFactsContext":
+        """Render scoped long-term facts with the same read reach as search.
+
+        Reads narrow by the cross-session scope (long-term memory spans
+        sessions, so session_id never prunes recall), scan a candidate pool
+        sized like /v1/memories/search, and only apply ``max_items`` after the
+        gateway scope re-check so the item budget governs returned facts.
+        """
         metadata = _scope_metadata(request.scope)
         params: JsonObject = {
             "metadata_fragments": _metadata_fragments(metadata),
-            "limit": request.max_items,
+            "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
         }
         rows = await client.query.cypher(
             """
@@ -1266,9 +1273,13 @@ class Neo4jAgentMemoryBackend:
               AND all(
                 fragment IN $metadata_fragments WHERE f.metadata CONTAINS fragment
               )
-            RETURN f
+            WITH f
             ORDER BY f.created_at DESC, f.subject ASC, f.predicate ASC, f.object ASC
-            LIMIT $limit
+            LIMIT $candidate_limit
+            RETURN f{
+                .id, .subject, .predicate, .object, .metadata,
+                created_at: toString(f.created_at)
+            } AS f
             """,
             params,
         )
@@ -1277,7 +1288,7 @@ class Neo4jAgentMemoryBackend:
             for row in rows
             if (fact := _fact_from_row(row)) is not None
             and _fact_matches_scope(fact, metadata)
-        ]
+        ][: request.max_items]
         if not facts:
             return LongTermFactsContext()
         lines = ["### Long-Term Facts"]
@@ -1288,9 +1299,12 @@ class Neo4jAgentMemoryBackend:
                     f"- subject: {_redacted_text(str(fact['subject']))}",
                     f"  predicate: {_redacted_text(str(fact['predicate']))}",
                     f"  object: {_redacted_text(str(fact['object']))}",
-                    f"  provenance: {_format_provenance(metadata_fields)}",
                 ],
             )
+            fact_date = _fact_date(fact, metadata_fields)
+            if fact_date:
+                lines.append(f"  date: {_redacted_text(fact_date)}")
+            lines.append(f"  provenance: {_format_provenance(metadata_fields)}")
         return LongTermFactsContext(
             context="\n".join(lines),
             markers=_fact_markers(facts),
@@ -2924,6 +2938,18 @@ def _fact_metadata(fact: JsonObject) -> dict[str, str]:
     return {}
 
 
+def _fact_date(fact: JsonObject, metadata: Mapping[str, str]) -> str:
+    for key in _FACT_DATE_METADATA_KEYS:
+        value = metadata.get(key)
+        if value:
+            return value
+    created_at = fact.get("created_at")
+    if isinstance(created_at, str):
+        # The YYYY-MM-DD prefix of the ISO timestamp.
+        return created_at[:10]
+    return ""
+
+
 def _fact_markers(facts: list[JsonObject]) -> set[str]:
     markers: set[str] = set()
     for fact in facts:
@@ -2981,7 +3007,7 @@ def _metadata_from_json(metadata: str) -> dict[str, str]:
 def _metadata_fragments(metadata: Mapping[str, JsonValue]) -> list[JsonValue]:
     fragments: list[JsonValue] = []
     for key, value in metadata.items():
-        if key != "space_id" and isinstance(value, str):
+        if key not in _FACT_READ_EXCLUDED_FIELDS and isinstance(value, str):
             fragments.append(f'"{key}": {json.dumps(value)}')
     return fragments
 
@@ -3257,15 +3283,25 @@ _PROVENANCE_FIELDS = {
     "event_type",
 }
 
+# Long-term memory is durable across conversations, so reads never narrow by
+# session_id: pinning recall to the requesting session starves the context
+# budget while /v1/memories/search over the same data spans sessions.
+_FACT_READ_EXCLUDED_FIELDS = {
+    "space_id",
+    "session_id",
+}
+
 _FACT_SCOPE_FIELDS = {
     "tenant_id",
     "agent_id",
-    "session_id",
     "user_id",
     "visibility",
     "guild_id",
     "channel_id",
 }
+
+# Temporal anchor for rendered facts: a stored date tag wins over created_at.
+_FACT_DATE_METADATA_KEYS = ("session_date", "date")
 
 
 def _append_context_section(
