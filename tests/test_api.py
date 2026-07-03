@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from os import environ
@@ -983,6 +984,63 @@ def test_legacy_context_remains_short_term_only() -> None:
         ),
     ]
     assert backend.memory_context_requests == []
+
+
+def test_legacy_context_signals_deprecation_headers() -> None:
+    # Given: the deprecated legacy context endpoint.
+    backend = RecordingBackend(context="short-term only")
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+
+    # When: an existing client requests legacy context.
+    response = client.post(
+        "/v1/context",
+        headers=_auth_header(),
+        json={"scope": _scope_payload(), "query": "what matters?", "limit": 4},
+    )
+
+    # Then: the response advertises the deprecation and its successor route.
+    assert response.status_code == 200
+    assert response.headers["Deprecation"] == "true"
+    assert response.headers["Link"] == '</v1/memory/context>; rel="successor-version"'
+
+
+def test_legacy_context_is_marked_deprecated_in_openapi() -> None:
+    # Given: an app exposing both the legacy and successor context routes.
+    client = TestClient(
+        create_app(settings_factory=_settings, backend=RecordingBackend()),
+    )
+
+    # When: the OpenAPI schema is fetched.
+    schema = _JSON_OBJECT_ADAPTER.validate_json(client.get("/openapi.json").text)
+    paths = TypeAdapter(dict[str, dict[str, JsonObject]]).validate_python(
+        schema["paths"],
+    )
+
+    # Then: only the legacy route is flagged deprecated.
+    assert paths["/v1/context"]["post"]["deprecated"] is True
+    assert "deprecated" not in paths["/v1/memory/context"]["post"]
+
+
+def test_legacy_context_warns_once_per_process(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Given: the deprecated legacy context endpoint on a fresh app.
+    backend = RecordingBackend(context="short-term only")
+    client = TestClient(create_app(settings_factory=_settings, backend=backend))
+    payload = {"scope": _scope_payload(), "query": "what matters?", "limit": 4}
+
+    # When: the legacy endpoint is called repeatedly.
+    with caplog.at_level(logging.WARNING, logger="gnosis.main"):
+        first = client.post("/v1/context", headers=_auth_header(), json=payload)
+        second = client.post("/v1/context", headers=_auth_header(), json=payload)
+
+    # Then: exactly one structured deprecation warning is emitted.
+    assert first.status_code == 200
+    assert second.status_code == 200
+    warnings = [record for record in caplog.records if record.name == "gnosis.main"]
+    assert len(warnings) == 1
+    assert warnings[0].__dict__["deprecated_route"] == "/v1/context"
+    assert warnings[0].__dict__["successor_route"] == "/v1/memory/context"
 
 
 def test_write_event_when_token_is_missing() -> None:
@@ -2608,6 +2666,51 @@ async def test_neo4j_backend_context_uses_scoped_short_term_only() -> None:
 
 
 @pytest.mark.anyio
+async def test_neo4j_backend_legacy_context_delegates_to_memory_context() -> None:
+    # Given: identical fake memory clients behind the legacy and successor paths.
+    legacy_client = RecordingMemoryClient(context="scoped short-term context")
+    successor_client = RecordingMemoryClient(context="scoped short-term context")
+    legacy_backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(legacy_client),
+    )
+    successor_backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(successor_client),
+    )
+
+    # When: a legacy request and its equivalent combined request are issued.
+    legacy_response = await legacy_backend.get_context(
+        ContextRequest.model_validate(
+            {"scope": _scope_payload(), "query": "what matters?", "limit": 4},
+        ),
+    )
+    successor_response = await successor_backend.get_memory_context(
+        MemoryContextRequest(
+            scope=MemoryScope.model_validate(_scope_payload()),
+            query="what matters?",
+            include_long_term=False,
+            include_reasoning=False,
+            include_graph=False,
+            max_items=4,
+        ),
+    )
+
+    # Then: both paths issue the same short-term backend call and content.
+    assert (
+        legacy_client.short_term.context_queries
+        == successor_client.short_term.context_queries
+    )
+    assert legacy_response.context == "scoped short-term context"
+    assert successor_response.sections == [
+        MemoryContextSection(
+            source="short_term",
+            content="scoped short-term context",
+        ),
+    ]
+
+
+@pytest.mark.anyio
 async def test_neo4j_backend_memory_context_uses_graph_context_path() -> None:
     # Given: combined context is backed by a fake graph store with structured facts.
     fake_client = RecordingMemoryClient()
@@ -3782,6 +3885,9 @@ class LongTermFactWrite:
 
 @dataclass(frozen=True, slots=True)
 class ShortTermContextQuery:
+    query: str
+    session_id: str
+    max_messages: int
     metadata_filters: dict[str, str]
 
 
@@ -3820,9 +3926,13 @@ class RecordingShortTermMemory:
         max_messages: int,
         metadata_filters: dict[str, str],
     ) -> str:
-        _ = (query, session_id, max_messages)
         self.context_queries.append(
-            ShortTermContextQuery(metadata_filters=metadata_filters),
+            ShortTermContextQuery(
+                query=query,
+                session_id=session_id,
+                max_messages=max_messages,
+                metadata_filters=metadata_filters,
+            ),
         )
         return self.context
 
