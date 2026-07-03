@@ -585,6 +585,90 @@ class ClientEventBatchResponse(ContractModel):
     results: list[EventIngestResult]
 
 
+type MemoryAddEvent = Literal["ADD", "UPDATE", "NONE"]
+type MemoryMessageRole = Literal["user", "assistant"]
+
+
+class MemoryMessage(ContractModel):
+    role: MemoryMessageRole
+    content: str = Field(min_length=1)
+
+
+class MemoryAddRequest(ContractModel):
+    scope: MemoryScope
+    messages: list[MemoryMessage] = Field(default_factory=list, max_length=20)
+    content: str | None = Field(default=None, min_length=1)
+    infer: bool = True
+    metadata: JsonObject = Field(default_factory=dict)
+
+
+class MemoryAddResult(ContractModel):
+    memory_id: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    event: MemoryAddEvent
+    metadata: JsonObject = Field(default_factory=dict)
+
+
+class MemoryAddResponse(ContractModel):
+    results: list[MemoryAddResult] = Field(default_factory=list)
+
+
+class MemorySearchRequest(ContractModel):
+    scope: MemoryScope
+    query: str = Field(min_length=1)
+    filters: JsonObject | None = None
+    limit: int = Field(default=8, ge=1, le=100)
+    min_score: float | None = Field(default=None, ge=0, le=1)
+
+
+class MemoryRecord(ContractModel):
+    memory_id: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    score: float | None = Field(default=None, ge=0, le=1, exclude_if=_is_none)
+    metadata: JsonObject = Field(default_factory=dict)
+    created_at: str | None = Field(default=None, min_length=1)
+    updated_at: str | None = Field(default=None, min_length=1)
+
+
+class MemorySearchResponse(ContractModel):
+    results: list[MemoryRecord] = Field(default_factory=list)
+
+
+class MemoryListRequest(ContractModel):
+    scope: MemoryScope
+    filters: JsonObject | None = None
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=50, ge=1, le=200)
+
+
+class MemoryListResponse(ContractModel):
+    results: list[MemoryRecord] = Field(default_factory=list)
+    total: int = Field(ge=0)
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+
+
+class MemoryUpdateRequest(ContractModel):
+    scope: MemoryScope
+    content: str | None = Field(default=None, min_length=1)
+    metadata: JsonObject | None = None
+
+
+class MemoryUpdateResponse(ContractModel):
+    memory_id: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    event: Literal["UPDATE"] = "UPDATE"
+
+
+class MemoryDeleteRequest(ContractModel):
+    scope: MemoryScope
+
+
+class MemoryDeleteResponse(ContractModel):
+    memory_id: str = Field(min_length=1)
+    event: Literal["DELETE"] = "DELETE"
+
+
 class GraphContextRequest(ContractModel):
     scope: MemoryScope
     query: str = Field(min_length=1)

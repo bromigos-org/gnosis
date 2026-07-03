@@ -49,8 +49,18 @@ from gnosis.models import (  # noqa: E402
     GraphContextResponse,
     GraphExportRequest,
     GraphExportResponse,
+    MemoryAddRequest,
+    MemoryAddResponse,
     MemoryContextRequest,
     MemoryContextResponse,
+    MemoryDeleteRequest,
+    MemoryDeleteResponse,
+    MemoryListRequest,
+    MemoryListResponse,
+    MemorySearchRequest,
+    MemorySearchResponse,
+    MemoryUpdateRequest,
+    MemoryUpdateResponse,
     MessageWriteRequest,
     MessageWriteResponse,
     PreferenceRecord,
@@ -506,6 +516,40 @@ class RecordingBackend:
     ) -> MemoryContextResponse:
         _ = request
         return MemoryContextResponse()
+
+    async def add_memories(self, request: MemoryAddRequest) -> MemoryAddResponse:
+        _ = request
+        return MemoryAddResponse()
+
+    async def search_memories(
+        self,
+        request: MemorySearchRequest,
+    ) -> MemorySearchResponse:
+        _ = request
+        return MemorySearchResponse()
+
+    async def list_memories(self, request: MemoryListRequest) -> MemoryListResponse:
+        return MemoryListResponse(
+            total=0,
+            page=request.page,
+            page_size=request.page_size,
+        )
+
+    async def update_memory(
+        self,
+        memory_id: str,
+        request: MemoryUpdateRequest,
+    ) -> MemoryUpdateResponse:
+        _ = request
+        return MemoryUpdateResponse(memory_id=memory_id, content="updated")
+
+    async def delete_memory(
+        self,
+        memory_id: str,
+        request: MemoryDeleteRequest,
+    ) -> MemoryDeleteResponse:
+        _ = request
+        return MemoryDeleteResponse(memory_id=memory_id)
 
     async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
         return EventIngestResult(

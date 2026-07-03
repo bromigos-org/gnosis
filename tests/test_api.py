@@ -30,6 +30,7 @@ from gnosis.backend import (
     BackendCapabilityUnavailable,
     BackendRequestError,
     MemoryClientContext,
+    MemoryNotFoundError,
     Neo4jAgentMemoryBackend,
 )
 from gnosis.main import create_app
@@ -81,10 +82,22 @@ from gnosis.models import (
     GraphExportResponse,
     JsonObject,
     JsonValue,
+    MemoryAddRequest,
+    MemoryAddResponse,
+    MemoryAddResult,
     MemoryContextRequest,
     MemoryContextResponse,
     MemoryContextSection,
+    MemoryDeleteRequest,
+    MemoryDeleteResponse,
+    MemoryListRequest,
+    MemoryListResponse,
+    MemoryRecord,
     MemoryScope,
+    MemorySearchRequest,
+    MemorySearchResponse,
+    MemoryUpdateRequest,
+    MemoryUpdateResponse,
     MemoryVisibility,
     MessageWriteRequest,
     MessageWriteResponse,
@@ -2893,10 +2906,60 @@ class RecordingBackend:
             ],
         ),
     )
+    memory_add: MemoryAddResponse = field(
+        default_factory=lambda: MemoryAddResponse(
+            results=[
+                MemoryAddResult(
+                    memory_id="00000000-0000-0000-0000-0000000000aa",
+                    content="remember this",
+                    event="ADD",
+                ),
+            ],
+        ),
+    )
+    memory_search: MemorySearchResponse = field(
+        default_factory=lambda: MemorySearchResponse(
+            results=[
+                MemoryRecord(
+                    memory_id="00000000-0000-0000-0000-0000000000aa",
+                    content="remember this",
+                    score=0.91,
+                    metadata={"topic": "snacks"},
+                    created_at="2026-06-27T01:02:03+00:00",
+                ),
+            ],
+        ),
+    )
+    memory_list: MemoryListResponse = field(
+        default_factory=lambda: MemoryListResponse(
+            results=[
+                MemoryRecord(
+                    memory_id="00000000-0000-0000-0000-0000000000aa",
+                    content="remember this",
+                    metadata={"topic": "snacks"},
+                    created_at="2026-06-27T01:02:03+00:00",
+                ),
+            ],
+            total=1,
+            page=1,
+            page_size=50,
+        ),
+    )
     backend_available: bool = True
     messages: list[MessageWriteRequest] = field(default_factory=list)
     context_requests: list[ContextRequest] = field(default_factory=list)
     memory_context_requests: list[MemoryContextRequest] = field(default_factory=list)
+    memory_add_requests: list[MemoryAddRequest] = field(default_factory=list)
+    memory_search_requests: list[MemorySearchRequest] = field(default_factory=list)
+    memory_list_requests: list[MemoryListRequest] = field(default_factory=list)
+    memory_update_requests: list[tuple[str, MemoryUpdateRequest]] = field(
+        default_factory=list,
+    )
+    memory_delete_requests: list[tuple[str, MemoryDeleteRequest]] = field(
+        default_factory=list,
+    )
+    memory_add_error: BackendRequestError | None = None
+    missing_memory_ids: set[str] = field(default_factory=set)
     events: list[ClientEvent] = field(default_factory=list)
     graph_context_requests: list[GraphContextRequest] = field(default_factory=list)
     sdk_stats_requests: list[SdkStatsRequest] = field(default_factory=list)
@@ -3073,6 +3136,48 @@ class RecordingBackend:
     ) -> MemoryContextResponse:
         self.memory_context_requests.append(request)
         return self.memory_context
+
+    async def add_memories(self, request: MemoryAddRequest) -> MemoryAddResponse:
+        self.memory_add_requests.append(request)
+        if self.memory_add_error is not None:
+            raise self.memory_add_error
+        return self.memory_add
+
+    async def search_memories(
+        self,
+        request: MemorySearchRequest,
+    ) -> MemorySearchResponse:
+        self.memory_search_requests.append(request)
+        return self.memory_search
+
+    async def list_memories(self, request: MemoryListRequest) -> MemoryListResponse:
+        self.memory_list_requests.append(request)
+        return self.memory_list.model_copy(
+            update={"page": request.page, "page_size": request.page_size},
+        )
+
+    async def update_memory(
+        self,
+        memory_id: str,
+        request: MemoryUpdateRequest,
+    ) -> MemoryUpdateResponse:
+        self.memory_update_requests.append((memory_id, request))
+        if memory_id in self.missing_memory_ids:
+            raise MemoryNotFoundError
+        return MemoryUpdateResponse(
+            memory_id=memory_id,
+            content=request.content or "remember this",
+        )
+
+    async def delete_memory(
+        self,
+        memory_id: str,
+        request: MemoryDeleteRequest,
+    ) -> MemoryDeleteResponse:
+        self.memory_delete_requests.append((memory_id, request))
+        if memory_id in self.missing_memory_ids:
+            raise MemoryNotFoundError
+        return MemoryDeleteResponse(memory_id=memory_id)
 
     async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
         self.events.append(event)

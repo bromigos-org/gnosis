@@ -35,6 +35,34 @@ from gnosis.event_facts import EventFactPromoter
 from gnosis.graph_probe import StructuredGraphStore, direct_neo4j_driver_factory
 from gnosis.graph_query_qa import LiteLLMGraphQueryPlanner
 from gnosis.graph_store import DirectNeo4jGraphStore, Neo4jGraphExecutor
+from gnosis.memory_filters import (
+    FilterValidationError,
+    MemoryFilter,
+    build_cypher_filter,
+    matches_filters,
+    parse_filters,
+)
+from gnosis.memory_provider import (
+    DELETE_MEMORY_CYPHER,
+    LOOKUP_LATEST_MEMORY_CYPHER,
+    LOOKUP_MEMORY_CYPHER,
+    TURN_MEMORY_PREDICATE_PREFIX,
+    UPDATE_MEMORY_CYPHER,
+    VERBATIM_MEMORY_PREDICATE,
+    StoredMemory,
+    list_memories_cypher,
+    memory_add_event,
+    memory_filter_fields,
+    memory_matches_scope,
+    memory_record,
+    memory_score,
+    merged_memory_metadata,
+    public_memory_metadata,
+    scope_read_fragments,
+    stored_memories_from_sdk,
+    stored_memory_from_row,
+    stored_memory_from_sdk,
+)
 from gnosis.models import (
     BackendReadiness,
     BufferFlushResponse,
@@ -82,10 +110,23 @@ from gnosis.models import (
     GraphExportResponse,
     JsonObject,
     JsonValue,
+    MemoryAddEvent,
+    MemoryAddRequest,
+    MemoryAddResponse,
+    MemoryAddResult,
     MemoryContextRequest,
     MemoryContextResponse,
     MemoryContextSection,
+    MemoryDeleteRequest,
+    MemoryDeleteResponse,
+    MemoryListRequest,
+    MemoryListResponse,
+    MemoryRecord,
     MemoryScope,
+    MemorySearchRequest,
+    MemorySearchResponse,
+    MemoryUpdateRequest,
+    MemoryUpdateResponse,
     MessageWriteRequest,
     MessageWriteResponse,
     PreferenceRecord,
@@ -193,6 +234,17 @@ _CONSOLIDATION_IDEMPOTENCY_DETAIL: Final[str] = (
 )
 _CONSOLIDATION_TOKEN_TTL: Final[timedelta] = timedelta(minutes=15)
 _REASONING_READ_UNAVAILABLE_DETAIL: Final[str] = "SDK reasoning read is unavailable."
+_MEMORY_MODE_DETAIL: Final[str] = (
+    "Provide messages with infer=true or content with infer=false."
+)
+_MEMORY_MESSAGES_INFER_DETAIL: Final[str] = "messages require infer=true."
+_MEMORY_CONTENT_INFER_DETAIL: Final[str] = "content requires infer=false."
+_MEMORY_UPDATE_FIELDS_DETAIL: Final[str] = "Memory updates require content or metadata."
+_MEMORY_WRITE_UNAVAILABLE_DETAIL: Final[str] = "SDK graph writes are unavailable."
+_MEMORY_ID_UNAVAILABLE_DETAIL: Final[str] = "SDK did not expose a stable memory id."
+_MEMORY_NOT_FOUND_DETAIL: Final[str] = "memory not found in scope"
+_MEMORY_LIST_SCAN_LIMIT: Final[int] = 2000
+_MEMORY_SEARCH_CANDIDATE_LIMIT: Final[int] = 100
 _UNSAFE_CONSOLIDATION_REPORT_KEYS: Final[frozenset[str]] = frozenset(
     {
         "authorization",
@@ -266,6 +318,25 @@ class MemoryBackend(Protocol):
         self,
         request: MemoryContextRequest,
     ) -> MemoryContextResponse: ...
+    async def add_memories(self, request: MemoryAddRequest) -> MemoryAddResponse: ...
+    async def search_memories(
+        self,
+        request: MemorySearchRequest,
+    ) -> MemorySearchResponse: ...
+    async def list_memories(
+        self,
+        request: MemoryListRequest,
+    ) -> MemoryListResponse: ...
+    async def update_memory(
+        self,
+        memory_id: str,
+        request: MemoryUpdateRequest,
+    ) -> MemoryUpdateResponse: ...
+    async def delete_memory(
+        self,
+        memory_id: str,
+        request: MemoryDeleteRequest,
+    ) -> MemoryDeleteResponse: ...
     async def ingest_event(self, event: ClientEvent) -> EventIngestResult: ...
     async def ingest_events(
         self,
@@ -847,8 +918,29 @@ class GraphCapableMemoryClient(Protocol):
     ) -> Awaitable[MemoryGraphLike]: ...
 
 
+@runtime_checkable
+class GraphWriteQuery(Protocol):
+    def execute_write(
+        self,
+        query: str,
+        parameters: dict[str, JsonValue] | None = None,
+    ) -> Awaitable[list[JsonObject]]: ...
+
+
+@runtime_checkable
+class TextEmbedder(Protocol):
+    def embed(self, text: str) -> Awaitable[list[float]]: ...
+
+
 class BackendRequestError(Exception):
     def __init__(self, detail: str) -> None:
+        self.detail: str
+        self.detail = detail
+        super().__init__(detail)
+
+
+class MemoryNotFoundError(Exception):
+    def __init__(self, detail: str = _MEMORY_NOT_FOUND_DETAIL) -> None:
         self.detail: str
         self.detail = detail
         super().__init__(detail)
@@ -1211,6 +1303,203 @@ class Neo4jAgentMemoryBackend:
             context="\n".join(lines),
             markers=_fact_markers(facts),
         )
+
+    async def add_memories(self, request: MemoryAddRequest) -> MemoryAddResponse:
+        _require_memory_add_mode(request)
+        metadata = _write_metadata(request.scope, request.metadata, None)
+        results: list[MemoryAddResult] = []
+        async with self._memory_client() as client:
+            if request.content is not None:
+                results.append(
+                    await self._add_memory_fact(
+                        client,
+                        request.scope,
+                        predicate=VERBATIM_MEMORY_PREDICATE,
+                        content=_redacted_text(request.content),
+                        metadata=metadata,
+                    ),
+                )
+            else:
+                results.extend(
+                    await self._add_turn_memories(client, request, metadata),
+                )
+        return MemoryAddResponse(results=results)
+
+    async def _add_turn_memories(
+        self,
+        client: MemoryClientContext,
+        request: MemoryAddRequest,
+        metadata: JsonObject,
+    ) -> list[MemoryAddResult]:
+        policy = _extraction_policy(
+            extract_entities=None,
+            extract_relations=None,
+            settings=self._app_settings,
+        )
+        results: list[MemoryAddResult] = []
+        for message in request.messages:
+            _ = await client.short_term.add_message(
+                session_id=_session_id(request.scope),
+                role=message.role,
+                content=message.content,
+                user_identifier=_user_identifier(request.scope),
+                metadata=_scope_metadata(request.scope),
+                extract_entities=policy.extract_entities,
+                extract_relations=policy.extract_relations,
+            )
+            results.append(
+                await self._add_memory_fact(
+                    client,
+                    request.scope,
+                    predicate=f"{TURN_MEMORY_PREDICATE_PREFIX}{message.role}",
+                    content=message.content,
+                    metadata=metadata,
+                ),
+            )
+        return results
+
+    async def _add_memory_fact(
+        self,
+        client: MemoryClientContext,
+        scope: MemoryScope,
+        *,
+        predicate: str,
+        content: str,
+        metadata: JsonObject,
+    ) -> MemoryAddResult:
+        raw_record = await client.long_term.add_fact(
+            _user_identifier(scope),
+            predicate,
+            content,
+            metadata=metadata,
+            generate_embedding=True,
+        )
+        memory = stored_memory_from_sdk(raw_record)
+        event: MemoryAddEvent = "ADD"
+        if memory is not None:
+            event = memory_add_event(memory)
+        else:
+            memory = await _lookup_latest_memory(
+                client,
+                scope,
+                predicate=predicate,
+                content=content,
+            )
+        if memory is None:
+            raise BackendCapabilityUnavailable(_MEMORY_ID_UNAVAILABLE_DETAIL)
+        return MemoryAddResult(
+            memory_id=memory.memory_id,
+            content=_redacted_text(memory.content),
+            event=event,
+            metadata=public_memory_metadata(memory),
+        )
+
+    async def search_memories(
+        self,
+        request: MemorySearchRequest,
+    ) -> MemorySearchResponse:
+        filters = _parsed_memory_filters(request.filters)
+        async with self._memory_client() as client:
+            raw_records = await client.long_term.search_facts(
+                request.query,
+                limit=_MEMORY_SEARCH_CANDIDATE_LIMIT,
+            )
+        results: list[MemoryRecord] = []
+        for memory in stored_memories_from_sdk(raw_records):
+            if not memory_matches_scope(memory, request.scope):
+                continue
+            if not matches_filters(filters, memory_filter_fields(memory)):
+                continue
+            if not _meets_min_score(memory, request.min_score):
+                continue
+            results.append(memory_record(memory, include_score=True))
+            if len(results) == request.limit:
+                break
+        return MemorySearchResponse(results=results)
+
+    async def list_memories(self, request: MemoryListRequest) -> MemoryListResponse:
+        filters = _parsed_memory_filters(request.filters)
+        narrowing = build_cypher_filter(filters)
+        parameters: dict[str, JsonValue] = {
+            "scope_fragments": scope_read_fragments(request.scope),
+            "scan_limit": _MEMORY_LIST_SCAN_LIMIT,
+        }
+        parameters.update(narrowing.parameters)
+        async with self._memory_client() as client:
+            rows = await client.query.cypher(
+                list_memories_cypher(narrowing.fragment),
+                parameters,
+            )
+        memories = [
+            memory
+            for row in rows
+            if (memory := stored_memory_from_row(row)) is not None
+            and memory_matches_scope(memory, request.scope)
+            and matches_filters(filters, memory_filter_fields(memory))
+        ]
+        start = (request.page - 1) * request.page_size
+        return MemoryListResponse(
+            results=[
+                memory_record(memory, include_score=False)
+                for memory in memories[start : start + request.page_size]
+            ],
+            total=len(memories),
+            page=request.page,
+            page_size=request.page_size,
+        )
+
+    async def update_memory(
+        self,
+        memory_id: str,
+        request: MemoryUpdateRequest,
+    ) -> MemoryUpdateResponse:
+        if request.content is None and request.metadata is None:
+            raise BackendRequestError(_MEMORY_UPDATE_FIELDS_DETAIL)
+        async with self._memory_client() as client:
+            memory = await _require_scoped_memory(client, memory_id, request.scope)
+            content = None
+            embedding = None
+            if request.content is not None:
+                content = _redacted_text(request.content)
+                embedding = await _memory_embedding(client, content)
+            metadata = None
+            if request.metadata is not None:
+                metadata = merged_memory_metadata(memory, request.metadata)
+            parameters: dict[str, JsonValue] = {
+                "memory_id": memory.memory_id,
+                "content": content,
+                "metadata": metadata,
+                "embedding": embedding,
+            }
+            rows = await _graph_write_query(client).execute_write(
+                UPDATE_MEMORY_CYPHER,
+                parameters,
+            )
+        _LOGGER.info(
+            "memory update applied",
+            extra=_memory_edit_audit(memory.memory_id, request.scope),
+        )
+        return MemoryUpdateResponse(
+            memory_id=memory.memory_id,
+            content=_updated_memory_content(rows, content or memory.content),
+        )
+
+    async def delete_memory(
+        self,
+        memory_id: str,
+        request: MemoryDeleteRequest,
+    ) -> MemoryDeleteResponse:
+        async with self._memory_client() as client:
+            memory = await _require_scoped_memory(client, memory_id, request.scope)
+            _ = await _graph_write_query(client).execute_write(
+                DELETE_MEMORY_CYPHER,
+                {"memory_id": memory.memory_id},
+            )
+        _LOGGER.info(
+            "memory delete applied",
+            extra=_memory_edit_audit(memory.memory_id, request.scope),
+        )
+        return MemoryDeleteResponse(memory_id=memory.memory_id)
 
     async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
         result = await self._graph_store.ingest_event(event)
@@ -1780,6 +2069,106 @@ class Neo4jAgentMemoryBackend:
         if self._memory_client_factory is not None:
             return self._memory_client_factory(self._settings)
         return _memory_client_context(MemoryClient(self._settings))
+
+
+def _require_memory_add_mode(request: MemoryAddRequest) -> None:
+    has_messages = bool(request.messages)
+    has_content = request.content is not None
+    if has_messages == has_content:
+        raise BackendRequestError(_MEMORY_MODE_DETAIL)
+    if has_messages and not request.infer:
+        raise BackendRequestError(_MEMORY_MESSAGES_INFER_DETAIL)
+    if has_content and request.infer:
+        raise BackendRequestError(_MEMORY_CONTENT_INFER_DETAIL)
+
+
+def _parsed_memory_filters(filters: JsonObject | None) -> MemoryFilter | None:
+    if filters is None:
+        return None
+    try:
+        return parse_filters(filters)
+    except FilterValidationError as error:
+        raise BackendRequestError(error.detail) from error
+
+
+def _meets_min_score(memory: StoredMemory, min_score: float | None) -> bool:
+    if min_score is None:
+        return True
+    score = memory_score(memory)
+    return score is not None and score >= min_score
+
+
+async def _lookup_latest_memory(
+    client: MemoryClientContext,
+    scope: MemoryScope,
+    *,
+    predicate: str,
+    content: str,
+) -> StoredMemory | None:
+    rows = await client.query.cypher(
+        LOOKUP_LATEST_MEMORY_CYPHER,
+        {
+            "subject": _user_identifier(scope),
+            "predicate": predicate,
+            "object": content,
+            "scope_fragments": scope_read_fragments(scope),
+        },
+    )
+    for row in rows:
+        memory = stored_memory_from_row(row)
+        if memory is not None and memory_matches_scope(memory, scope):
+            return memory
+    return None
+
+
+async def _require_scoped_memory(
+    client: MemoryClientContext,
+    memory_id: str,
+    scope: MemoryScope,
+) -> StoredMemory:
+    rows = await client.query.cypher(
+        LOOKUP_MEMORY_CYPHER,
+        {"memory_id": memory_id},
+    )
+    for row in rows:
+        memory = stored_memory_from_row(row)
+        if memory is not None and memory_matches_scope(memory, scope):
+            return memory
+    raise MemoryNotFoundError
+
+
+def _graph_write_query(client: MemoryClientContext) -> GraphWriteQuery:
+    graph: object = getattr(client, "graph", None)
+    if not isinstance(graph, GraphWriteQuery):
+        raise BackendCapabilityUnavailable(_MEMORY_WRITE_UNAVAILABLE_DETAIL)
+    return graph
+
+
+async def _memory_embedding(
+    client: MemoryClientContext,
+    text: str,
+) -> list[JsonValue] | None:
+    embedder: object = getattr(client.long_term, "embedder", None)
+    if not isinstance(embedder, TextEmbedder):
+        return None
+    return [float(item) for item in await embedder.embed(text)]
+
+
+def _updated_memory_content(rows: list[JsonObject], fallback: str) -> str:
+    for row in rows:
+        value = row.get("object")
+        if isinstance(value, str) and value:
+            return _redacted_text(value)
+    return _redacted_text(fallback)
+
+
+def _memory_edit_audit(memory_id: str, scope: MemoryScope) -> dict[str, str]:
+    return {
+        "memory_id": memory_id,
+        "tenant_id": scope.tenant_id,
+        "agent_id": scope.agent_id,
+        "user_id": scope.user_id,
+    }
 
 
 def _build_memory_settings(settings: Settings) -> MemorySettings:

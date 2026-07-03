@@ -11,6 +11,7 @@ from gnosis.backend import (
     BackendRequestError,
     ExtractionPreviewBackend,
     MemoryBackend,
+    MemoryNotFoundError,
     Neo4jAgentMemoryBackend,
 )
 from gnosis.models import (
@@ -50,9 +51,19 @@ from gnosis.models import (
     GraphExportResponse,
     HealthResponse,
     JsonObject,
+    MemoryAddRequest,
+    MemoryAddResponse,
     MemoryContextRequest,
     MemoryContextResponse,
+    MemoryDeleteRequest,
+    MemoryDeleteResponse,
+    MemoryListRequest,
+    MemoryListResponse,
     MemoryScope,
+    MemorySearchRequest,
+    MemorySearchResponse,
+    MemoryUpdateRequest,
+    MemoryUpdateResponse,
     MemoryVisibility,
     MessageWriteRequest,
     MessageWriteResponse,
@@ -116,6 +127,7 @@ def create_app(
     _register_health_route(app)
     _register_readiness_routes(app, settings, authenticator, get_backend)
     _register_message_routes(app, authenticator, get_backend)
+    _register_memory_provider_routes(app, settings, authenticator, get_backend)
     _register_event_routes(app, authenticator, get_backend)
     _register_context_routes(app, authenticator, get_backend)
     _register_operator_routes(app, settings, authenticator, get_backend)
@@ -217,6 +229,97 @@ def _register_message_routes(
             return await memory.preview_extraction(request)
         except BackendRequestError as error:
             raise HTTPException(status_code=400, detail=error.detail) from error
+
+
+def _register_memory_provider_routes(  # noqa: C901 - route grouping is intentional.
+    app: FastAPI,
+    settings: Settings,
+    authenticator: Authenticator,
+    get_backend: Callable[[], MemoryBackend],
+) -> None:
+    @app.post(
+        "/v1/memories",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def add_memories(
+        request: MemoryAddRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> MemoryAddResponse:
+        authenticator.require_scope(request.scope)
+        try:
+            return await memory.add_memories(request)
+        except BackendRequestError as error:
+            raise HTTPException(status_code=400, detail=error.detail) from error
+
+    @app.post(
+        "/v1/memories/search",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def search_memories(
+        request: MemorySearchRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> MemorySearchResponse:
+        authenticator.require_scope(request.scope)
+        try:
+            return await memory.search_memories(request)
+        except BackendRequestError as error:
+            raise HTTPException(status_code=400, detail=error.detail) from error
+
+    @app.post(
+        "/v1/memories/list",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def list_memories(
+        request: MemoryListRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> MemoryListResponse:
+        authenticator.require_scope(request.scope)
+        try:
+            return await memory.list_memories(request)
+        except BackendRequestError as error:
+            raise HTTPException(status_code=400, detail=error.detail) from error
+
+    @app.patch(
+        "/v1/memories/{memory_id}",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def update_memory(
+        memory_id: str,
+        request: MemoryUpdateRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> MemoryUpdateResponse:
+        _require_memory_edit_enabled(settings)
+        authenticator.require_scope(request.scope)
+        try:
+            return await memory.update_memory(memory_id, request)
+        except BackendRequestError as error:
+            raise HTTPException(status_code=400, detail=error.detail) from error
+        except MemoryNotFoundError as error:
+            raise HTTPException(status_code=404, detail=error.detail) from error
+
+    @app.delete(
+        "/v1/memories/{memory_id}",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def delete_memory(
+        memory_id: str,
+        request: MemoryDeleteRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> MemoryDeleteResponse:
+        _require_memory_edit_enabled(settings)
+        authenticator.require_scope(request.scope)
+        try:
+            return await memory.delete_memory(memory_id, request)
+        except MemoryNotFoundError as error:
+            raise HTTPException(status_code=404, detail=error.detail) from error
+
+
+def _require_memory_edit_enabled(settings: Settings) -> None:
+    if not settings.gnosis_memory_edit_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Memory editing is disabled by service policy.",
+        )
 
 
 def _register_event_routes(
