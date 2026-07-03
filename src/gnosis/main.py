@@ -116,9 +116,7 @@ def create_app(
         return memory_backend
 
     mcp_server = (
-        build_mcp_server(settings, get_backend)
-        if settings.gnosis_mcp_enabled
-        else None
+        build_mcp_server(settings, get_backend) if settings.gnosis_mcp_enabled else None
     )
 
     @asynccontextmanager

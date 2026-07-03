@@ -370,9 +370,7 @@ def _metadata_fragment(
                 for item in _require_scalar_list(condition.field_name, condition.value)
             ]
             name = _bind(parameters, parameter_prefix, fragments)
-            return (
-                f"any(fragment IN ${name} WHERE {alias}.metadata CONTAINS fragment)"
-            )
+            return f"any(fragment IN ${name} WHERE {alias}.metadata CONTAINS fragment)"
         case "contains" if _is_json_literal_substring(condition.value):
             name = _bind(parameters, parameter_prefix, condition.value)
             return f"{alias}.metadata CONTAINS ${name}"

@@ -69,9 +69,7 @@ def build_mcp_server(  # noqa: C901 - tool grouping is intentional.
     ) -> JsonObject:
         request = MemoryAddRequest(
             scope=_mcp_scope(settings, user_id),
-            messages=(
-                [MemoryMessage(role="user", content=content)] if infer else []
-            ),
+            messages=([MemoryMessage(role="user", content=content)] if infer else []),
             content=None if infer else content,
             infer=infer,
             metadata=metadata or {},
