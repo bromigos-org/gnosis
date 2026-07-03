@@ -17,7 +17,7 @@ This repo is not a thin SDK wrapper. It is the memory control plane for Bromigos
 
 ```mermaid
 flowchart LR
-    Clients[PC-Principal and other Bromigos clients]
+    Clients[PC-Principal, hermes agents via hermes-gnosis, MCP clients]
     Gateway[gnosis HTTP gateway]
     Policy[Scope checks, auth, redaction, rollout policy]
     SDK[neo4j-agent-memory SDK 0.5.0]
@@ -112,6 +112,16 @@ Operator workflows stay review-first.
 - Direct entity, fact, and preference writes exist for deliberate curation, not as a substitute for broad automatic mutation.
 
 In practice, this means callers can ask for one combined memory response while the gateway keeps the underlying storage classes separate, auditable, and policy-controlled.
+
+## Recall semantics: sharing, sessions, and ranking
+
+These rules decide who sees which memories and in what order. They are enforced by the gateway, not by client convention.
+
+- **Memory is user-centric within a deployment.** Long-term reads are keyed by `tenant_id` + `user_id`. Two agents on the same gnosis asking about the same user see the same memories. `agent_id` and caller metadata (for example the gateway channel) are write-side tags: they are stored on every record for audit and filtered views, but they do not partition recall, and they are redacted out of prompt-facing content. Agents that must not share memory (different business entities, e.g. nolgia) run against their own gnosis deployment with their own tenant and storage.
+- **Recall is cross-session.** `session_id` is write provenance only. It is stored on every record and never used as a read filter, so an agent recalls what it learned in earlier sessions. (Context assembly was session-pinned until 2026-07-03; that was a bug, not the contract.)
+- **Long-term facts are relevance-ranked and date-anchored.** When a query is present, context assembly ranks facts by embedding similarity over the same candidate pool `/v1/memories/search` uses, then renders each fact as a compact dated line (`- [7 May 2023] ...`), preferring a `session_date`/`date` from stored metadata and falling back to `created_at`. Without a query or embedder it falls back to recency ordering.
+- **Default ingestion is verbatim, not distilled.** With the extraction flags off (the default), conversation adds store each turn as a dated `said_user`/`said_assistant` fact plus its embedding — no LLM runs at ingest. Gnosis behaves as a dated retrieval store until `GNOSIS_EXTRACT_*` features are enabled; treat extraction quality as the main headroom for recall quality.
+- **Visibility, space, guild, and channel boundaries** still isolate as before; user-centric sharing only applies within a matching scope.
 
 ## Request and data flow
 
