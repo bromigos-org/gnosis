@@ -155,6 +155,28 @@ sequenceDiagram
 - `POST /v1/events/batch` writes up to 100 structured events per request.
 - `POST /v1/memory/extraction/preview` previews extraction candidates before durable writes.
 
+### Memory provider routes
+
+The `/v1/memories` surface exposes provider-style CRUD over scoped long-term memories. Every response carries stable memory ids. The full contract lives in `docs/provider-surface.md`.
+
+- `POST /v1/memories` adds memories: `messages` with `infer=true` syncs a conversation pair through the extraction path, `content` with `infer=false` stores a verbatim durable memory.
+- `POST /v1/memories/search` runs relevance-ranked semantic search with an optional mem0-v2-style `filters` DSL and `min_score` floor.
+- `POST /v1/memories/list` returns deterministic pages ordered by `created_at` descending, with `total`, `page`, and `page_size`.
+- `PATCH /v1/memories/{memory_id}` updates content or metadata for a memory owned by the request scope.
+- `DELETE /v1/memories/{memory_id}` deletes a memory owned by the request scope.
+
+Update and delete are gated behind `GNOSIS_MEMORY_EDIT_ENABLED` (default off) and return `403` while disabled. Both verify tenant and `user_id` ownership first and answer `404` for anything outside the caller's scope, so cross-scope existence never leaks. `scope.user_id` is the read filter for search and list; `agent_id` and caller metadata are write-side tags on the stored records.
+
+### MCP server
+
+When `GNOSIS_MCP_ENABLED` is on, gnosis mounts a streamable-HTTP MCP server at `/mcp` behind the same bearer token. It exposes exactly six tools: `add_memory`, `search_memory`, `get_context`, `list_memories`, `delete_memory`, and `get_status`. Tools construct the scope server-side: tenant from settings, `space_id` `mcp`, agent from `GNOSIS_MCP_AGENT_ID`, and `private_user` visibility. The MCP layer stays thin and delegates to the same backend operations as the HTTP routes; `delete_memory` honors `GNOSIS_MEMORY_EDIT_ENABLED`.
+
+### Clients
+
+- **PC-Principal** (Discord bot) uses the full gateway surface: combined memory context, message write-back, event batch ingestion, skills, and reasoning traces.
+- **hermes-agent** (bromigo, nolgia) connects through the [`hermes-gnosis`](https://github.com/bromigos-org/hermes-gnosis) memory-provider plugin, which drives the `/v1/memories` surface.
+- **MCP clients** (Claude, Cursor, and similar) connect to `/mcp` when `GNOSIS_MCP_ENABLED` is on.
+
 ### Operator routes
 
 - `GET /v1/memory/stats`
@@ -218,6 +240,8 @@ Several features exist, but they are controlled and not silently enabled.
 - Prompt enrichment from entities, preferences, and reasoning is off by default.
 - Consolidation scheduling is off by default.
 - Buffered writes exist, but the default write mode is `sync`.
+- Memory update and delete are off by default (`GNOSIS_MEMORY_EDIT_ENABLED`).
+- The MCP server mount is off by default (`GNOSIS_MCP_ENABLED`).
 
 Preview comes before persistence. If extraction work is being evaluated, use `POST /v1/memory/extraction/preview` first.
 
@@ -280,6 +304,9 @@ Preview comes before persistence. If extraction work is being evaluated, use `PO
 - `GNOSIS_PROMPT_PREFERENCES_ENABLED`
 - `GNOSIS_PROMPT_REASONING_ENABLED`
 - `GNOSIS_CONSOLIDATION_SCHEDULE_ENABLED`
+- `GNOSIS_MEMORY_EDIT_ENABLED` gates `PATCH`/`DELETE /v1/memories/{memory_id}` and the MCP `delete_memory` tool (default `false`).
+- `GNOSIS_MCP_ENABLED` mounts the streamable-HTTP MCP server at `/mcp` (default `false`).
+- `GNOSIS_MCP_AGENT_ID` sets the `agent_id` written into MCP-scoped memories (default `mcp-client`).
 
 ## Local development
 

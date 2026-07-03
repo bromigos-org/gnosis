@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     gnosis_prompt_preferences_enabled: bool = False
     gnosis_prompt_reasoning_enabled: bool = False
     gnosis_consolidation_schedule_enabled: bool = False
+    gnosis_memory_edit_enabled: bool = False
+    gnosis_mcp_enabled: bool = False
+    gnosis_mcp_agent_id: str = Field(default="mcp-client", min_length=1)
 
 
 def load_settings() -> Settings:
