@@ -579,8 +579,7 @@ async def test_long_term_fake_supports_protocol() -> None:
         "Cartman",
     ]
     assert [
-        item.category
-        for item in await client.long_term.search_preferences("concise")
+        item.category for item in await client.long_term.search_preferences("concise")
     ] == ["style"]
     assert [
         item.preference
@@ -654,11 +653,14 @@ def test_long_term_operation_contracts_are_json_safe_and_limited() -> None:
         preferences=[PreferenceRecord(category="style", preference="concise")],
     )
     assert EntityWriteRequest(scope=scope, name="Kenny", type="PERSON").resolve is True
-    assert EntityMessageLinkRequest(
-        scope=scope,
-        entity_id="entity-1",
-        message_id="message-1",
-    ).confidence == 1.0
+    assert (
+        EntityMessageLinkRequest(
+            scope=scope,
+            entity_id="entity-1",
+            message_id="message-1",
+        ).confidence
+        == 1.0
+    )
 
     # When / Then: non-JSON metadata is rejected before API return.
     with pytest.raises(ValidationError):
@@ -995,8 +997,7 @@ async def test_memory_context_redacts_reasoning_when_prompt_flag_enabled() -> No
 
 
 @pytest.mark.anyio
-async def test_reasoning_trace_list_filters_scope_and_redacts_sensitive(
-) -> None:
+async def test_reasoning_trace_list_filters_scope_and_redacts_sensitive() -> None:
     # Given: the SDK returns scoped and cross-tenant traces with sensitive metadata.
     scoped_trace_id = UUID("00000000-0000-0000-0000-000000000001")
     other_trace_id = UUID("00000000-0000-0000-0000-000000000002")
@@ -1486,8 +1487,7 @@ async def test_scoped_long_term_search_filters_and_redacts_sdk_records() -> None
 
 
 @pytest.mark.anyio
-async def test_scoped_long_term_writes_attach_scope_provenance_and_redact_metadata(
-) -> None:
+async def test_scoped_long_term_writes_attach_provenance_and_redact_metadata() -> None:
     # Given: direct long-term writes include metadata and provenance.
     fake_client = RecordingMemoryClient()
     backend = Neo4jAgentMemoryBackend(
@@ -2626,9 +2626,8 @@ class RecordingLongTermMemory:
         )
         candidates = self.duplicate_candidates
         for candidate_source, candidate_target, _similarity in candidates:
-            if (
-                candidate_source.id == str(source_id)
-                and candidate_target.id == str(target_id)
+            if candidate_source.id == str(source_id) and candidate_target.id == str(
+                target_id
             ):
                 return (candidate_source, candidate_target)
         return None
@@ -3323,16 +3322,18 @@ def _json_object(value: object) -> JsonObject:
 
 
 def _scope_metadata(scope: MemoryScope) -> JsonObject:
-    return _JSON_OBJECT_ADAPTER.validate_python({
-        "tenant_id": scope.tenant_id,
-        "space_id": scope.space_id,
-        "agent_id": scope.agent_id,
-        "session_id": scope.session_id,
-        "user_id": scope.user_id,
-        "visibility": scope.visibility.value,
-        "guild_id": scope.guild_id or "",
-        "channel_id": scope.channel_id or "",
-    })
+    return _JSON_OBJECT_ADAPTER.validate_python(
+        {
+            "tenant_id": scope.tenant_id,
+            "space_id": scope.space_id,
+            "agent_id": scope.agent_id,
+            "session_id": scope.session_id,
+            "user_id": scope.user_id,
+            "visibility": scope.visibility.value,
+            "guild_id": scope.guild_id or "",
+            "channel_id": scope.channel_id or "",
+        }
+    )
 
 
 def _trace_by_id(

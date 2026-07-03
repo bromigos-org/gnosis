@@ -180,9 +180,9 @@ _FACT_RECORDS_ADAPTER: Final[TypeAdapter[list[FactRecord]]] = TypeAdapter(
 _PREFERENCE_RECORD_ADAPTER: Final[TypeAdapter[PreferenceRecord]] = TypeAdapter(
     PreferenceRecord,
 )
-_PREFERENCE_RECORDS_ADAPTER: Final[
-    TypeAdapter[list[PreferenceRecord]]
-] = TypeAdapter(list[PreferenceRecord])
+_PREFERENCE_RECORDS_ADAPTER: Final[TypeAdapter[list[PreferenceRecord]]] = TypeAdapter(
+    list[PreferenceRecord]
+)
 _PREVIEW_WRITE_DETAIL: Final[str] = (
     "Use /v1/memory/extraction/preview for dry-run previews."
 )
@@ -211,9 +211,7 @@ _DEDUP_UNAVAILABLE_DETAIL: Final[str] = "SDK deduplication is unavailable."
 _DEDUP_APPLY_REQUIRED_DETAIL: Final[str] = (
     "Deduplication apply requests require apply=true."
 )
-_DEDUP_TOKEN_DETAIL: Final[str] = (
-    "Deduplication dry-run token is invalid or expired."  # noqa: S105
-)
+_DEDUP_TOKEN_DETAIL: Final[str] = "Deduplication dry-run token is invalid or expired."  # noqa: S105
 _DEDUP_STALE_DETAIL: Final[str] = "Deduplication candidate is stale."
 _DEDUP_IDEMPOTENCY_DETAIL: Final[str] = (
     "Idempotency key was already used for a different deduplication request."
