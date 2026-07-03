@@ -1257,54 +1257,21 @@ class Neo4jAgentMemoryBackend:
         """Render scoped long-term facts with the same read reach as search.
 
         Reads narrow by the cross-session scope (long-term memory spans
-        sessions, so session_id never prunes recall), scan a candidate pool
-        sized like /v1/memories/search, and only apply ``max_items`` after the
-        gateway scope re-check so the item budget governs returned facts.
+        sessions, so session_id never prunes recall). When the request has a
+        query, candidates come from the same embedding-similarity search that
+        /v1/memories/search uses so relevance decides which facts fit the
+        ``max_items`` budget; recency ordering is the fallback when similarity
+        search has nothing to rank (no query or no embedder).
         """
         metadata = _scope_metadata(request.scope)
-        params: JsonObject = {
-            "metadata_fragments": _metadata_fragments(metadata),
-            "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
-        }
-        rows = await client.query.cypher(
-            """
-            MATCH (f:Fact)
-            WHERE f.metadata IS NOT NULL
-              AND all(
-                fragment IN $metadata_fragments WHERE f.metadata CONTAINS fragment
-              )
-            WITH f
-            ORDER BY f.created_at DESC, f.subject ASC, f.predicate ASC, f.object ASC
-            LIMIT $candidate_limit
-            RETURN f{
-                .id, .subject, .predicate, .object, .metadata,
-                created_at: toString(f.created_at)
-            } AS f
-            """,
-            params,
-        )
-        facts = [
-            fact
-            for row in rows
-            if (fact := _fact_from_row(row)) is not None
-            and _fact_matches_scope(fact, metadata)
-        ][: request.max_items]
+        facts = await _query_ranked_facts(client, request.query, metadata)
+        if not facts:
+            facts = await _query_recent_facts(client, metadata)
+        facts = facts[: request.max_items]
         if not facts:
             return LongTermFactsContext()
         lines = ["### Long-Term Facts"]
-        for fact in facts:
-            metadata_fields = _fact_metadata(fact)
-            lines.extend(
-                [
-                    f"- subject: {_redacted_text(str(fact['subject']))}",
-                    f"  predicate: {_redacted_text(str(fact['predicate']))}",
-                    f"  object: {_redacted_text(str(fact['object']))}",
-                ],
-            )
-            fact_date = _fact_date(fact, metadata_fields)
-            if fact_date:
-                lines.append(f"  date: {_redacted_text(fact_date)}")
-            lines.append(f"  provenance: {_format_provenance(metadata_fields)}")
+        lines.extend(_fact_context_line(fact) for fact in facts)
         return LongTermFactsContext(
             context="\n".join(lines),
             markers=_fact_markers(facts),
@@ -2899,6 +2866,69 @@ def _urlsafe_b64decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + padding)
 
 
+async def _query_ranked_facts(
+    client: MemoryClientContext,
+    query: str,
+    scope_metadata: Mapping[str, JsonValue],
+) -> list[JsonObject]:
+    """Long-term fact candidates ranked by embedding similarity.
+
+    Reuses the /v1/memories/search candidate path (SDK ``search_facts``) so
+    context and search rank identical stored data the same way, then re-checks
+    scope on the deserialized records. The SDK returns nothing without an
+    embedder, which tells the caller to fall back to recency ordering.
+    """
+    if not query:
+        return []
+    raw_records = await client.long_term.search_facts(
+        query,
+        limit=_MEMORY_SEARCH_CANDIDATE_LIMIT,
+    )
+    return [
+        fact
+        for memory in stored_memories_from_sdk(raw_records)
+        if _fact_matches_scope(fact := _fact_from_memory(memory), scope_metadata)
+    ]
+
+
+async def _query_recent_facts(
+    client: MemoryClientContext,
+    scope_metadata: Mapping[str, JsonValue],
+) -> list[JsonObject]:
+    """Most recently written scoped facts, newest first.
+
+    Scans a candidate pool sized like /v1/memories/search and re-checks scope
+    on the deserialized rows so the item budget only sees in-scope facts.
+    """
+    params: JsonObject = {
+        "metadata_fragments": _metadata_fragments(scope_metadata),
+        "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
+    }
+    rows = await client.query.cypher(
+        """
+        MATCH (f:Fact)
+        WHERE f.metadata IS NOT NULL
+          AND all(
+            fragment IN $metadata_fragments WHERE f.metadata CONTAINS fragment
+          )
+        WITH f
+        ORDER BY f.created_at DESC, f.subject ASC, f.predicate ASC, f.object ASC
+        LIMIT $candidate_limit
+        RETURN f{
+            .id, .subject, .predicate, .object, .metadata,
+            created_at: toString(f.created_at)
+        } AS f
+        """,
+        params,
+    )
+    return [
+        fact
+        for row in rows
+        if (fact := _fact_from_row(row)) is not None
+        and _fact_matches_scope(fact, scope_metadata)
+    ]
+
+
 def _fact_from_row(row: JsonObject) -> JsonObject | None:
     fact = row.get("f")
     if not isinstance(fact, dict):
@@ -2907,6 +2937,39 @@ def _fact_from_row(row: JsonObject) -> JsonObject | None:
     if all(isinstance(fact.get(field_name), str) for field_name in required_fields):
         return fact
     return None
+
+
+def _fact_from_memory(memory: StoredMemory) -> JsonObject:
+    return {
+        "id": memory.memory_id,
+        "subject": memory.subject,
+        "predicate": memory.predicate,
+        "object": memory.content,
+        "metadata": dict(memory.metadata),
+        "created_at": memory.created_at,
+    }
+
+
+def _fact_context_line(fact: JsonObject) -> str:
+    """Render one fact as a single dated line of prompt-facing content.
+
+    Provenance stays out of the prompt: it crowds the answer model's
+    attention and remains available through the audit read paths. Subject
+    and predicate only render when they carry signal beyond conversation
+    plumbing (verbatim ``memory`` and turn ``said_*`` predicates repeat the
+    speaker, not knowledge).
+    """
+    predicate = str(fact["predicate"])
+    content = _redacted_text(str(fact["object"]))
+    if predicate != VERBATIM_MEMORY_PREDICATE and not predicate.startswith(
+        TURN_MEMORY_PREDICATE_PREFIX,
+    ):
+        subject = _redacted_text(str(fact["subject"]))
+        content = f"{subject} {_redacted_text(predicate)}: {content}"
+    fact_date = _fact_date(fact, _fact_metadata(fact))
+    if fact_date:
+        return f"- [{_redacted_text(fact_date)}] {content}"
+    return f"- {content}"
 
 
 def _fact_matches_scope(
@@ -3018,15 +3081,6 @@ def _string_metadata(metadata: dict[str, JsonValue]) -> dict[str, str]:
         for key, value in metadata.items()
         if isinstance(value, str) and value != ""
     }
-
-
-def _format_provenance(metadata: dict[str, str]) -> str:
-    provenance = {
-        key: metadata[key]
-        for key in sorted(metadata)
-        if key in _PROVENANCE_FIELDS and metadata[key]
-    }
-    return ", ".join(f"{key}={value}" for key, value in provenance.items())
 
 
 def _redacted_text(value: str) -> str:
@@ -3269,19 +3323,6 @@ def _graph_export_relationship(
         properties=_redacted_object(_json_object(relationship.properties)),
     )
 
-
-_PROVENANCE_FIELDS = {
-    "tenant_id",
-    "agent_id",
-    "session_id",
-    "user_id",
-    "visibility",
-    "guild_id",
-    "channel_id",
-    "event_id",
-    "idempotency_key",
-    "event_type",
-}
 
 # Long-term memory is durable across conversations, so reads never narrow by
 # session_id: pinning recall to the requesting session starves the context
