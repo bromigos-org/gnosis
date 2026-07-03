@@ -78,12 +78,8 @@ async def test_combined_context_includes_scoped_facts_preferences_entities() -> 
             source="long_term_facts",
             content=(
                 "### Long-Term Facts\n"
-                "- subject: tenant:bromigos:message:one\n"
-                "  predicate: discord.message_created\n"
-                "  object: message one mentions the library schedule\n"
-                "  provenance: agent_id=pc-principal, channel_id=456, "
-                "event_id=event-one, guild_id=123, session_id=guild:123:channel:456, "
-                "tenant_id=bromigos, user_id=789, visibility=channel"
+                "- tenant:bromigos:message:one discord.message_created: "
+                "message one mentions the library schedule"
             ),
         ),
         MemoryContextSection(
@@ -220,11 +216,13 @@ async def test_fact_context_dates_prefer_stored_session_date() -> None:
         ),
     )
 
-    # Then: every rendered fact carries its temporal anchor, metadata first.
+    # Then: each fact is one dated line anchored on stored metadata first.
     content = response.sections[0].content
-    assert "  date: 7 May 2023" in content
-    assert "  date: 2026-06-28" in content
-    assert "date: 2026-06-27" not in content
+    assert "- [7 May 2023] we went hiking yesterday" in content
+    assert "- [2026-06-28] hiking sounds great" in content
+    assert "[2026-06-27]" not in content
+    assert "subject:" not in content
+    assert "provenance:" not in content
 
 
 @pytest.mark.anyio
@@ -285,7 +283,7 @@ async def test_fact_context_spans_sessions_and_matches_search_item_count() -> No
     # Then: context renders exactly as many items as search returns.
     content = response.sections[0].content
     assert len(search.results) == 5
-    assert content.count("- subject:") == len(search.results)
+    assert content.count("\n- ") == len(search.results)
 
 
 @pytest.mark.anyio
@@ -324,7 +322,180 @@ async def test_fact_context_truncates_to_max_items_after_scope_filter() -> None:
     )
 
     # Then: the item budget bounds the rendered facts after scope filtering.
-    assert response.sections[0].content.count("- subject:") == 2
+    assert response.sections[0].content.count("\n- ") == 2
+
+
+@pytest.mark.anyio
+async def test_fact_context_ranks_relevance_over_recency_when_query_present() -> None:
+    # Given: similarity search ranks an old relevant fact above a recent decoy
+    # while the recency read would surface the decoy first.
+    scope = _scope()
+    relevant_old = _fact_record(
+        subject="tenant:bromigos:message:relevant",
+        object_value="Maria adopted a golden retriever named Biscuit",
+        metadata=_scope_metadata(scope) | {"session_date": "7 May 2023"},
+    )
+    decoy_recent = _fact_record(
+        subject="tenant:bromigos:message:decoy",
+        object_value="the weather was rainy this morning",
+        metadata=_scope_metadata(scope) | {"session_date": "28 June 2026"},
+    )
+    off_tenant = _fact_record(
+        subject="tenant:other:message:leak",
+        object_value="other tenant secret",
+        metadata=_scope_metadata(_scope(tenant_id="other-tenant")),
+    )
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:decoy",
+                        predicate="said_user",
+                        object_value="the weather was rainy this morning",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+        long_term=RecordingLongTermMemory(
+            search_results=[off_tenant, relevant_old, decoy_recent],
+        ),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is requested with a query and a one-item budget.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="what pet did Maria adopt?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+            max_items=1,
+        ),
+    )
+
+    # Then: the relevant old fact wins the budget over the recent decoy, the
+    # off-scope candidate never renders, and the recency read is skipped.
+    content = response.sections[0].content
+    assert "- [7 May 2023] Maria adopted a golden retriever named Biscuit" in content
+    assert "rainy" not in content
+    assert "other tenant secret" not in content
+    assert client.long_term.search_queries == ["what pet did Maria adopt?"]
+    assert client.query.cypher_calls == []
+
+
+@pytest.mark.anyio
+async def test_fact_context_keeps_recency_order_without_similarity_ranking() -> None:
+    # Given: similarity search has no embedder and returns nothing, while the
+    # recency read yields scoped facts newest first.
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:new",
+                        predicate="said_user",
+                        object_value="newest note",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:old",
+                        predicate="said_user",
+                        object_value="older note",
+                        metadata=_scope_metadata(scope),
+                        created_at="2023-05-07T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is requested with a query anyway.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="notes",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the recency fallback preserves newest-first ordering.
+    content = response.sections[0].content
+    assert content.index("newest note") < content.index("older note")
+
+
+@pytest.mark.anyio
+async def test_fact_context_renders_signal_predicates_with_subject() -> None:
+    # Given: one conversational turn fact and one typed knowledge fact.
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:turn",
+                        predicate="said_user",
+                        object_value="I moved to Lisbon last spring",
+                        metadata=_scope_metadata(scope) | {"date": "7 May 2023"},
+                    ),
+                },
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:event",
+                        predicate="discord.message_created",
+                        object_value="message event: schedule posted",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: combined memory context is requested.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="where does the user live?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: turn facts render as bare dated content while typed facts keep
+    # their subject and predicate, with no provenance block anywhere.
+    content = response.sections[0].content
+    assert "- [7 May 2023] I moved to Lisbon last spring" in content
+    assert (
+        "- [2026-06-28] tenant:bromigos:message:event discord.message_created: "
+        "message event: schedule posted"
+    ) in content
+    assert "provenance:" not in content
+    assert "subject:" not in content
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,6 +525,7 @@ class RecordingLongTermMemory:
     context: str = ""
     context_queries: list[str] = field(default_factory=list)
     search_results: list[FactRecord] = field(default_factory=list)
+    search_queries: list[str] = field(default_factory=list)
 
     async def search_entities(
         self,
@@ -373,7 +545,8 @@ class RecordingLongTermMemory:
         limit: int = 10,
         threshold: float = 0.7,
     ) -> list[FactRecord]:
-        _ = (query, limit, threshold)
+        _ = (limit, threshold)
+        self.search_queries.append(query)
         return list(self.search_results)
 
     async def search_preferences(
@@ -771,6 +944,22 @@ def _scope_metadata(scope: MemoryScope) -> dict[str, str]:
         "guild_id": scope.guild_id or "",
         "channel_id": scope.channel_id or "",
     }
+
+
+def _fact_record(
+    *,
+    subject: str,
+    object_value: str,
+    metadata: dict[str, str],
+    predicate: str = "said_user",
+) -> FactRecord:
+    return FactRecord(
+        id=subject,
+        subject=subject,
+        predicate=predicate,
+        object=object_value,
+        metadata=cast("JsonObject", dict(metadata)),
+    )
 
 
 def _fact_row(
