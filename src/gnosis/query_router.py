@@ -110,6 +110,7 @@ class RouteDecision:
     graphqa_fusion: bool
     verbatim_expansion: bool
     abstention_prompt: bool
+    graph_traversal: bool
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RouteDecision":
@@ -120,17 +121,27 @@ class RouteDecision:
             graphqa_fusion=settings.gnosis_graphqa_fusion_enabled,
             verbatim_expansion=settings.gnosis_fact_verbatim_expansion_enabled,
             abstention_prompt=settings.gnosis_abstention_prompt_enabled,
+            graph_traversal=settings.gnosis_graph_traversal_enabled,
         )
 
     @classmethod
-    def for_route(cls, route: QueryRoute) -> "RouteDecision":
-        """The measured-best feature set for one classified route."""
+    def for_route(cls, route: QueryRoute, settings: Settings) -> "RouteDecision":
+        """The measured-best feature set for one classified route.
+
+        Entity traversal is not yet in any route's measured-best set, so a
+        routed request runs it only where it *could* win - multi-hop - and
+        only when its own flag is on; the flag alone (routing off) applies
+        it to every query for standalone measurement.
+        """
         return cls(
             route=route,
             hybrid_retrieval=route == "temporal",
             graphqa_fusion=route == "multi_hop",
             verbatim_expansion=route == "multi_hop",
             abstention_prompt=route == "unanswerable_risk",
+            graph_traversal=(
+                route == "multi_hop" and settings.gnosis_graph_traversal_enabled
+            ),
         )
 
 

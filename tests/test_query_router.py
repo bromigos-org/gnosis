@@ -47,6 +47,7 @@ def test_unrouted_decision_mirrors_global_flags() -> None:
         gnosis_graphqa_fusion_enabled=True,
         gnosis_fact_verbatim_expansion_enabled=True,
         gnosis_abstention_prompt_enabled=True,
+        gnosis_graph_traversal_enabled=True,
     )
 
     # When: the unrouted decision is derived.
@@ -59,6 +60,7 @@ def test_unrouted_decision_mirrors_global_flags() -> None:
         graphqa_fusion=True,
         verbatim_expansion=True,
         abstention_prompt=True,
+        graph_traversal=True,
     )
 
 
@@ -70,6 +72,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
         graphqa_fusion=False,
         verbatim_expansion=False,
         abstention_prompt=False,
+        graph_traversal=False,
     )
 
 
@@ -85,6 +88,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 graphqa_fusion=False,
                 verbatim_expansion=False,
                 abstention_prompt=False,
+                graph_traversal=False,
             ),
         ),
         # multi-hop gets the graph traversal route plus verbatim expansion
@@ -98,6 +102,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 graphqa_fusion=True,
                 verbatim_expansion=True,
                 abstention_prompt=False,
+                graph_traversal=False,
             ),
         ),
         # the abstention prompt is quarantined to unanswerable-risk queries
@@ -110,6 +115,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 graphqa_fusion=False,
                 verbatim_expansion=False,
                 abstention_prompt=True,
+                graph_traversal=False,
             ),
         ),
         # single-hop peaked on the plain dense extraction store (Run 5).
@@ -121,6 +127,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 graphqa_fusion=False,
                 verbatim_expansion=False,
                 abstention_prompt=False,
+                graph_traversal=False,
             ),
         ),
         # no measured winner for aggregative/open-domain yet: plain dense.
@@ -132,12 +139,24 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 graphqa_fusion=False,
                 verbatim_expansion=False,
                 abstention_prompt=False,
+                graph_traversal=False,
             ),
         ),
     ],
 )
 def test_route_feature_table(route: QueryRoute, expected: RouteDecision) -> None:
-    assert RouteDecision.for_route(route) == expected
+    assert RouteDecision.for_route(route, _settings()) == expected
+
+
+def test_routed_multi_hop_honors_the_traversal_flag() -> None:
+    # Given: entity traversal enabled globally alongside adaptive routing.
+    settings = _settings(gnosis_graph_traversal_enabled=True)
+
+    # When/Then: only the multi-hop route runs traversal; every other route
+    # leaves it off even though the flag is on.
+    assert RouteDecision.for_route("multi_hop", settings).graph_traversal is True
+    assert RouteDecision.for_route("temporal", settings).graph_traversal is False
+    assert RouteDecision.for_route("single_hop", settings).graph_traversal is False
 
 
 @pytest.mark.parametrize(
