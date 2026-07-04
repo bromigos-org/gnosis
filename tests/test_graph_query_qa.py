@@ -180,6 +180,110 @@ def _scope() -> MemoryScope:
     )
 
 
+def _memory_scope() -> MemoryScope:
+    # The entity graph is per-user memory (LOCOMO-style), so its queries run
+    # under a private-user scope with no guild/channel narrowing.
+    return MemoryScope(
+        tenant_id="bromigos",
+        space_id="memory",
+        agent_id="pc-principal",
+        session_id="session-1",
+        user_id="user-789",
+        visibility=MemoryVisibility.PRIVATE_USER,
+    )
+
+
+def test_validator_accepts_scoped_entity_relates_traversal() -> None:
+    # Given: a multi-hop entity-graph query scoped by tenant_id AND user_id on
+    # every Entity alias, traversing RELATES for a bridge answer.
+    request = GraphContextRequest(
+        scope=_memory_scope(),
+        query="Who founded the company Alice works at?",
+        limit=5,
+    )
+    plan = GraphQueryPlan(
+        cypher="""
+        MATCH (a:Entity {tenant_id: $tenant_id, user_id: $user_id})
+              -[:RELATES]->(company:Entity {tenant_id: $tenant_id, user_id: $user_id})
+              -[r:RELATES]->(founder:Entity {tenant_id: $tenant_id, user_id: $user_id})
+        WHERE a.name = $name
+        RETURN founder.id AS id, 'entity' AS type,
+          founder.name AS summary, false AS deleted
+        LIMIT $limit
+        """,
+        parameters={"name": "Alice"},
+        answer_kind="entity_bridge",
+    )
+
+    # When: gnosis validates the query.
+    validated = SafeGraphQueryValidator().validate(plan, request)
+
+    # Then: it is accepted with trusted runtime scope parameters injected.
+    assert validated.parameters["tenant_id"] == "bromigos"
+    assert validated.parameters["user_id"] == "user-789"
+    assert validated.parameters["name"] == "Alice"
+
+
+def test_validator_accepts_scoped_fact_mentions_traversal() -> None:
+    # Given: a MENTIONS query fetching the facts naming an entity, with both
+    # the Entity and Fact aliases scoped by tenant_id AND user_id.
+    request = GraphContextRequest(
+        scope=_memory_scope(),
+        query="What do we know about Alice?",
+        limit=5,
+    )
+    plan = GraphQueryPlan(
+        cypher="""
+        MATCH (e:Entity {tenant_id: $tenant_id, user_id: $user_id})
+              <-[:MENTIONS]-(f:Fact {tenant_id: $tenant_id, user_id: $user_id})
+        WHERE e.name = $name
+        RETURN f.id AS id, 'fact' AS type, f.object AS summary, false AS deleted
+        LIMIT $limit
+        """,
+        parameters={"name": "Alice"},
+        answer_kind="facts_about_entity",
+    )
+
+    # When / Then: the fully scoped traversal is accepted.
+    validated = SafeGraphQueryValidator().validate(plan, request)
+    assert validated.parameters["user_id"] == "user-789"
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        # Entity alias scoped by tenant only - missing the mandatory user scope.
+        """
+        MATCH (a:Entity {tenant_id: $tenant_id})
+        RETURN a.id AS id, 'entity' AS type, a.name AS summary, false AS deleted
+        LIMIT $limit
+        """,
+        # Fact alias scoped by tenant only - a cross-user read of another
+        # user's remembered facts.
+        """
+        MATCH (e:Entity {tenant_id: $tenant_id, user_id: $user_id})
+              <-[:MENTIONS]-(f:Fact {tenant_id: $tenant_id})
+        RETURN f.id AS id, 'fact' AS type, f.object AS summary, false AS deleted
+        LIMIT $limit
+        """,
+        # A write against the entity graph.
+        """
+        MERGE (a:Entity {tenant_id: $tenant_id, user_id: $user_id})
+        RETURN a.id AS id, 'entity' AS type, a.name AS summary, false AS deleted
+        LIMIT $limit
+        """,
+    ],
+)
+def test_validator_rejects_unsafe_entity_graph_queries(cypher: str) -> None:
+    # Given: an entity-graph query that under-scopes or writes.
+    request = GraphContextRequest(scope=_memory_scope(), query="anything", limit=5)
+    plan = GraphQueryPlan(cypher=cypher, parameters={}, answer_kind="unsafe")
+
+    # When / Then: validation blocks the query before Neo4j can execute it.
+    with pytest.raises(GraphQueryValidationError):
+        _ = SafeGraphQueryValidator().validate(plan, request)
+
+
 def test_proxy_model_name_strips_litellm_openai_prefix() -> None:
     # Given: the SDK-facing setting uses litellm provider-prefixed names.
     # Then: the raw OpenAI proxy client receives the bare model id.

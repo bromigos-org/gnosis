@@ -33,9 +33,11 @@ from gnosis.backend import (  # noqa: E402
 )
 from gnosis.fact_extraction import (  # noqa: E402
     ConversationTurn,
+    FactRelation,
     MemoryUnit,
     MemoryUnitExtraction,
     MemoryUnitExtractor,
+    RelationalMemoryUnit,
 )
 from gnosis.models import (  # noqa: E402
     BackendReadiness,
@@ -377,6 +379,166 @@ async def test_add_memories_extraction_llm_failure_degrades_to_verbatim(
     ]
     assert _graph(client).writes == []
     assert "fact extraction failed" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_add_memories_entity_graph_materializes_nodes_and_edges() -> None:
+    # Given: the entity-graph flag on and an extractor producing one unit that
+    # names two entities linked by a directed triple.
+    client = FakeMemoryClient()
+    extractor = RecordingUnitExtractor(
+        extraction=MemoryUnitExtraction(
+            facts=[
+                RelationalMemoryUnit(
+                    text="Alice works at Acme Corp",
+                    source_turn_ids=[1],
+                    entities=["Alice", "Acme Corp"],
+                    event_date="2023-05-07",
+                    relations=[
+                        FactRelation(
+                            head="Alice", relation="works at", tail="Acme Corp"
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    )
+    backend = _backend(
+        client,
+        extractor,
+        extraction_enabled=True,
+        entity_graph_enabled=True,
+    )
+
+    # When: the turn is added.
+    response = await backend.add_memories(
+        MemoryAddRequest(
+            scope=_scope(),
+            messages=[MemoryMessage(role="user", content="I work at Acme Corp")],
+            metadata={"session_date": "2023-05-07"},
+        ),
+    )
+
+    # Then: the extracted fact still lands as a Fact node, now scope-tagged.
+    fact_query, fact_params = _write_containing(client, "CREATE (f:Fact")
+    _ = fact_query
+    assert fact_params["tenant_id"] == "bromigos"
+    assert fact_params["user_id"] == "789"
+    fact_id = fact_params["memory_id"]
+
+    # Then: the entity scope-key index is ensured before entity writes.
+    _ = _write_containing(client, "CREATE INDEX entity_scope_key")
+
+    # Then: a MENTIONS write MERGEs both entities scope-keyed by tenant + user
+    # and links them to the just-written fact.
+    _, mentions_params = _write_containing(client, "[:MENTIONS]")
+    assert mentions_params["tenant_id"] == "bromigos"
+    assert mentions_params["user_id"] == "789"
+    assert mentions_params["fact_id"] == fact_id
+    assert {row["normalized"] for row in _entity_rows(mentions_params, "entities")} == {
+        "alice",
+        "acme corp",
+    }
+    assert {row["id"] for row in _entity_rows(mentions_params, "entities")} == {
+        "tenant:bromigos:user:789:entity:alice",
+        "tenant:bromigos:user:789:entity:acme corp",
+    }
+
+    # Then: a RELATES write connects the two entities with the extracted
+    # relation, the fact id, and the fact's event date.
+    _, relates_params = _write_containing(client, "[r:RELATES")
+    assert relates_params["fact_id"] == fact_id
+    assert relates_params["event_date"] == "2023-05-07"
+    assert _entity_rows(relates_params, "relations") == [
+        {"head": "alice", "relation": "works at", "tail": "acme corp"},
+    ]
+
+    # Then: the add response is unchanged - the extracted fact is still an ADD.
+    assert response.results[-1].content == "Alice works at Acme Corp"
+
+
+@pytest.mark.anyio
+async def test_add_memories_entity_graph_flag_off_writes_no_entity_graph() -> None:
+    # Given: the same relational unit but the entity-graph flag off (extraction
+    # on) - the write path must be byte-identical to the pre-entity-graph one.
+    client = FakeMemoryClient()
+    extractor = RecordingUnitExtractor(
+        extraction=MemoryUnitExtraction(
+            facts=[
+                RelationalMemoryUnit(
+                    text="Alice works at Acme Corp",
+                    source_turn_ids=[1],
+                    entities=["Alice", "Acme Corp"],
+                    relations=[
+                        FactRelation(
+                            head="Alice", relation="works at", tail="Acme Corp"
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    )
+    backend = _backend(client, extractor, extraction_enabled=True)
+
+    # When: the turn is added.
+    _ = await backend.add_memories(
+        MemoryAddRequest(
+            scope=_scope(),
+            messages=[MemoryMessage(role="user", content="I work at Acme Corp")],
+        ),
+    )
+
+    # Then: only the single Fact CREATE runs - no constraint, MENTIONS, or
+    # RELATES writes, and no Entity node is ever MERGEd.
+    writes = _graph(client).writes
+    assert len(writes) == 1
+    assert "CREATE (f:Fact" in writes[0][0]
+    assert all("Entity" not in query for query, _ in writes)
+
+
+@pytest.mark.anyio
+async def test_add_memories_entity_graph_failure_degrades_to_fact_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Given: the entity-graph flag on but every entity-graph write fails.
+    client = FakeMemoryClient(graph=FakeGraphWriter(fail_on="Entity"))
+    extractor = RecordingUnitExtractor(
+        extraction=MemoryUnitExtraction(
+            facts=[
+                RelationalMemoryUnit(
+                    text="Alice works at Acme Corp",
+                    source_turn_ids=[1],
+                    entities=["Alice", "Acme Corp"],
+                    relations=[
+                        FactRelation(
+                            head="Alice", relation="works at", tail="Acme Corp"
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    )
+    backend = _backend(
+        client,
+        extractor,
+        extraction_enabled=True,
+        entity_graph_enabled=True,
+    )
+
+    # When: the turn is added.
+    with caplog.at_level("WARNING", logger="gnosis.backend"):
+        response = await backend.add_memories(
+            MemoryAddRequest(
+                scope=_scope(),
+                messages=[MemoryMessage(role="user", content="I work at Acme Corp")],
+            ),
+        )
+
+    # Then: the fact is kept and returned, the graph failure is a structured
+    # warning, and no RELATES write is attempted after the schema step failed.
+    assert response.results[-1].content == "Alice works at Acme Corp"
+    assert "entity graph materialization failed" in caplog.text
+    assert all("[r:RELATES" not in query for query, _ in _graph(client).writes)
 
 
 @pytest.mark.anyio
@@ -933,19 +1095,42 @@ def _graph(client: "FakeMemoryClient") -> "FakeGraphWriter":
     return graph
 
 
-def _backend(
+def _write_containing(
+    client: "FakeMemoryClient",
+    needle: str,
+) -> tuple[str, dict[str, JsonValue]]:
+    """Return the first recorded graph write whose query contains ``needle``."""
+    for query, params in _graph(client).writes:
+        if needle in query:
+            assert params is not None
+            return query, params
+    message = f"no graph write containing {needle!r}"
+    raise AssertionError(message)
+
+
+def _entity_rows(
+    params: dict[str, JsonValue],
+    key: str,
+) -> list[dict[str, str]]:
+    """Narrow a JsonValue param list of row dicts for assertion purposes."""
+    return cast("list[dict[str, str]]", params[key])
+
+
+def _backend(  # noqa: PLR0913 - One knob per gated feature under test.
     client: "FakeMemoryClient",
     fact_extractor: MemoryUnitExtractor | None = None,
     *,
     extraction_enabled: bool = False,
     extraction_context_turns: int = 10,
     extraction_mode: Literal["sync", "background"] = "sync",
+    entity_graph_enabled: bool = False,
 ) -> Neo4jAgentMemoryBackend:
     return Neo4jAgentMemoryBackend(
         Settings(
             gnosis_fact_extraction_enabled=extraction_enabled,
             gnosis_fact_extraction_context_turns=extraction_context_turns,
             gnosis_fact_extraction_mode=extraction_mode,
+            gnosis_entity_graph_enabled=entity_graph_enabled,
         ),
         memory_client_factory=FakeMemoryClientFactory(client),
         graph_store=FakeGraphStore(),
@@ -1193,6 +1378,9 @@ class FakeCypherQuery:
 class FakeGraphWriter:
     write_rows: list[JsonObject] = field(default_factory=list)
     writes: list[tuple[str, dict[str, JsonValue] | None]] = field(default_factory=list)
+    # When set, execute_write raises on any query containing this substring,
+    # modeling a graph write that fails (e.g. the entity-graph materialization).
+    fail_on: str | None = None
 
     async def execute_write(
         self,
@@ -1200,6 +1388,9 @@ class FakeGraphWriter:
         parameters: dict[str, JsonValue] | None = None,
     ) -> list[JsonObject]:
         self.writes.append((query, parameters))
+        if self.fail_on is not None and self.fail_on in query:
+            reason = "graph write refused"
+            raise OSError(reason)
         return list(self.write_rows)
 
 

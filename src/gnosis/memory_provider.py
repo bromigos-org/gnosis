@@ -124,7 +124,10 @@ LIMIT $limit
 # SDK's add_fact, because add_fact's write-time dedup can silently swallow a
 # near-duplicate into an existing fact - for extracted units two same-day
 # duplicates are harmless, but a swallowed distinct dated event is a lost
-# answer. The property shape mirrors the SDK's CREATE_FACT query.
+# answer. The property shape mirrors the SDK's CREATE_FACT query, plus
+# top-level tenant_id/user_id so the entity-graph traversal (graph QA) can
+# scope Fact nodes by parameter the same way it scopes Entity nodes; the SDK
+# ignores the extra properties and all fact reads still narrow by metadata.
 CREATE_MEMORY_CYPHER: Final[str] = """
 CREATE (f:Fact {
     id: $memory_id,
@@ -134,6 +137,8 @@ CREATE (f:Fact {
     confidence: 1.0,
     embedding: $embedding,
     created_at: datetime(),
+    tenant_id: $tenant_id,
+    user_id: $user_id,
     metadata: $metadata
 })
 """

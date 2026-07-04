@@ -6,6 +6,10 @@ LABEL_PATTERN: Final[Pattern[str]] = re.compile(r":([A-Za-z][A-Za-z0-9_]*)")
 RELATIONSHIP_PATTERN: Final[Pattern[str]] = re.compile(
     r"\[[A-Za-z0-9_]*:([A-Z][A-Z0-9_]*)",
 )
+# Relationship bracket spans, blanked before node-label extraction so a
+# relationship type (e.g. ``[:RELATES]``) is never mistaken for a node label -
+# relationship types are checked separately against SAFE_RELATIONSHIPS.
+RELATIONSHIP_BRACKET_PATTERN: Final[Pattern[str]] = re.compile(r"\[[^\]]*\]")
 PROPERTY_PATTERN: Final[Pattern[str]] = re.compile(r"\.([A-Za-z][A-Za-z0-9_]*)")
 KEYWORD_PATTERN: Final[Pattern[str]] = re.compile(r"\b[A-Z]+\b")
 ALIAS_LABEL_PATTERN: Final[Pattern[str]] = re.compile(
@@ -55,7 +59,9 @@ SAFE_LABELS: Final[frozenset[str]] = frozenset(
         "Category",
         "Channel",
         "Client",
+        "Entity",
         "Event",
+        "Fact",
         "GraphNode",
         "Guild",
         "Link",
@@ -75,10 +81,12 @@ SAFE_RELATIONSHIPS: Final[frozenset[str]] = frozenset(
         "IN_CHANNEL",
         "IN_GUILD",
         "LINKED_FROM",
+        "MENTIONS",
         "OWNS_AGENT",
         "OWNS_CLIENT",
         "OWNS_GUILD",
         "OWNS_ROLE",
+        "RELATES",
         "USES_CLIENT",
     },
 )
@@ -90,8 +98,10 @@ SAFE_PROPERTIES: Final[frozenset[str]] = frozenset(
         "content",
         "deleted",
         "display_name",
+        "event_date",
         "event_id",
         "event_type",
+        "fact_id",
         "filename",
         "guild_id",
         "id",
@@ -99,9 +109,13 @@ SAFE_PROPERTIES: Final[frozenset[str]] = frozenset(
         "kind",
         "message_id",
         "name",
+        "object",
         "occurred_at",
         "payload",
+        "predicate",
+        "relation",
         "role_id",
+        "subject",
         "summary",
         "tenant_id",
         "type",
@@ -118,6 +132,10 @@ GUILD_SCOPED_LABELS: Final[frozenset[str]] = frozenset(
 CHANNEL_SCOPED_LABELS: Final[frozenset[str]] = frozenset(
     {"Channel", "GraphNode", "Message"},
 )
+# Knowledge-graph nodes are per-user: every Entity and Fact alias must be
+# scoped by user_id = $user_id (in addition to tenant_id) so entity traversal
+# can never read another user's remembered facts within the same tenant.
+USER_SCOPED_LABELS: Final[frozenset[str]] = frozenset({"Entity", "Fact"})
 
 
 def alias_predicate_pattern(alias: str, property_name: str) -> Pattern[str]:

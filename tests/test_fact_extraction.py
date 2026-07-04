@@ -9,10 +9,14 @@ from openai import APIConnectionError
 
 from gnosis.fact_extraction import (
     ConversationTurn,
+    FactRelation,
     MemoryUnit,
     MemoryUnitExtraction,
+    RelationalMemoryUnit,
+    RelationalMemoryUnitExtraction,
     extract_memory_units,
     extraction_messages,
+    unit_relations,
 )
 
 _CONTEXT_TURNS = (
@@ -212,6 +216,65 @@ def test_extraction_messages_carry_guide_and_one_shot_exemplar() -> None:
     exemplar = MemoryUnitExtraction.model_validate_json(exemplar_output)
     assert [unit.source_turn_ids for unit in exemplar.facts] == [[3], [3, 5], [6]]
     assert [unit.event_date for unit in exemplar.facts] == [None, "2024-04-01", None]
+
+
+def test_extraction_messages_omit_relations_by_default() -> None:
+    # Given: the default (entity-graph-off) prompt.
+    messages = extraction_messages(
+        conversation_date="2023-05-07",
+        context_turns=(),
+        new_turns=_NEW_TURNS,
+    )
+
+    # Then: neither the guide nor the exemplar mentions relations, keeping the
+    # verbatim edu-v1 prompt byte-identical.
+    guide = _message(messages[0])["content"]
+    exemplar_output = _message(messages[2])["content"]
+    assert isinstance(guide, str)
+    assert isinstance(exemplar_output, str)
+    assert '"relations"' not in guide
+    assert '"relations"' not in exemplar_output
+
+
+def test_extraction_messages_request_relations_when_enabled() -> None:
+    # Given: the entity-graph prompt.
+    messages = extraction_messages(
+        conversation_date="2023-05-07",
+        context_turns=(),
+        new_turns=_NEW_TURNS,
+        emit_relations=True,
+    )
+
+    # Then: the guide asks for (head, relation, tail) triples and the exemplar
+    # output is a valid relational extraction carrying them.
+    guide = _message(messages[0])["content"]
+    assert isinstance(guide, str)
+    assert "(head, relation, tail)" in guide
+    exemplar_output = _message(messages[2])["content"]
+    assert isinstance(exemplar_output, str)
+    exemplar = RelationalMemoryUnitExtraction.model_validate_json(exemplar_output)
+    assert exemplar.facts[0].relations == [
+        FactRelation(
+            head="Alice",
+            relation="presented at",
+            tail="International Robotics Symposium",
+        ),
+    ]
+    # The undated single-entity unit states no relationship.
+    assert exemplar.facts[2].relations == []
+
+
+def test_unit_relations_recovers_triples_for_relational_units_only() -> None:
+    # Then: relations surface for relational units and are empty for base ones.
+    relational = RelationalMemoryUnit(
+        text="Alice works at Acme",
+        entities=["Alice", "Acme"],
+        relations=[FactRelation(head="Alice", relation="works at", tail="Acme")],
+    )
+    assert unit_relations(relational) == (
+        FactRelation(head="Alice", relation="works at", tail="Acme"),
+    )
+    assert unit_relations(MemoryUnit(text="plain", entities=["Alice"])) == ()
 
 
 def _message(message: object) -> dict[str, str]:

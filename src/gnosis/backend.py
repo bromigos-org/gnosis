@@ -34,6 +34,11 @@ from neo4j_agent_memory.schema.models import EntityRef
 from openai import OpenAIError
 from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
 
+from gnosis.entity_graph import (
+    CREATE_ENTITY_SCOPE_INDEX_CYPHER,
+    RelationTriple,
+    entity_graph_statements,
+)
 from gnosis.event_facts import EventFactPromoter
 from gnosis.extraction_worker import BackgroundExtractionQueue
 from gnosis.fact_extraction import (
@@ -43,6 +48,7 @@ from gnosis.fact_extraction import (
     MemoryUnit,
     MemoryUnitExtractor,
     extract_memory_units,
+    unit_relations,
 )
 from gnosis.graph_probe import StructuredGraphStore, direct_neo4j_driver_factory
 from gnosis.graph_query_qa import LiteLLMGraphQueryPlanner
@@ -1063,6 +1069,10 @@ class Neo4jAgentMemoryBackend:
                 model=_fact_extraction_model(settings),
                 base_url=settings.litellm_base_url,
                 api_key=settings.litellm_api_key,
+                # The entity graph needs (head, relation, tail) triples, so the
+                # extractor emits them only when materialization is enabled;
+                # off, the edu-v1 prompt and schema stay byte-identical.
+                emit_relations=settings.gnosis_entity_graph_enabled,
             )
         )
         self._sufficiency_assessor: SufficiencyAssessor = (
@@ -1080,6 +1090,7 @@ class Neo4jAgentMemoryBackend:
         )
         self._event_fact_promoter: EventFactPromoter = EventFactPromoter()
         self._fulltext_index_ready: bool = False
+        self._entity_graph_schema_ready: bool = False
         self._dedup_candidates: dict[str, DedupCandidateState] = {}
         self._dedup_idempotency: dict[str, DedupIdempotencyRecord] = {}
         self._consolidation_dry_runs: dict[str, ConsolidationDryRunState] = {}
@@ -1890,9 +1901,12 @@ class Neo4jAgentMemoryBackend:
                 "predicate": EXTRACTED_FACT_PREDICATE,
                 "object": content,
                 "embedding": embedding,
+                "tenant_id": scope.tenant_id,
+                "user_id": scope.user_id,
                 "metadata": json.dumps(metadata),
             },
         )
+        await self._materialize_entity_graph(client, scope, memory_id, unit)
         stored = StoredMemory(
             memory_id=memory_id,
             subject=_user_identifier(scope),
@@ -1908,6 +1922,76 @@ class Neo4jAgentMemoryBackend:
             event="ADD",
             metadata=public_memory_metadata(stored),
         )
+
+    async def _materialize_entity_graph(
+        self,
+        client: MemoryClientContext,
+        scope: MemoryScope,
+        fact_id: str,
+        unit: MemoryUnit,
+    ) -> None:
+        """Materialize the entity graph for a just-written extracted fact.
+
+        Behind GNOSIS_ENTITY_GRAPH_ENABLED: MERGE a scope-keyed ``:Entity`` per
+        named entity, link the fact to each with ``:MENTIONS``, and connect the
+        entities with directed ``:RELATES`` edges from the unit's extracted
+        triples (HippoRAG-2 / Graphiti). A no-op while the flag is off, so the
+        extracted-fact write is byte-identical to before. The fact already
+        landed, so any failure here degrades to "no graph materialized" with a
+        structured warning and never fails the add or drops the fact.
+        """
+        if not self._app_settings.gnosis_entity_graph_enabled:
+            return
+        statements = entity_graph_statements(
+            tenant_id=scope.tenant_id,
+            user_id=scope.user_id,
+            fact_id=fact_id,
+            entities=unit.entities,
+            relations=[
+                RelationTriple(
+                    head=relation.head,
+                    relation=relation.relation,
+                    tail=relation.tail,
+                )
+                for relation in unit_relations(unit)
+            ],
+            event_date=unit.event_date,
+        )
+        if not statements:
+            return
+        try:
+            await self._ensure_entity_graph_schema(client)
+            graph_write = _graph_write_query(client)
+            for cypher, parameters in statements:
+                _ = await graph_write.execute_write(cypher, parameters)
+        except (
+            RuntimeError,
+            OSError,
+            Neo4jError,
+            BackendCapabilityUnavailable,
+        ) as error:
+            _LOGGER.warning(
+                "entity graph materialization failed; fact kept without graph",
+                extra={
+                    "error_type": type(error).__name__,
+                    "tenant_id": scope.tenant_id,
+                },
+            )
+
+    async def _ensure_entity_graph_schema(self, client: MemoryClientContext) -> None:
+        """Create the entity scope-key range index if absent.
+
+        Idempotent ``CREATE INDEX ... IF NOT EXISTS`` through the same graph
+        write handle the fact writes use, once per backend instance; a failed
+        attempt retries on the next entity write.
+        """
+        if self._entity_graph_schema_ready:
+            return
+        _ = await _graph_write_query(client).execute_write(
+            CREATE_ENTITY_SCOPE_INDEX_CYPHER,
+            {},
+        )
+        self._entity_graph_schema_ready = True
 
     async def search_memories(
         self,

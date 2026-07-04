@@ -19,13 +19,26 @@ _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 _GRAPH_SCHEMA_GUIDE: Final[str] = """
 Use this read-only Neo4j schema for gnosis graph QA.
 Labels: Tenant, Agent, Client, Guild, Channel, Category, User, Bot, Role,
-Message, Link, Attachment, Event, GraphNode.
+Message, Link, Attachment, Event, GraphNode, Entity, Fact.
 Relationships: OWNS_AGENT, OWNS_CLIENT, USES_CLIENT, OWNS_GUILD, IN_GUILD,
 IN_CATEGORY, OWNS_ROLE, HAS_ROLE, AUTHORED, IN_CHANNEL, LINKED_FROM,
-ATTACHED_TO, AFFECTS.
+ATTACHED_TO, AFFECTS, MENTIONS, RELATES.
 Every query must scope by tenant_id = $tenant_id. If a guild question has
 $guild_id, also scope by guild_id = $guild_id or graph IN_GUILD membership.
 If a channel question has $channel_id, scope by channel_id = $channel_id.
+
+Knowledge graph (use for who/what/relationship and multi-hop questions about a
+user's remembered facts):
+An (:Entity {name}) is a person, place, organization, or thing. A (:Fact
+{object}) is a remembered dated statement; f.object is its text. Edges:
+(:Fact)-[:MENTIONS]->(:Entity) links a fact to each entity it names, and
+(:Entity)-[:RELATES {relation, event_date, fact_id}]->(:Entity) is a directed
+relationship between two entities (r.relation is the verb phrase). Traverse
+RELATES for multi-hop bridge questions; follow MENTIONS to fetch the facts
+naming an entity. Match an entity by name with e.name = $name or a literal.
+Every Entity and Fact alias MUST be scoped by BOTH tenant_id = $tenant_id AND
+user_id = $user_id.
+
 Return rows with id, type, summary, deleted. Use LIMIT $limit.
 Never use CREATE, MERGE, SET, DELETE, DETACH, REMOVE, LOAD, DROP, or procedures.
 """.strip()

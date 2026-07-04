@@ -87,6 +87,30 @@ Return JSON only, in this exact format:
             "entities": ["..."], "event_date": "YYYY-MM-DD" | null}]}
 """.strip()
 
+# Entity-graph addendum (arXiv 2405.14831 HippoRAG / Graphiti OpenIE): when
+# GNOSIS_ENTITY_GRAPH_ENABLED is on the extractor also emits explicit
+# subject-relation-object triples so the entities of each unit become the
+# nodes and relations the directed edges of a traversable knowledge graph.
+# Appended to - never replacing - the base guide, so the flag-off prompt and
+# structured-output schema stay byte-identical.
+_RELATIONS_GUIDE_ADDENDUM: Final[str] = """
+Additionally, for each unit populate a "relations" field: a list of directed
+(head, relation, tail) triples capturing how the named entities in the unit
+relate. head and tail must each be one of the unit's own entities (use the
+same canonical names); relation is a short verb phrase describing the link
+(for example "works at", "lives in", "married to", "presented at"). Emit a
+triple only when the unit states a concrete relationship between two distinct
+named entities, and never relate an entity to itself. Return an empty list
+when the unit states no such relationship. So each fact object is:
+{"text": "...", "source_turn_ids": [1], "entities": ["..."],
+ "event_date": "YYYY-MM-DD" | null,
+ "relations": [{"head": "...", "relation": "...", "tail": "..."}]}
+""".strip()
+
+_RELATIONAL_EXTRACTION_GUIDE: Final[str] = (
+    f"{_EXTRACTION_GUIDE}\n\n{_RELATIONS_GUIDE_ADDENDUM}"
+)
+
 # One-shot exemplar (system-adjacent, as EMem does): a six-turn dated exchange
 # demonstrating multi-turn units, relative-date resolution to an absolute
 # month, entity canonicalization, an undated ongoing preference, and
@@ -126,6 +150,29 @@ _EXEMPLAR_OUTPUT: Final[str] = (
     "]}"
 )
 
+# The exemplar output for the entity-graph path: identical units, each also
+# carrying its extracted (head, relation, tail) triples - the third unit
+# demonstrates the empty list when a unit names only one entity.
+_RELATIONAL_EXEMPLAR_OUTPUT: Final[str] = (
+    '{"facts": ['
+    '{"text": "Alice presented her robotics work at the International '
+    'Robotics Symposium in Tokyo.", "source_turn_ids": [3], '
+    '"entities": ["Alice", "International Robotics Symposium", "Tokyo"], '
+    '"event_date": null, "relations": [{"head": "Alice", '
+    '"relation": "presented at", '
+    '"tail": "International Robotics Symposium"}]}, '
+    '{"text": "Alice was invited by the International Robotics Symposium '
+    "organizers to give a keynote at the symposium's next edition in Osaka "
+    'in April 2024.", "source_turn_ids": [3, 5], '
+    '"entities": ["Alice", "International Robotics Symposium", "Osaka"], '
+    '"event_date": "2024-04-01", "relations": [{"head": "Alice", '
+    '"relation": "invited by", '
+    '"tail": "International Robotics Symposium"}]}, '
+    '{"text": "Bob hates long flights.", "source_turn_ids": [6], '
+    '"entities": ["Bob"], "event_date": null, "relations": []}'
+    "]}"
+)
+
 # Extraction emits a handful of short units (~25 words each) plus JSON
 # framing; this cap bounds runaway completions without truncating a normal
 # turn-pair extraction.
@@ -151,12 +198,49 @@ class MemoryUnit(BaseModel):
     event_date: str | None = None
 
 
+class FactRelation(BaseModel):
+    """One directed knowledge-graph triple extracted from a memory unit."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+
+    head: str = ""
+    relation: str = ""
+    tail: str = ""
+
+
+class RelationalMemoryUnit(MemoryUnit):
+    """A memory unit that also carries its extracted entity triples.
+
+    A subclass of ``MemoryUnit`` (so every relational unit *is* a memory unit
+    for validation and storage) with one additional ``relations`` field. Used
+    only on the GNOSIS_ENTITY_GRAPH_ENABLED path; the base unit keeps the
+    flag-off structured-output schema byte-identical.
+    """
+
+    relations: list[FactRelation] = Field(default_factory=list)
+
+
 class MemoryUnitExtraction(BaseModel):
     """Structured extractor output: the unit list for one add request."""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
     facts: list[MemoryUnit] = Field(default_factory=list)
+
+
+class RelationalMemoryUnitExtraction(BaseModel):
+    """Entity-graph structured extractor output: units carrying triples."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+
+    facts: list[RelationalMemoryUnit] = Field(default_factory=list)
+
+
+def unit_relations(unit: MemoryUnit) -> tuple[FactRelation, ...]:
+    """Recover a unit's extracted triples, empty when none were emitted."""
+    if isinstance(unit, RelationalMemoryUnit):
+        return tuple(unit.relations)
+    return ()
 
 
 class MemoryUnitExtractor(Protocol):
@@ -174,6 +258,10 @@ class LiteLLMMemoryUnitExtractor:
     model: str
     base_url: str
     api_key: str
+    # On the GNOSIS_ENTITY_GRAPH_ENABLED path the extractor also emits
+    # (head, relation, tail) triples; off, the prompt and structured-output
+    # schema are byte-identical to the verbatim edu-v1 extractor.
+    emit_relations: bool = False
 
     async def extract_units(
         self,
@@ -183,26 +271,40 @@ class LiteLLMMemoryUnitExtractor:
         new_turns: Sequence[ConversationTurn],
     ) -> MemoryUnitExtraction | None:
         start = time.perf_counter()
+        response_format: type[MemoryUnitExtraction | RelationalMemoryUnitExtraction] = (
+            RelationalMemoryUnitExtraction
+            if self.emit_relations
+            else MemoryUnitExtraction
+        )
         async with AsyncOpenAI(api_key=self.api_key, base_url=self.base_url) as client:
             response = await client.beta.chat.completions.parse(
                 messages=extraction_messages(
                     conversation_date=conversation_date,
                     context_turns=context_turns,
                     new_turns=new_turns,
+                    emit_relations=self.emit_relations,
                 ),
                 model=proxy_model_name(self.model),
                 # gpt-5.x endpoints reject `temperature` and `max_tokens`, so
                 # this call sends neither and caps via max_completion_tokens.
                 max_completion_tokens=_MAX_COMPLETION_TOKENS,
-                response_format=MemoryUnitExtraction,
+                response_format=response_format,
             )
-        extraction = response.choices[0].message.parsed
-        if extraction is None:
+        parsed = response.choices[0].message.parsed
+        if parsed is None:
             _LOGGER.info(
                 "fact extraction returned no content",
                 extra={"model": self.model},
             )
             return None
+        # Relational units are MemoryUnit subclasses, so narrowing to the base
+        # extraction keeps the ``relations`` payload (recovered downstream via
+        # ``unit_relations``) while the extractor honors its Protocol return.
+        extraction = (
+            MemoryUnitExtraction(facts=list(parsed.facts))
+            if isinstance(parsed, RelationalMemoryUnitExtraction)
+            else parsed
+        )
         _LOGGER.info(
             "fact extraction produced units",
             extra={
@@ -269,15 +371,19 @@ def extraction_messages(
     conversation_date: str,
     context_turns: Sequence[ConversationTurn],
     new_turns: Sequence[ConversationTurn],
+    emit_relations: bool = False,
 ) -> tuple[ChatCompletionMessageParam, ...]:
     """Build the edu-v1 prompt: guide, one-shot exemplar, and the request.
 
     Turn numbering is continuous across CONTEXT and NEW turns so
-    ``source_turn_ids`` are unambiguous; only NEW turn numbers are valid.
+    ``source_turn_ids`` are unambiguous; only NEW turn numbers are valid. With
+    ``emit_relations`` the guide and exemplar additionally ask for entity
+    triples; without it the prompt is byte-identical to the verbatim path.
     """
+    guide = _RELATIONAL_EXTRACTION_GUIDE if emit_relations else _EXTRACTION_GUIDE
     system_message: ChatCompletionSystemMessageParam = {
         "role": "system",
-        "content": _EXTRACTION_GUIDE,
+        "content": guide,
     }
     exemplar_input: ChatCompletionUserMessageParam = {
         "role": "user",
@@ -285,7 +391,7 @@ def extraction_messages(
     }
     exemplar_output: ChatCompletionAssistantMessageParam = {
         "role": "assistant",
-        "content": _EXEMPLAR_OUTPUT,
+        "content": _RELATIONAL_EXEMPLAR_OUTPUT if emit_relations else _EXEMPLAR_OUTPUT,
     }
     user_message: ChatCompletionUserMessageParam = {
         "role": "user",
