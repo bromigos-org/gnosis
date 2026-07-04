@@ -15,23 +15,37 @@ by the official substring rule; headline J excludes adversarial (matches the
 mem0 paper's convention). gnosis embeddings: `local-qwen3-embedding-0.6b`
 (1024-dim). Graph QA off (`MEMBENCH_INCLUDE_GRAPH=false`).
 
-## Trajectory (headline: context condition, J excl. adversarial)
+## Trajectory (headline: J excl. adversarial, LOCOMO subset 3)
 
-**37.4 → 41.0 → 59.5 → 58.7 → 71.2** (2026-07-03), against a raw-search
-reference of 61.3. Run 5 (fact extraction at ingest) is the current best
-and passes every published system's LOCOMO number. Run 6 (add hybrid BM25
-retrieval on top of the Run 5 store) is a wash: context 71.4, search 69.1 —
-temporal improves but multi-hop regresses (details below).
+One row per run, newest last. "Context" = assembled `/v1/memory/context`;
+"search" = raw `/v1/memories/search`. A dash means that condition was not
+re-run (read-path change measured on context only).
 
-| Category (n) | Run 1: context | Run 1: search | Run 3 (PR #7): context | Run 4 (PR #13): context | **Run 5 (PR #14): context** | **Run 5 (PR #14): search** |
-|---|---|---|---|---|---|---|
-| single-hop (200) | 55.0 | 75.0 | 76.5 | 74.5 | **80.5** | 73.5 |
-| multi-hop (74) | 10.8 | 44.6 | 40.5 | 40.5 | 39.2 | 37.8 |
-| temporal (90) | 24.4 | 48.9 | 42.2 | 43.3 | **84.4** | **84.4** |
-| open-domain (21) | 19.1 | 42.9 | 38.1 | 38.1 | 38.1 | 38.1 |
-| adversarial (112) | 74.1 | 68.8 | 67.9 | 67.9 | 67.9 | 71.4 |
-| **overall excl. adversarial (385)** | **37.4** | **61.3** | **59.5** | **58.7** | **71.2** | **67.3** |
-| overall (497) | 45.7 | 63.0 | 61.4 | 60.8 | 70.4 | 68.2 |
+| Run | Change under test | Context J | Search J | Verdict |
+|---|---|---|---|---|
+| 1 (baseline) | verbatim RAG, gemma4 | 37.4 | 61.3 | starting line |
+| 2 (PR #6) | cross-session reads + dates + budget | 41.0 | — | kept (+3.6) |
+| 3 (PR #7) | relevance ranking + compact rendering | 59.5 | — | kept (+18.5) |
+| 4 (PR #13) | LLM recall filter | 58.7 | 59.0 | **rejected** — flat, +6s/read |
+| 5 (PR #14) | **fact extraction at ingest** | **71.2** | 67.3 | **kept** (+11.7, temporal 42→84) |
+| 6 (PR #15) | + hybrid BM25 retrieval | 71.4 | 69.1 | wash — temporal +8, multi-hop −5 |
+
+**Current best: Run 5/6, context ~71.2–71.4** — above every published
+system's LOCOMO number (see comparison below), within ~1.5 of the
+full-context ceiling. Per-category breakdown of the two best runs:
+
+| Category (n) | Run 5 context | Run 5 search | Run 6 context | Run 6 search |
+|---|---|---|---|---|
+| single-hop (200) | **80.5** | 73.5 | 79.5 | 75.5 |
+| multi-hop (74) | 39.2 | 37.8 | 33.8 | 32.4 |
+| temporal (90) | 84.4 | 84.4 | **92.2** | **92.2** |
+| open-domain (21) | 38.1 | 38.1 | 38.1 | 38.1 |
+| adversarial (112) | 67.9 | 71.4 | 71.4 | 73.2 |
+| **overall excl. adversarial (385)** | **71.2** | **67.3** | **71.4** | **69.1** |
+| overall (497) | 70.4 | 68.2 | 71.4 | 70.0 |
+
+Earlier runs' full per-category numbers live in each run's detail
+section below.
 
 Retrieval mechanism stats (context condition unless noted):
 
