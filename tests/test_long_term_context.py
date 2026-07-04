@@ -913,6 +913,154 @@ async def test_routed_multi_hop_query_keeps_chain_of_note() -> None:
 
 
 @pytest.mark.anyio
+async def test_chain_of_note_unchanged_while_widening_flags_off() -> None:
+    # Given: Chain-of-Note on with both widening flags at their defaults.
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:one",
+                        predicate="said_user",
+                        object_value="the library opens at nine",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_chain_of_note_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="when does the library open?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the instruction is the exact Run 18 CoN v3 text - the likelihood
+    # carve-out, no speculative widening, no enumeration clause.
+    content = response.sections[0].content
+    likelihood_tail = (
+        "Only when the question itself asks what is likely or probable, infer "
+         "the most plausible answer from the relevant memories instead of "
+         "saying you don't know."
+    )
+    assert content.endswith(likelihood_tail)
+    assert "speculative judgment" not in content
+    assert "enumerate every distinct item" not in content
+
+
+@pytest.mark.anyio
+async def test_speculative_inference_flag_widens_the_carve_out() -> None:
+    # Given: the speculative-inference widening on top of Chain-of-Note.
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:one",
+                        predicate="fact",
+                        object_value="user enjoys classical music",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(
+            gnosis_chain_of_note_enabled=True,
+            gnosis_con_speculative_inference_enabled=True,
+        ),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="would the user enjoy a Vivaldi concert?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the speculative carve-out replaces the likelihood clause, and the
+    # never-invent-specifics guard stays.
+    content = response.sections[0].content
+    assert "speculative judgment about a person" in content
+    assert "Still never invent specific facts" in content
+    assert "Only when the question itself asks what is likely" not in content
+
+
+@pytest.mark.anyio
+async def test_enumeration_clause_applies_on_aggregative_route_only() -> None:
+    # Given: the enumeration widening with routing on; two identical
+    # backends differing only in the routed verdict.
+    scope = _scope()
+
+    def build(route: str) -> Neo4jAgentMemoryBackend:
+        client = RecordingMemoryClient(
+            query=RecordingQuery(
+                rows=[
+                    {
+                        "f": _fact_row(
+                            subject="tenant:bromigos:message:one",
+                            predicate="fact",
+                            object_value="user made peach cobbler",
+                            metadata=_scope_metadata(scope),
+                            created_at="2026-06-28T00:00:00Z",
+                        ),
+                    },
+                ],
+            ),
+        )
+        return Neo4jAgentMemoryBackend(
+            _settings(
+                gnosis_chain_of_note_enabled=True,
+                gnosis_adaptive_routing_enabled=True,
+                gnosis_con_enumeration_enabled=True,
+            ),
+            memory_client_factory=MemoryClientFactory(client),
+            graph_store=RecordingGraphStore(),
+            query_router=RecordingQueryRouter(
+                verdict=RouteVerdict(route=route),  # pyright: ignore[reportArgumentType]
+            ),
+        )
+
+    # When: the same query reads via the aggregative and single-hop routes.
+    request = MemoryContextRequest(
+        scope=scope,
+        query="what desserts has the user made?",
+        include_short_term=False,
+        include_reasoning=False,
+        include_graph=False,
+    )
+    aggregative = await build("aggregative").get_memory_context(request)
+    single_hop = await build("single_hop").get_memory_context(request)
+
+    # Then: only the aggregative route reads with the enumeration clause.
+    assert "enumerate every distinct item" in aggregative.sections[0].content
+    assert "count the distinct occurrences" in aggregative.sections[0].content
+    assert "enumerate every distinct item" not in single_hop.sections[0].content
+
+
+@pytest.mark.anyio
 async def test_chain_of_note_takes_precedence_over_abstention_prompt() -> None:
     # Given: both prompt-only reading aids enabled at once.
     scope = _scope()
