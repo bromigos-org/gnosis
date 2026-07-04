@@ -1,3 +1,6 @@
+# Official benchmark results
+
+Mirror of the canonical log in [gnosis-membench/RESULTS.md](https://github.com/bromigos-org/gnosis-membench/blob/main/RESULTS.md); the harness repo is the source of truth for new runs.
 
 
 Canonical record of all gnosis memory-quality benchmark runs. Every run uses the
@@ -30,53 +33,65 @@ re-run (read-path change measured on context only).
 | 5 (PR #14) | **fact extraction at ingest** | **71.2** | 67.3 | **kept** (+11.7, temporal 42→84) |
 | 6 (PR #15) | + hybrid BM25 retrieval | 71.4 | 69.1 | wash — temporal +8, multi-hop −5 |
 
-Isolation experiments (each flag ON alone on the Run 5 extraction store,
-not cumulative — they answer "does this feature help?", not "new best"):
+Read-path experiments on the Run 5 extraction store (Runs 7–8 isolate one
+flag alone — "does this feature help?", not "new best"; Run 9 stacks them):
 
 | Run | Feature isolated | Context J | Search J | Finding |
 |---|---|---|---|---|
 | 7 (PR #19) | abstention prompt | 69.6 | 68.1 | **adversarial +8.9** but −1.6 excl-adv (over-abstains on answerable); overall-J +0.8. Tunable. |
 | 8 (PR #20) | facts→verbatim expansion | 71.2 | 68.8 | flat headline; **multi-hop +2.7** (only thing to nudge multi-hop up), open-domain −4.8 |
+| 9 | hybrid + verbatim + supersession STACKED | **57.9** | 29.1 | **CRASHED −13.3** — features do not compose; verbatim `said_*` turns displace dated extracted facts. Proves per-query routing is required. |
+
+Write-path change (fresh ingest, new store):
+
+| Run | Change under test | Context J | Search J | Verdict |
+|---|---|---|---|---|
+| 10 (PR #29) | entity graph + graph-QA fusion (+ extraction) | 70.9 | 67.5 | **multi-hop FLAT at 39.2** — the graph alone is inert; needs a decomposition driver (T1). Headline −0.3 = noise. |
 
 **Current best: Run 5/6, context ~71.2–71.4** — above every published
 system's LOCOMO number (see comparison below), within ~1.5 of the
-full-context ceiling. Read-path tweaks after extraction are marginal:
-multi-hop (~40) is the remaining ceiling and needs graph *traversal*,
-which requires materializing an entity-relationship graph at extraction
-(no such structure exists in the current store — graph-QA fusion PR #21
-returns empty). That is the next real lever.
+full-context ceiling. Read-path tweaks after extraction are marginal.
+Run 9 proved stacking the measured winners globally *destroys* the score
+(temporal 84→48; the losing side of every tradeoff compounds), and
+Run 10 proved a materialized entity graph with only LLM-planned Cypher
+driving it does not move multi-hop (39.2, unchanged). The two results
+point at the same next lever: **per-query adaptive routing (PR #30) to
+keep each category's peak, plus sequential query decomposition (T1) to
+actually traverse the graph on multi-hop queries.**
 
 ### Full per-category history — context condition (`/v1/memory/context`)
 
 Every run, so each category's progression is visible (e.g. temporal
 24→30→42→43→84→92, multi-hop's stubborn plateau). Runs 1–6 are
-cumulative; Runs 7–8 are isolation experiments (one flag alone on the
-Run 5 store) so they compare against Run 5, not each other.
+cumulative; Runs 7–9 are read-path experiments on the Run 5 store
+(7–8 one flag alone, 9 stacked) so they compare against Run 5, not each
+other; Run 10 is a fresh ingest (new store: extraction + entity graph)
+with graph-QA fusion on at read time.
 
-| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) |
-|---|---|---|---|---|---|---|---|---|
-| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | **80.5** | 79.5 | 78.5 | 80.0 |
-| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 | 37.8 | **41.9** |
-| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** | 85.6 | 84.4 |
-| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 | 28.6 | 33.3 |
-| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 | **76.8** | 68.8 |
-| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** | **69.6** | **71.2** |
-| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 | 71.2 | 70.7 |
+| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) | Run 9 stacked | Run 10 graph (#29) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | **80.5** | 79.5 | 78.5 | 80.0 | 75.5 | 79.0 |
+| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 | 37.8 | **41.9** | 28.4 | 39.2 |
+| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** | 85.6 | 84.4 | 47.8 | 85.6 |
+| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 | 28.6 | 33.3 | 38.1 | **42.9** |
+| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 | **76.8** | 68.8 | 64.3 | 67.9 |
+| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** | **69.6** | **71.2** | **57.9** | **70.9** |
+| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 | 71.2 | 70.7 | 59.4 | 70.2 |
 
 ### Full per-category history — search condition (`/v1/memories/search`)
 
 Runs where search was re-run (read-path changes measured on context only
 are omitted).
 
-| Category (n) | Run 1 | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) |
-|---|---|---|---|---|---|---|
-| single-hop (200) | 75.0 | 73.5 | 73.5 | 75.5 | 74.0 | 75.0 |
-| multi-hop (74) | 44.6 | 46.0 | 37.8 | 32.4 | 39.2 | 39.2 |
-| temporal (90) | 48.9 | 43.3 | 84.4 | **92.2** | 86.7 | 85.6 |
-| open-domain (21) | 42.9 | 33.3 | 38.1 | 38.1 | 33.3 | 42.9 |
-| adversarial (112) | 68.8 | 72.3 | 71.4 | 73.2 | 70.5 | 72.3 |
-| **overall excl. adv. (385)** | **61.3** | **59.0** | **67.3** | **69.1** | **68.1** | **68.8** |
-| overall (497) | 63.0 | 62.0 | 68.2 | 70.0 | 68.6 | 69.6 |
+| Category (n) | Run 1 | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) | Run 9 stacked | Run 10 graph (#29) |
+|---|---|---|---|---|---|---|---|---|
+| single-hop (200) | 75.0 | 73.5 | 73.5 | 75.5 | 74.0 | 75.0 | 40.5 | 74.0 |
+| multi-hop (74) | 44.6 | 46.0 | 37.8 | 32.4 | 39.2 | 39.2 | 4.0 | 35.1 |
+| temporal (90) | 48.9 | 43.3 | 84.4 | **92.2** | 86.7 | 85.6 | 27.8 | 86.7 |
+| open-domain (21) | 42.9 | 33.3 | 38.1 | 38.1 | 33.3 | 42.9 | 14.3 | 38.1 |
+| adversarial (112) | 68.8 | 72.3 | 71.4 | 73.2 | 70.5 | 72.3 | **81.2** | 75.0 |
+| **overall excl. adv. (385)** | **61.3** | **59.0** | **67.3** | **69.1** | **68.1** | **68.8** | **29.1** | **67.5** |
+| overall (497) | 63.0 | 62.0 | 68.2 | 70.0 | 68.6 | 69.6 | 40.8 | 69.2 |
 
 Retrieval mechanism stats (context condition unless noted):
 
@@ -87,6 +102,10 @@ Retrieval mechanism stats (context condition unless noted):
 | Run 4 (PR #13) | 2,093 | 20.5% |
 | Run 5 (PR #14) context | 4,349 | 20.5% |
 | Run 5 (PR #14) search | 2,175 | 22.7% |
+| Run 9 stacked context | 4,833 | 22.7% |
+| Run 9 stacked search | 503 | 55.5% |
+| Run 10 (PR #29) context | 4,367 | 20.5% |
+| Run 10 (PR #29) search | 2,189 | 23.5% |
 
 ## Run details
 
@@ -217,6 +236,72 @@ Retrieval mechanism stats (context condition unless noted):
   (→ graph-QA fusion, gnosis PR #21). Hybrid's temporal/abstention gains are
   real; best used alongside a multi-hop route rather than alone. Leave
   default-off pending a combined graph-QA + hybrid run.
+
+### Run 9 — `results/locomo/combined-quality-20260704/` (stacked read-path flags)
+
+- Same Run 5 extraction store (read-path-only). Flags stacked together:
+  `GNOSIS_HYBRID_RETRIEVAL_ENABLED` + `GNOSIS_FACT_VERBATIM_EXPANSION_ENABLED`
+  + `GNOSIS_READ_SUPERSESSION_ENABLED` (abstention prompt off — 0/497
+  retrievals carry an `[instructions]` section; 431/497 carry verbatim
+  `quote:` lines). gnosis-side gpt-5.5. Both conditions rerun.
+- **Scores: context 57.9 J excl. adversarial (−13.3 vs Run 5), search 29.1
+  (−38.2).** Temporal 84.4→47.8 context / 84.4→27.8 search; multi-hop
+  39.2→28.4 / 37.8→4.0; single-hop 80.5→75.5 / 73.5→40.5. Search
+  adversarial "improved" to 81.2 only because retrieval collapsed —
+  55.5% of answers were "no information" (vs 22.7% in Run 5) and the
+  search payload shrank 2,175→503 chars.
+- Failure mechanism (verified per-question): the stacked flags push
+  verbatim `said_*` turn facts above the dated extracted `fact` units in
+  the ranked candidates, so the answer model reads raw turns with relative
+  dates ("I went to a support group *yesterday*") instead of the resolved
+  dated fact, and answers "yesterday" where Run 5 answered "2023-05-07".
+  85 context questions flipped correct→wrong vs Run 5 (38 temporal,
+  20 single-hop, 15 multi-hop, 12 adversarial). Hybrid's BM25 leg matches
+  the verbose raw turns lexically, RRF boosts them, supersession and the
+  item budget then cut the extracted facts that carried the resolved dates.
+- **Verdict: features measured as individual wins do NOT compose.** Each
+  global flag applies its failure mode to every category (hybrid's
+  similar-but-wrong matches, verbatim's raw-turn duplication). This run
+  is the direct motivation for per-query adaptive routing (gnosis PR #30):
+  apply each feature only to the query class where it measured as a win.
+  The verbatim-over-extracted ranking inversion is additionally a
+  standalone bug (composability fix, tracked).
+
+### Run 10 — `results/locomo/entity-graph-20260704/` (measures gnosis PR #29)
+
+- gnosis main @ `072e893` (entity graph: edu-v1 extractor emits
+  `(head, relation, tail)` triples; each extracted fact MERGEs scope-keyed
+  `(:Entity)` nodes, `MENTIONS` edges, and dated `RELATES` edges).
+  **Fresh ingest required** (write-path change): neo4j wiped, subset 3
+  re-ingested with `GNOSIS_FACT_EXTRACTION_ENABLED` +
+  `GNOSIS_ENTITY_GRAPH_ENABLED` + `GNOSIS_GRAPHQA_FUSION_ENABLED`,
+  gnosis-side gpt-5.5. Both conditions run.
+- Store shape after ingest: 4,330 Fact nodes, **139 Entity nodes, 667
+  RELATES edges, 4,899 MENTIONS edges** — the graph materialized and
+  relative dates resolved onto RELATES `event_date` (spot-checked).
+- **Scores: context 70.9 J excl. adversarial (−0.3 vs Run 5 = noise),
+  search 67.5 (+0.2).** The target metric — **multi-hop — is exactly flat
+  at 39.2** (Run 5: 39.2); search multi-hop 35.1 (−2.7). temporal 85.6 /
+  86.7, single-hop 79.0 / 74.0, open-domain 42.9 (+4.8, n=21 noise-band),
+  adversarial 67.9 / 75.0.
+- Fusion mechanism: the graph-QA leg ran on all 497 context queries; 55
+  degraded on planner timeout/failure (~11%, logged, dense-only fallback).
+  The planned Cypher route returned nodes on some queries but the fused
+  candidates did not convert into multi-hop answers.
+- **Verdict: a materialized entity graph with only an LLM-planned Cypher
+  query driving it does NOT move multi-hop** — consistent with the
+  docs/multihop-techniques.md prior that "a graph with nothing driving the
+  second hop is inert". The graph itself is healthy infrastructure (and
+  open-domain's small bump suggests the fused nodes add some breadth); the
+  missing piece is sequential query decomposition (T1): resolve the bridge
+  entity first, then traverse `RELATES` from that pinned node. Keep
+  `GNOSIS_ENTITY_GRAPH_ENABLED` default-off in prod until T1 lands.
+- Ops notes: two ingest restarts were needed (an early launch died to
+  process-group cleanup killing the nohup'd run; later one 300s-timeout
+  crash on a conv-41 extraction call — raised `MEMBENCH_TIMEOUT` to 600s
+  and resumed; partial conv-30/conv-41 data wiped by scope before each
+  re-ingest so no duplicates). Ingest wall-clock ~15 min effective at
+  concurrency 4–8; answer+grade ~55 min for both conditions.
 
 ## Published comparison targets
 
