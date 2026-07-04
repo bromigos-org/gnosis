@@ -33,6 +33,7 @@ from gnosis.models import (
     MemoryVisibility,
     PreferenceRecord,
 )
+from gnosis.query_router import RouteVerdict
 from gnosis.settings import Settings
 from gnosis.sufficiency import SufficiencyVerdict
 
@@ -540,6 +541,18 @@ class RecordingSufficiencyAssessor:
         return self.verdict
 
 
+@dataclass(slots=True)
+class RecordingQueryRouter:
+    verdict: RouteVerdict | Exception | None = None
+    queries: list[str] = field(default_factory=list)
+
+    async def classify(self, query: str) -> RouteVerdict | None:
+        self.queries.append(query)
+        if isinstance(self.verdict, Exception):
+            raise self.verdict
+        return self.verdict
+
+
 @pytest.mark.anyio
 async def test_read_supersession_keeps_only_newest_same_slot_fact() -> None:
     # Given: two extracted facts in the same slot (same user + first entity),
@@ -797,6 +810,229 @@ async def test_abstention_instruction_absent_when_disabled() -> None:
 
     assert all(section.source != "instructions" for section in response.sections)
     assert response.sufficiency is None
+
+
+@pytest.mark.anyio
+async def test_routing_disabled_never_calls_classifier() -> None:
+    # Given: adaptive routing off (default) with a recorded router injected.
+    scope = _scope()
+    router = RecordingQueryRouter(verdict=RouteVerdict(route="multi_hop"))
+    backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(
+            RecordingMemoryClient(query=RecordingQuery()),
+        ),
+        graph_store=RecordingGraphStore(),
+        query_router=router,
+    )
+
+    # When: context and search both run with a query present.
+    _ = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="where does Alice work?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+    _ = await backend.search_memories(
+        MemorySearchRequest(scope=scope, query="where does Alice work?", limit=5),
+    )
+
+    # Then: the classifier is never consulted while the flag is off.
+    assert router.queries == []
+
+
+@pytest.mark.anyio
+async def test_routing_multi_hop_enables_graph_fusion_despite_global_off() -> None:
+    # Given: routing on, the classifier tags the query multi-hop, and the
+    # global graph-QA fusion flag is OFF.
+    scope = _scope()
+    dense = _fact_record(
+        subject="user:789",
+        predicate="fact",
+        object_value="Alice works at the city library",
+        metadata=_scope_metadata(scope),
+    )
+    graph_store = FusionGraphStore(
+        facts=[
+            _graph_fact(
+                node_id="graph-node-1",
+                summary="The city library is on Elm Street",
+            ),
+        ],
+    )
+    router = RecordingQueryRouter(verdict=RouteVerdict(route="multi_hop"))
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_adaptive_routing_enabled=True),
+        memory_client_factory=MemoryClientFactory(
+            RecordingMemoryClient(
+                query=RecordingQuery(),
+                long_term=RecordingLongTermMemory(search_results=[dense]),
+            ),
+        ),
+        graph_store=graph_store,
+        query_router=router,
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="which street is the library where Alice works on?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the graph traversal leg ran for this query and its node rendered.
+    assert router.queries == ["which street is the library where Alice works on?"]
+    content = response.sections[0].content
+    assert "The city library is on Elm Street" in content
+
+
+@pytest.mark.anyio
+async def test_routing_single_hop_suppresses_globally_enabled_features() -> None:
+    # Given: routing on with graph fusion AND the abstention prompt globally
+    # enabled, but the classifier tags the query single-hop.
+    scope = _scope()
+    dense = _fact_record(
+        subject="user:789",
+        predicate="fact",
+        object_value="Alice works at the city library",
+        metadata=_scope_metadata(scope),
+    )
+    graph_store = FusionGraphStore(
+        facts=[_graph_fact(node_id="graph-node-1", summary="library on Elm")],
+    )
+    router = RecordingQueryRouter(verdict=RouteVerdict(route="single_hop"))
+    backend = Neo4jAgentMemoryBackend(
+        _settings(
+            gnosis_adaptive_routing_enabled=True,
+            gnosis_graphqa_fusion_enabled=True,
+            gnosis_abstention_prompt_enabled=True,
+        ),
+        memory_client_factory=MemoryClientFactory(
+            RecordingMemoryClient(
+                query=RecordingQuery(),
+                long_term=RecordingLongTermMemory(search_results=[dense]),
+            ),
+        ),
+        graph_store=graph_store,
+        query_router=router,
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="where does Alice work?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the routed decision replaces the global flags - no graph route,
+    # no abstention instruction - and the dense fact still renders.
+    assert graph_store.calls == 0
+    assert all(section.source != "instructions" for section in response.sections)
+    assert "Alice works at the city library" in response.sections[0].content
+
+
+@pytest.mark.anyio
+async def test_routing_unanswerable_risk_prepends_abstention_instruction() -> None:
+    # Given: routing on, global abstention prompt OFF, and a query the
+    # classifier tags unanswerable-risk.
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:one",
+                        predicate="said_user",
+                        object_value="the library opens at nine",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    router = RecordingQueryRouter(verdict=RouteVerdict(route="unanswerable_risk"))
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_adaptive_routing_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+        query_router=router,
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="what toothpaste does the librarian's dentist recommend?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the abstention standing instruction leads the sections.
+    assert response.sections[0].source == "instructions"
+
+
+@pytest.mark.anyio
+async def test_routing_classifier_failure_falls_back_to_global_flags(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Given: routing on, the classifier raises, and the global abstention
+    # prompt is ON.
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:one",
+                        predicate="said_user",
+                        object_value="the library opens at nine",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    router = RecordingQueryRouter(verdict=OpenAIError("router down"))
+    backend = Neo4jAgentMemoryBackend(
+        _settings(
+            gnosis_adaptive_routing_enabled=True,
+            gnosis_abstention_prompt_enabled=True,
+        ),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+        query_router=router,
+    )
+
+    # When: context is assembled despite the classifier failure.
+    with caplog.at_level(logging.WARNING):
+        response = await backend.get_memory_context(
+            MemoryContextRequest(
+                scope=scope,
+                query="when does the library open?",
+                include_short_term=False,
+                include_reasoning=False,
+                include_graph=False,
+            ),
+        )
+
+    # Then: the read succeeds under the global flags with a warning logged.
+    assert response.sections[0].source == "instructions"
+    assert "query routing failed" in caplog.text
 
 
 @pytest.mark.anyio
