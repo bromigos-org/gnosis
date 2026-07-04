@@ -20,7 +20,25 @@ Memory quality is measured against **LOCOMO** (the standard long-horizon agent-m
 | adversarial (abstention) | 74.1 | 67.9 | 67.9 | 68.8 |
 | **overall** | **37.4** | **41.0** | **59.5** | 61.3 |
 
-For context, published LOCOMO overall-J numbers (gpt-4o-mini judge — different judge and backbone, so directional only): OpenAI memory 52.9 · LangMem 58.1 · Zep 66.0 · mem0 66.9 · full-context 72.9. Two things worth noting: gnosis reaches these numbers while ingesting **verbatim with zero LLM extraction calls** (extraction is off by default — it is the next measured lever), and its adversarial/abstention score means it does not invent memories it doesn't have.
+### How gnosis compares to other memory systems
+
+LOCOMO overall J, one system per row. Published numbers use a gpt-4o-mini judge and backbone; gnosis rows use a GPT-5.5 judge and backbone — so cross-block comparison is directional, not exact. Within each block, rows are directly comparable.
+
+| System | LOCOMO J | Self-hosted | Graph-backed | Notes |
+|---|---|---|---|---|
+| **gnosis — search** | **61.3** | yes | yes | raw `/v1/memories/search`, zero LLM extraction at ingest |
+| **gnosis — context** | **59.5** | yes | yes | assembled `/v1/memory/context`, same zero-extraction ingest |
+| *published (gpt-4o-mini judge):* | | | | |
+| full-context (no memory system) | 72.9 | — | — | entire conversation in the prompt; the cost ceiling, not a memory system |
+| mem0-graph | 68.4 | no¹ | yes | mem0's Neo4j variant; +2 over base mem0 at ~3x latency (their paper) |
+| mem0 | 66.9 | no¹ | no | vendor-reported, contested by Zep |
+| Zep | 66.0 | no² | yes | vendor-reported, contested by mem0 |
+| LangMem | 58.1 | yes | no | library, not a service |
+| OpenAI memory | 52.9 | no | no | ChatGPT built-in memory |
+
+¹ mem0 OSS exists but has removed graph-store support; the graph variant effectively requires their platform. ² Zep Community Edition is deprecated; Graphiti (the engine) is self-hostable but is a library, not a multi-tenant service.
+
+Two things worth noting about gnosis's numbers: they are achieved while ingesting **verbatim with zero LLM extraction calls** (extraction is off by default — it is the next measured lever, and every published system above extracts at ingest), and the adversarial/abstention score (67.9–74.1 across runs) means gnosis does not invent memories it doesn't have.
 
 Full per-run tables, configs, mechanism stats, and honest deviations: [docs/BENCHMARKS.md](docs/BENCHMARKS.md). The harness ([gnosis-membench](https://github.com/bromigos-org/gnosis-membench)) re-scores every release weekly in-cluster against a frozen judge, so these numbers cannot silently regress.
 
