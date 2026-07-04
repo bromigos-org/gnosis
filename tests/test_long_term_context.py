@@ -33,7 +33,7 @@ from gnosis.models import (
     MemoryVisibility,
     PreferenceRecord,
 )
-from gnosis.query_router import RouteVerdict
+from gnosis.query_router import QueryRoute, RouteVerdict
 from gnosis.settings import Settings
 from gnosis.sufficiency import SufficiencyVerdict
 
@@ -1102,6 +1102,54 @@ async def test_routing_multi_hop_enables_graph_fusion_despite_global_off() -> No
     assert router.queries == ["which street is the library where Alice works on?"]
     content = response.sections[0].content
     assert "The city library is on Elm Street" in content
+
+
+@pytest.mark.anyio
+async def test_routed_multi_hop_reads_with_the_expanded_item_budget() -> None:
+    # Given: routing on with a 2x multi-hop budget multiplier and more
+    # ranked dense candidates than the request budget.
+    scope = _scope()
+    dense = [
+        _fact_record(
+            subject=f"user:789:fact:{index}",
+            predicate="fact",
+            object_value=f"enumeration item number {index}",
+            metadata=_scope_metadata(scope),
+        )
+        for index in range(10)
+    ]
+    settings = _settings(
+        gnosis_adaptive_routing_enabled=True,
+        gnosis_multi_hop_budget_multiplier=2,
+    )
+    client = RecordingMemoryClient(
+        query=RecordingQuery(),
+        long_term=RecordingLongTermMemory(search_results=dense),
+    )
+
+    async def assemble(route: QueryRoute) -> str:
+        backend = Neo4jAgentMemoryBackend(
+            settings,
+            memory_client_factory=MemoryClientFactory(client),
+            graph_store=RecordingGraphStore(),
+            query_router=RecordingQueryRouter(verdict=RouteVerdict(route=route)),
+        )
+        response = await backend.get_memory_context(
+            MemoryContextRequest(
+                scope=scope,
+                query="what activities has Alice done?",
+                include_short_term=False,
+                include_reasoning=False,
+                include_graph=False,
+                max_items=4,
+            ),
+        )
+        return response.sections[-1].content
+
+    # When/Then: the multi-hop route renders double the request budget
+    # (coverage is its measured gap) while single-hop keeps the budget as-is.
+    assert (await assemble("multi_hop")).count("\n- ") == 8
+    assert (await assemble("single_hop")).count("\n- ") == 4
 
 
 @pytest.mark.anyio

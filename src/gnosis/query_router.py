@@ -113,6 +113,7 @@ class RouteDecision:
     graph_traversal: bool
     bridge_traversal: bool
     chain_of_note: bool
+    budget_multiplier: int
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RouteDecision":
@@ -126,6 +127,7 @@ class RouteDecision:
             graph_traversal=settings.gnosis_graph_traversal_enabled,
             bridge_traversal=settings.gnosis_bridge_traversal_enabled,
             chain_of_note=settings.gnosis_chain_of_note_enabled,
+            budget_multiplier=settings.gnosis_multi_hop_budget_multiplier,
         )
 
     @classmethod
@@ -160,6 +162,15 @@ class RouteDecision:
             ),
             chain_of_note=(
                 route != "temporal" and settings.gnosis_chain_of_note_enabled
+            ),
+            # Coverage, not traversal, is the measured multi-hop gap (Run 18
+            # miss analysis: 27/41 misses are cross-session enumerations cut
+            # by the item budget), so only the multi-hop route reads with an
+            # expanded budget.
+            budget_multiplier=(
+                settings.gnosis_multi_hop_budget_multiplier
+                if route == "multi_hop"
+                else 1
             ),
         )
 

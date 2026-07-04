@@ -1596,7 +1596,10 @@ class Neo4jAgentMemoryBackend:
         )
         facts = await self._recall_filtered_facts(request.query, facts)
         facts = self._superseded_facts(facts)
-        facts = _cut_with_graph_reserve(facts, request.max_items)
+        facts = _cut_with_graph_reserve(
+            facts,
+            request.max_items * decision.budget_multiplier,
+        )
         if not facts:
             return LongTermFactsContext()
         expansion = await self._verbatim_expansion(client, facts, metadata, decision)
