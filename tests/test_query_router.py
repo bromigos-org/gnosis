@@ -20,7 +20,11 @@ _ = environ.setdefault("LITELLM_API_KEY", "inert-litellm-key")
 
 import pytest  # noqa: E402
 
-from gnosis.query_router import QueryRoute, RouteDecision  # noqa: E402
+from gnosis.query_router import (  # noqa: E402
+    QueryRoute,
+    RouteDecision,
+    parse_route,
+)
 from gnosis.settings import Settings  # noqa: E402
 
 
@@ -134,3 +138,26 @@ def test_unrouted_decision_defaults_all_off() -> None:
 )
 def test_route_feature_table(route: QueryRoute, expected: RouteDecision) -> None:
     assert RouteDecision.for_route(route) == expected
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        # the bare token the prompt asks for (what gpt-5.5 via LiteLLM sends)
+        ("temporal", "temporal"),
+        ("multi_hop", "multi_hop"),
+        # JSON-wrapped structured-output shape
+        ('{"route": "unanswerable_risk"}', "unanswerable_risk"),
+        # quoted / case / hyphen noise
+        ('"aggregative"', "aggregative"),
+        ("Multi-Hop", "multi_hop"),
+        ("  single_hop\n", "single_hop"),
+        # ambiguous or unrecognizable replies fall back
+        ("either temporal or multi_hop", None),
+        ("no idea", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_parse_route_lenient(content: str | None, expected: QueryRoute | None) -> None:
+    assert parse_route(content) == expected
