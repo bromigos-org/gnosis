@@ -29,6 +29,8 @@ Body: `{scope, query, filters?: FilterDSL, limit: int = 8, min_score?: float, pe
 
 Returns `{results: [{memory_id, content, score, metadata, created_at, updated_at}]}`, relevance-ranked by the SDK's vector similarity over long-term memories, scope-filtered, filter-evaluated, and redacted like other outbound payloads.
 
+With `GNOSIS_RECALL_FILTER_ENABLED` on (default `false`), one `GNOSIS_LLM` call screens the top `GNOSIS_RECALL_FILTER_CANDIDATES` (default 30) scope/filter/score-passing candidates against the query and keeps only those that could help answer it, preserving rank order and the `limit` cap. The filter can only remove or keep candidates - it never adds any, so scope enforcement is untouched - and a failed call or an empty selection degrades to the unfiltered ranking with a structured warning (`candidates_in`/`kept` counts are logged on success). The same filter runs inside `/v1/memory/context` long-term fact assembly. For a federated search (`peers` named), the backend skips its local pass and the route applies the filter once over the merged local+remote result set (remote results are already shareable-only), keeping the budget at one LLM call per request.
+
 The federation extension is contract-additive; existing clients are unaffected:
 
 - `peers` names federation peers to fan the same query out to (each must exist in `GNOSIS_PEERS` - `400` otherwise - and allow `pull` - `403` otherwise). The remote query maps `scope.tenant_id` to the peer's `remote_tenant_id`, keeps `user_id`, and never forwards `peers`, so fan-out is not transitive. Per-peer timeout is ~10s.
@@ -111,6 +113,8 @@ These are consequences of the installed SDK and are the closest safe equivalents
 
 ## Settings added by this surface
 
+- `GNOSIS_RECALL_FILTER_ENABLED` (default `false`) - post-retrieval LLM recall filter over long-term candidates in `/v1/memories/search` and `/v1/memory/context`.
+- `GNOSIS_RECALL_FILTER_CANDIDATES` (default `30`) - how many top-ranked candidates go to the filter call.
 - `GNOSIS_MEMORY_EDIT_ENABLED` (default `false`)
 - `GNOSIS_MCP_ENABLED` (default `false`)
 - `GNOSIS_MCP_AGENT_ID` (default `mcp-client`)
