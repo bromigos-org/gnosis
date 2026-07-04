@@ -3,43 +3,80 @@
 `gnosis` is a self-hosted memory platform for AI agents: a policy gateway in front of a Neo4j knowledge graph that gives every agent scoped, auditable, benchmarked long-term memory over one HTTP API.
 
 - **Multi-client**: serves a Discord bot (PC-Principal), NousResearch hermes-agent instances (via the [hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis) plugin), and any MCP client — one memory, many agents.
-- **Measured, not vibes**: quality is tracked on the LOCOMO agent-memory benchmark with the official judging protocol — see [Benchmarks](#benchmarks) below.
+- **Measured, not vibes**: quality is tracked on the LOCOMO and LongMemEval_S agent-memory benchmarks with the official judging protocols — see [Benchmarks](#benchmarks) below.
 - **Federated**: sovereign gnosis instances share memory only through explicit, consent-tagged promotion and origin-tagged federated queries.
 - **Policy-first**: tenant/scope enforcement, redaction, review-first operator workflows, and safe-by-default feature flags sit in front of every backend access. Clients never touch Neo4j, Bolt, or the SDK directly.
 
 ## Benchmarks
 
-Memory quality is measured against **LOCOMO** (the standard long-horizon agent-memory benchmark) through gnosis's real HTTP API, judged by GPT-5.5 with the official protocol. Four changes on 2026-07-03 moved the assembled-context condition **from 37.4 to 71.2** (J score, excluding adversarial; higher is better) — the biggest jump coming from LLM fact extraction at ingest, which took temporal reasoning from 42 to **84**:
+Memory quality is measured through gnosis's real HTTP API on **LOCOMO** (the standard long-horizon agent-memory benchmark; subset 3, 497 questions, judged by GPT-5.5 with the official protocol) and, since 2026-07-04, **LongMemEval_S** (the harder 500-question benchmark, with abstention and knowledge-update axes LOCOMO lacks).
 
-| Category | baseline | + cross-session & dates | + relevance ranking | **+ fact extraction** |
-|---|---|---|---|---|
-| single-hop | 55.0 | 57.0 | 76.5 | **80.5** |
-| multi-hop | 10.8 | 14.9 | 40.5 | 39.2 |
-| temporal | 24.4 | 30.0 | 42.2 | **84.4** |
-| open-domain | 19.1 | 28.6 | 38.1 | 38.1 |
-| adversarial (abstention) | 74.1 | 67.9 | 67.9 | 67.9 |
-| **overall** | **37.4** | **41.0** | **59.5** | **71.2** |
+**Current best (Run 18, the production config): LOCOMO context J 74.8 excluding adversarial / 76.7 overall** (J score, higher is better) — the first config with every category at or within noise of its historic peak simultaneously:
+
+| Category | baseline (Run 1) | best (Run 18) |
+|---|---|---|
+| single-hop | 55.0 | **82.0** (peak) |
+| multi-hop | 10.8 | **44.6** (ties peak) |
+| temporal | 24.4 | **91.1** |
+| open-domain | 19.1 | **42.9** (ties peak) |
+| adversarial (abstention) | 74.1 | **83.0** (peak) |
+| **overall excl. adversarial** | **37.4** | **74.8** |
+| **overall** | **45.7** | **76.7** |
+
+The Run 18 config: LLM fact extraction + entity graph at write; adaptive per-query routing + route-aware hardened Chain-of-Note (with the likelihood carve-out) at read.
 
 ### How gnosis compares to other memory systems
 
-LOCOMO overall J, one system per row, sorted by score.
+LOCOMO J, one system per row, sorted by score.
 
 | System | LOCOMO J | Self-hosted | Graph-backed | Notes |
 |---|---|---|---|---|
+| **gnosis — context** | **74.8** | yes | yes | assembled `/v1/memory/context`, Run 18 config |
+| Letta | 74.0 | yes | no | filesystem agent, vendor blog run |
 | full-context (no memory system) | 72.9 | — | — | entire conversation in the prompt; the cost ceiling, not a memory system |
-| **gnosis — context** | **71.2** | yes | yes | assembled `/v1/memory/context` with fact extraction at ingest |
+| **gnosis — search** | **68.8** | yes | yes | raw `/v1/memories/search` (Run 11, the last run to re-measure search) |
 | mem0-graph | 68.4 | no¹ | yes | mem0's Neo4j variant; +2 over base mem0 at ~3x latency (their paper) |
-| **gnosis — search** | **67.3** | yes | yes | raw `/v1/memories/search`, same extraction |
 | mem0 | 66.9 | no¹ | no | vendor-reported, contested by Zep |
 | Zep | 66.0 | no² | yes | vendor-reported, contested by mem0 |
 | LangMem | 58.1 | yes | no | library, not a service |
 | OpenAI memory | 52.9 | no | no | ChatGPT built-in memory |
 
-Published numbers use a gpt-4o-mini judge and backbone; gnosis rows use a GPT-5.5 judge and backbone — so the comparison is directional, not exact. ¹ mem0 OSS exists but has removed graph-store support; the graph variant effectively requires their platform. ² Zep Community Edition is deprecated; Graphiti (the engine) is self-hostable but is a library, not a multi-tenant service.
+Published numbers use a gpt-4o-mini judge and backbone; gnosis rows use a GPT-5.5 judge and backbone — so the comparison is directional, not exact, and cross-vendor numbers in this space are actively disputed (mem0 and Zep contest each other's runs). ¹ mem0 OSS exists but has removed graph-store support; the graph variant effectively requires their platform. ² Zep Community Edition is deprecated; Graphiti (the engine) is self-hostable but is a library, not a multi-tenant service.
 
-Two things worth noting about gnosis's numbers: the assembled-context condition (71.2) lands above every published memory system and within 1.7 of the full-context ceiling — while sending ~4.3k characters, not the entire conversation — and the adversarial/abstention score (67.9) means gnosis does not invent memories it doesn't have. A fully same-judge comparison (running mem0 and Graphiti through this harness) is the next validation step.
+Two things worth noting about gnosis's numbers: the assembled-context condition (74.8) lands above every published memory system and above the full-context ceiling — while sending ~4.9k characters, not the entire conversation — and the adversarial/abstention score (83.0, the historic peak) means gnosis does not invent memories it doesn't have.
 
-Full per-run tables, configs, mechanism stats, and honest deviations: [docs/BENCHMARKS.md](docs/BENCHMARKS.md). The harness ([gnosis-membench](https://github.com/bromigos-org/gnosis-membench)) re-scores every release weekly in-cluster against a frozen judge, so these numbers cannot silently regress.
+### Trajectory: 37.4 → 74.8
+
+Every measured run, newest last — kept and rejected changes alike (rejections are documented, not hidden). "Context" = assembled `/v1/memory/context`; "search" = raw `/v1/memories/search`; a dash means that condition was not re-run. Runs 1–6 are cumulative; Runs 7–9 are read-path experiments on the Run 5 store; Run 10 is a fresh ingest (extraction + entity graph); Runs 11–19 are read-path experiments on the Run 10 store.
+
+| Run | Change under test | Context J | Search J | Verdict |
+|---|---|---|---|---|
+| 1 (baseline) | verbatim RAG, gemma4 | 37.4 | 61.3 | starting line |
+| 2 (PR #6) | cross-session reads + dates + budget | 41.0 | — | kept (+3.6) |
+| 3 (PR #7) | relevance ranking + compact rendering | 59.5 | — | kept (+18.5) |
+| 4 (PR #13) | LLM recall filter | 58.7 | 59.0 | **rejected** — flat, +6s/read |
+| 5 (PR #14) | **fact extraction at ingest** | **71.2** | 67.3 | **kept** (+11.7, temporal 42→84) |
+| 6 (PR #15) | + hybrid BM25 retrieval | 71.4 | 69.1 | wash — temporal +8, multi-hop −5 |
+| 7 (PR #19) | abstention prompt (isolated) | 69.6 | 68.1 | adversarial +8.9 but −1.6 excl-adv |
+| 8 (PR #20) | facts→verbatim expansion (isolated) | 71.2 | 68.8 | flat headline; multi-hop +2.7 |
+| 9 | hybrid + verbatim + supersession STACKED | 57.9 | 29.1 | **crashed −13.3** — features do not compose; proves per-query routing is required |
+| 10 (PR #29) | entity graph + graph-QA fusion (fresh ingest) | 70.9 | 67.5 | multi-hop flat — the graph alone is inert without a driver |
+| 11 (PR #30+#33) | adaptive per-query routing | 74.3 | 68.8 | **new best** +2.9 — routing composes the per-category winners; adversarial −5.4 |
+| 12 (PR #34+#35) | entity-anchored graph traversal alone | 70.7 | 67.3 | **rejected** — multi-hop went down (39.2→36.5) |
+| 13 (PR #31) | Chain-of-Note reading instruction alone | 72.0 | — | **kept** — adversarial 79.5, then best ever (+11.6) |
+| 14 | routing + Chain-of-Note combined | 71.4 | — | does not stack blindly — CoN parrots hybrid's relative dates on temporal (92.2→83.3) |
+| 15 (PR #37) | routing + **route-aware** CoN (skip temporal) | 73.2 | — | **composes** — temporal repaired to 91.1, overall 74.5 = then new best |
+| 16 (PR #39) | + directed bridge-entity traversal | 72.5 | — | **rejected as measured** — mechanism works but fires on only 35/497 questions |
+| 17 (PR #40) | hardened CoN (attribution + never-guess) | 72.2 | — | adversarial 83.0 best ever; open-domain over-abstains (cost) |
+| 18 (PR #41) | + likelihood carve-out in the never-guess rule | **74.8** | — | **NEW BEST on both headlines — the production config** |
+| 19 (PR #43+#44) | 2x coverage item budget on multi-hop/aggregative routes | 72.5 | — | **rejected** — gold coverage rose 50%→60%, 0/27 repaired; quantified the ±2.3 J noise floor |
+
+### Benchmark status (2026-07-04)
+
+- **LOCOMO subset 3 is frozen as the regression gate** at the Run 18 config. The benchmark is saturated for this system: Run 19 measured a ±2.3 J excl-adv noise floor between identical configs — wider than every remaining candidate lever — and the largest residual category gap (multi-hop) is capped by exact-list grading, not retrieval. Any future gnosis change re-runs the gate and counts as a regression only if it lands below the noise band, judged per-category.
+- **LongMemEval_S is the primary optimization target.** Frozen config: 100-question stratified subset (all 30 abstention instances + 70 sampled proportionally per question type), `gemini-embedding-001` embeddings (3072-dim), gpt-5.5 extraction, the official LongMemEval judge prompts on a frozen gpt-5.5 judge. The baseline run (L-0) is in progress.
+
+Full per-run tables, per-category history, configs, mechanism stats, and honest deviations: [docs/BENCHMARKS.md](docs/BENCHMARKS.md), a mirror of the canonical [gnosis-membench RESULTS.md](https://github.com/bromigos-org/gnosis-membench/blob/main/RESULTS.md). The harness ([gnosis-membench](https://github.com/bromigos-org/gnosis-membench)) re-scores every release weekly in-cluster against a frozen judge, so these numbers cannot silently regress.
 
 ## What it does
 
@@ -69,6 +106,14 @@ flowchart LR
     Gateway --> LiteLLM
     Gateway -. optional provenance .-> RustFS
 ```
+
+### Code layout
+
+The gateway is a FastAPI app under `src/gnosis/`, organized as focused modules since the 2026-07 refactor (PRs #48–#50) split the former `backend.py` monolith and `main.py` route definitions:
+
+- `backend.py` is the backend facade; the pieces it delegates to live beside it: `backend_protocols.py` (typed protocols for the SDK surface), `sdk_client.py` (the neo4j-agent-memory client surface), `context_assembly.py` (combined memory-context assembly), `ingestion_policy.py` (write-path policy), `reasoning_support.py` (prompt-safe reasoning views), `scope_policy.py` (scope enforcement), `dedup_consolidation.py` (dedup and consolidation flows), and `json_redaction.py` (redaction helpers).
+- `main.py` is app wiring plus the context routes (`/v1/context`, `/v1/memory/context`, `/v1/graph/context`) and the MCP mount; all other HTTP route registration lives in the `routes/` package — `system.py` (health, readiness, diagnostics), `memory_provider.py` (the `/v1/memories` provider surface, `/v1/messages`, extraction preview), `operator.py` (stats, export, entity/fact/preference, dedup, consolidation, buffer), `reasoning.py` (traces, steps, tool calls), and `events_skills.py` (events and skills).
+- Feature seams have their own modules: `fact_extraction.py` / `extraction_worker.py` / `entity_graph.py` (write path), `query_router.py` / `entity_traversal.py` / `bridge_traversal.py` / `recall_filter.py` / `supersession.py` / `sufficiency.py` (read path), `federation.py`, `mcp_server.py`, and the `graph_*` family (graph QA planning, validation, and upserts).
 
 ## Gateway boundary
 
@@ -453,13 +498,13 @@ Preview comes before persistence. If extraction work is being evaluated, use `PO
 - `GNOSIS_FACT_VERBATIM_EXPANSION_MAX` caps how many top-ranked extracted facts expand their verbatim source turns so the addition never blows the context budget (default `5`).
 - `GNOSIS_GRAPHQA_FUSION_ENABLED` runs the existing LLM-planned, validation-gated, scope-safe, read-only graph-QA route in parallel with dense long-term retrieval during `/v1/memory/context` assembly and fuses its derived nodes into the candidate set before supersession and the item budget, targeting multi-hop questions with graph traversal (Mnemis dual-route, arXiv 2602.15313); it is distinct from the per-request `include_graph` flag (which renders a separate graph section rather than fusing into the ranked facts), dedupes nodes already present (same memory id or rendered line), and degrades to dense-only on any planner/execution failure, validation rejection, or timeout without failing the request. The planner needs `GNOSIS_LLM` set to a model capable of generating valid scoped Cypher plans (default `false`).
 - `GNOSIS_GRAPHQA_FUSION_TIMEOUT_SECONDS` bounds the parallel graph-QA fusion route so a slow planner cannot stall the context call; on timeout the route degrades to dense-only (default `5.0`).
-- `GNOSIS_ADAPTIVE_ROUTING_ENABLED` classifies each `/v1/memory/context` and `/v1/memories/search` query with one cheap structured-output `GNOSIS_ROUTING_MODEL` call (temporal / multi-hop / single-hop / unanswerable-risk / aggregative) and applies that route's measured-best read-path feature set for the request instead of the global toggles: temporal gets hybrid BM25 fusion, multi-hop gets graph-QA fusion plus facts-to-verbatim expansion (and explicitly not hybrid), unanswerable-risk gets the abstention grounding instruction, single-hop and aggregative get plain dense ranking (Adaptive-RAG, arXiv 2403.14403 — benchmarked here because the per-category peaks measurably do not stack when globally combined). Any classifier failure degrades to the globally configured flags with a structured warning, so routing can never fail a read; byte-identical behavior with the flag off (default `false`).
+- `GNOSIS_ADAPTIVE_ROUTING_ENABLED` classifies each `/v1/memory/context` and `/v1/memories/search` query with one cheap structured-output `GNOSIS_ROUTING_MODEL` call (temporal / multi-hop / single-hop / unanswerable-risk / aggregative) and applies that route's measured-best read-path feature set for the request instead of the global toggles: temporal gets hybrid BM25 fusion, multi-hop gets graph-QA fusion plus facts-to-verbatim expansion (and explicitly not hybrid), unanswerable-risk gets the abstention grounding instruction, single-hop and aggregative get plain dense ranking (Adaptive-RAG, arXiv 2403.14403 — benchmarked here because the per-category peaks measurably do not stack when globally combined). Any classifier failure degrades to the globally configured flags with a structured warning, so routing can never fail a read; byte-identical behavior with the flag off (default `false`). Measured (Run 11): +2.9 J excl-adv over the best global config — routing is the composability fix and part of the measured-best Run 18 config.
 - `GNOSIS_ROUTING_MODEL` is the LiteLLM model for that routing classification call (default empty, meaning `GNOSIS_LLM`).
 - `GNOSIS_FACT_EXTRACTION_ENABLED` runs one LLM call per `messages`+`infer=true` add and per `/v1/messages` write that distills the new turns into self-contained, dated memory units stored alongside the verbatim turn facts (default `false`).
-- `GNOSIS_ENTITY_GRAPH_ENABLED` materializes a traversable knowledge graph next to each extracted `fact` unit so graph-QA can answer multi-hop questions (HippoRAG-2 / Graphiti, arXiv 2405.14831). With the flag on, the edu-v1 extractor also emits `(head, relation, tail)` triples, and each extracted-fact write additionally MERGEs one scope-keyed `(:Entity {tenant_id, user_id, name})` per named entity (deduplicated by normalized name within tenant+user scope, never merged across tenants or users), links the fact with `(:Fact)-[:MENTIONS]->(:Entity)`, and connects the entities with directed `(:Entity)-[:RELATES {relation, fact_id, event_date}]->(:Entity)` edges. The graph-QA planner and its safety validator know these labels/edges, so `GNOSIS_GRAPHQA_FUSION_ENABLED` can traverse `Entity`/`RELATES`/`MENTIONS` (every `Entity` and `Fact` alias scoped by both `tenant_id` and `user_id`) for bridge answers. The materialization is strictly additive: any failure degrades to "no graph materialized" with a structured warning and never fails the add, and with the flag off the extraction prompt, schema, and write path are byte-identical (no entity writes). Measuring the multi-hop gain requires a fresh ingest with the flag on, since it is a write-path change (default `false`).
+- `GNOSIS_ENTITY_GRAPH_ENABLED` materializes a traversable knowledge graph next to each extracted `fact` unit so graph-QA can answer multi-hop questions (HippoRAG-2 / Graphiti, arXiv 2405.14831). With the flag on, the edu-v1 extractor also emits `(head, relation, tail)` triples, and each extracted-fact write additionally MERGEs one scope-keyed `(:Entity {tenant_id, user_id, name})` per named entity (deduplicated by normalized name within tenant+user scope, never merged across tenants or users), links the fact with `(:Fact)-[:MENTIONS]->(:Entity)`, and connects the entities with directed `(:Entity)-[:RELATES {relation, fact_id, event_date}]->(:Entity)` edges. The graph-QA planner and its safety validator know these labels/edges, so `GNOSIS_GRAPHQA_FUSION_ENABLED` can traverse `Entity`/`RELATES`/`MENTIONS` (every `Entity` and `Fact` alias scoped by both `tenant_id` and `user_id`) for bridge answers. The materialization is strictly additive: any failure degrades to "no graph materialized" with a structured warning and never fails the add, and with the flag off the extraction prompt, schema, and write path are byte-identical (no entity writes). Measuring the multi-hop gain requires a fresh ingest with the flag on, since it is a write-path change (default `false`). Measured (Run 10): the graph materializes correctly, but with only the LLM-planned graph-QA route driving it multi-hop stayed flat — the graph is inert without a driver; it is nonetheless part of the measured-best Run 18 write config, feeding the routed read-path features.
 - `GNOSIS_GRAPH_TRAVERSAL_ENABLED` drives that entity graph deterministically during `/v1/memory/context` assembly, with zero extra LLM calls (the T1 answer to the measured result that the graph is inert without a driver): every 1–4-word phrase of the query is normalized exactly like entity names at write time and pins matching `(:Entity)` seed nodes, one fixed parameterized Cypher expands 1–2 `RELATES` hops from the seeds — reaching bridge entities the query never names — and follows each traversed edge's `fact_id` provenance back to the dated extracted facts, which join the candidate pool as graph-derived candidates holding the reserved graph slots of the item budget. Both endpoints stay inside tenant+user scope by construction and every provenance fact re-checks the caller's scope; any read failure degrades to dense-only with a structured warning. With `GNOSIS_ADAPTIVE_ROUTING_ENABLED` also on, traversal runs only on multi-hop-classified queries; alone, it applies to every query (default `false`).
-- `GNOSIS_BRIDGE_TRAVERSAL_ENABLED` runs the *directed* bridge hop the radial traversal measurably lacks (self-ask, arXiv 2210.03350; the standalone radial flag *cost* multi-hop in ablation): after dense retrieval, one cheap LLM call reads the query plus hop-1's retrieved facts and names up to three bridge entities the facts reveal but the question never names ("who did John go to yoga with?" plus a fact naming the colleague Rob yields Rob); a fixed parameterized Cypher then fetches the dated extracted facts that `MENTIONS` those entities — hop-2 evidence unreachable by any ranking of the query text — which join the candidate pool as graph-derived candidates holding the reserved graph slots. Entities the query itself names are filtered from the bridge list, so a namer that parrots the query degrades to a no-op. Scope-pinned twice like every graph read; namer or read failure degrades to dense-only with a structured warning. With `GNOSIS_ADAPTIVE_ROUTING_ENABLED` also on, the hop runs only on multi-hop-classified queries; alone, it applies to every query (default `false`).
-- `GNOSIS_COVERAGE_BUDGET_MULTIPLIER` (default `1` = off, max 5) expands the long-term fact item budget for coverage-hungry routed context reads: with adaptive routing on and the router classifying a query multi-hop or aggregative, the request's `max_items` cut is multiplied by this factor before rendering. Measured motivation: LOCOMO multi-hop-category misses are dominated by cross-session *enumerations* ("what desserts has Maria made?" retrieved 1 of 2) — the answer's facts exist and rank in the dense pool but fall below the budget cut, a retrieval coverage gap that deeper graph traversal measurably does not fix — and the router classifies those enumerations as aggregative (list/synthesis across sessions) or multi-hop. Applies to the budget cut only; ranking, fusion, and the graph-reserve split are unchanged, and every other route keeps the request budget as-is.
+- `GNOSIS_BRIDGE_TRAVERSAL_ENABLED` runs the *directed* bridge hop the radial traversal measurably lacks (self-ask, arXiv 2210.03350; the standalone radial flag *cost* multi-hop in ablation): after dense retrieval, one cheap LLM call reads the query plus hop-1's retrieved facts and names up to three bridge entities the facts reveal but the question never names ("who did John go to yoga with?" plus a fact naming the colleague Rob yields Rob); a fixed parameterized Cypher then fetches the dated extracted facts that `MENTIONS` those entities — hop-2 evidence unreachable by any ranking of the query text — which join the candidate pool as graph-derived candidates holding the reserved graph slots. Entities the query itself names are filtered from the bridge list, so a namer that parrots the query degrades to a no-op. Scope-pinned twice like every graph read; namer or read failure degrades to dense-only with a structured warning. With `GNOSIS_ADAPTIVE_ROUTING_ENABLED` also on, the hop runs only on multi-hop-classified queries; alone, it applies to every query (default `false`). Measured (Run 16): rejected as measured — the mechanism works (one textbook bridge repair) but retrieval changed on only 35/497 LOCOMO questions; that benchmark's multi-hop misses are cross-session enumerations, not bridge chains. Merged, stays default-off.
+- `GNOSIS_COVERAGE_BUDGET_MULTIPLIER` (default `1` = off, max 5) expands the long-term fact item budget for coverage-hungry routed context reads: with adaptive routing on and the router classifying a query multi-hop or aggregative, the request's `max_items` cut is multiplied by this factor before rendering. Measured motivation: LOCOMO multi-hop-category misses are dominated by cross-session *enumerations* ("what desserts has Maria made?" retrieved 1 of 2) — the answer's facts exist and rank in the dense pool but fall below the budget cut, a retrieval coverage gap that deeper graph traversal measurably does not fix — and the router classifies those enumerations as aggregative (list/synthesis across sessions) or multi-hop. Applies to the budget cut only; ranking, fusion, and the graph-reserve split are unchanged, and every other route keeps the request budget as-is. Measured (Run 19): rejected — gold-item coverage on the enumeration cohort rose 50%→60% yet 0/27 questions were repaired; the residual failure is exact-list grading at the reader/judge seam, not retrieval. Merged, stays at default 1 (off).
 - `GNOSIS_FACT_EXTRACTION_MODEL` is the LiteLLM model for that extraction call (default empty, meaning `GNOSIS_LLM`).
 - `GNOSIS_FACT_EXTRACTION_CONTEXT_TURNS` caps how many recent session turns ride along as coreference context (default `10`).
 - `GNOSIS_FACT_EXTRACTION_MODE` selects where that extraction call runs: `sync` (default) in the request path, or `background` on an in-process asyncio queue so the write returns right after the verbatim facts land.
