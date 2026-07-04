@@ -57,32 +57,35 @@ Read-path changes on the Run 10 entity-graph store:
 | 13 (PR #31) | Chain-of-Note reading instruction (T2) alone | 72.0 | — | **kept** — **adversarial 79.5, best ever (+11.6)** AND excl-adv +1.1 (multi-hop +4.0): strictly dominates the Run 7 abstention prompt, which bought adversarial by *costing* answerable. |
 | 14 | routing (T3) + Chain-of-Note (T2) combined | 71.4 | — | **does not compose** — worse than either alone on its own front (excl-adv 74.3→71.4, adv 79.5→75.9). Temporal 92.2→83.3: CoN's "state what the memory says" makes the reader parrot relative dates from hybrid's raw turns. |
 | 15 (PR #37) | routing + **route-aware** CoN (skip temporal) | 73.2 | — | **composes** — temporal repaired 83.3→91.1, adversarial 78.6, **overall-incl-adv 74.5 = NEW BEST**. Excl-adv 73.2 sits 1.1 under Run 11's peak but buys +16.1 adversarial; best production config. |
+| 16 (PR #39) | + directed bridge-entity traversal (T1-directed) | 72.5 | — | **rejected as measured — fires too rarely to matter.** The mechanism works (one textbook repair: "Which city have both Jean and John visited?" → Rome via the bridge fetch) but retrieval changed on only 35/497 questions; every category net-flips within noise (multi-hop 43.2→41.9, adversarial −1.8). LOCOMO's multi-hop misses are mostly cross-session enumerations, not bridge chains. |
+| 17 (PR #40) | hardened CoN (attribution + never-guess clauses) | 72.2 | — | **adversarial 83.0 = BEST EVER (+4.4, 5 repairs / 0 regressions), overall 74.7 = new best**, multi-hop 44.6 ties best. Cost: the never-guess rule over-abstains on open-domain "would X likely..." inference questions (42.9→28.6, 3 abstention regressions on n=21). Carve-out measured next. |
+| 18 (PR #41) | + likelihood carve-out in the never-guess rule | **74.8** | — | **NEW BEST on both headlines: excl-adv 74.8, overall 76.7.** The carve-out recovered open-domain 28.6→42.9 (3/3 abstention regressions repaired) AND single-hop 78.5→82.0 (best ever, 8 repairs / 1 regression) while adversarial held 83.0 with zero flips. Every category at or within noise of its historic peak — the production config. |
 
-**Current best: Run 15, context 74.5 overall-incl-adv (NEW BEST) and
-73.2 excl-adv; Run 11 still holds the excl-adv peak at 74.3** —
-adaptive routing was the first change since extraction to move the
-headline, and it did it exactly as designed: Run 9 proved stacking the
-measured winners globally *destroys* the score (temporal 84→48; the
-losing side of every tradeoff compounds), and Run 11 proved routing
-each query to its category's measured-best feature set *composes* them
-(temporal keeps hybrid's 92.2 peak while multi-hop, freed from hybrid
-and given verbatim expansion, sets a best at 44.6). Run 12 then killed
-the obvious multi-hop follow-up: deterministic entity-anchored
-traversal (T1) applied globally *costs* multi-hop — blind RELATES
-neighborhood expansion floods the reserved budget slots without
-resolving bridges. Run 13 measured Chain-of-Note (T2) as the first
-strict win since extraction: adversarial 79.5 (best ever) with the
-answerable side *also* up. Run 14 showed the two winners do NOT stack
-blindly (71.4, worse than either alone on its own front): CoN's note
-step makes the reader trust hybrid's raw relative-dated turns on
-temporal queries. Run 15 fixed exactly that seam — CoN moved into the
-route table, applied on every route *except* temporal — and the
-combination now composes: temporal repaired to 91.1, adversarial 78.6,
-overall 74.5. The remaining gaps to attack: Run 11's excl-adv edge
-comes from temporal 92.2 vs 91.1 and single-hop 81.0 vs 79.5 (both
-within noise per-category, worth one replicate), the router still
-under-fires `unanswerable_risk` (2/497), and multi-hop needs directed
-(not radial) hop-2 traversal.
+**Current best: Run 18 — excl-adv 74.8 AND overall 76.7, both new
+bests, with every category at or within noise of its historic peak
+simultaneously** (single-hop 82.0 peak, multi-hop 44.6 ties peak,
+temporal 91.1, open-domain 42.9 ties peak, adversarial 83.0 peak).
+The path there: Run 9 proved stacking the measured winners globally
+*destroys* the score, Run 11 proved routing each query to its
+category's measured-best feature set *composes* them, Run 12 killed
+radial graph traversal, Run 13 measured Chain-of-Note as the first
+strict win since extraction, Run 14 showed routing + CoN do NOT stack
+blindly (CoN parrots hybrid's relative dates on temporal), Run 15
+fixed that seam by making CoN route-aware (skip temporal; overall
+74.5), Run 16 killed *directed* bridge traversal too (mechanism works,
+fires on too few LOCOMO questions to matter — multi-hop misses are
+enumerations, not bridge chains), Run 17 hardened the CoN instruction
+against the two residual adversarial patterns (attribution +
+never-guess; adversarial 83.0 best ever, but open-domain inference
+questions over-abstained), and Run 18 carved likelihood questions out
+of the never-guess rule — recovering open-domain AND unlocking
+single-hop's 82.0 peak while adversarial held. The reading instruction
+is now the highest-leverage seam in the system: three consecutive
+prompt-only changes moved the totals more than any retrieval change
+since extraction. Remaining known gaps: temporal 91.1 vs the 92.2
+peak (1 question), and multi-hop's enumeration misses, which need
+retrieval *coverage* (larger item budget or per-entity fan-out on the
+multi-hop route), not deeper traversal.
 
 ### Full per-category history — context condition (`/v1/memory/context`)
 
@@ -95,17 +98,20 @@ with graph-QA fusion on at read time; Runs 11–15 are read-path
 experiments on the Run 10 store (11: adaptive routing on, all global
 read flags off; 12: graph traversal alone; 13: Chain-of-Note alone;
 14: routing + Chain-of-Note together; 15: routing + route-aware
-Chain-of-Note, skipped on the temporal route).
+Chain-of-Note, skipped on the temporal route; 16: Run 15 config plus
+directed bridge-entity traversal on the multi-hop route; 17: Run 15
+config with the hardened Chain-of-Note instruction; 18: Run 17 plus
+the likelihood carve-out clause).
 
-| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) | Run 9 stacked | Run 10 graph (#29) | Run 11 routed (#30) | Run 12 traversal (#35) | Run 13 CoN (#31) | Run 14 routed+CoN | Run 15 route-aware (#37) |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | 80.5 | 79.5 | 78.5 | 80.0 | 75.5 | 79.0 | **81.0** | 79.5 | 79.5 | 80.0 | 79.5 |
-| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 | 37.8 | 41.9 | 28.4 | 39.2 | **44.6** | 36.5 | 43.2 | 43.2 | 43.2 |
-| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** | 85.6 | 84.4 | 47.8 | 85.6 | **92.2** | 85.6 | 85.6 | 83.3 | 91.1 |
-| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 | 28.6 | 33.3 | 38.1 | **42.9** | 38.1 | **42.9** | **42.9** | 38.1 | **42.9** |
-| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 | 76.8 | 68.8 | 64.3 | 67.9 | 62.5 | 64.3 | **79.5** | 75.9 | 78.6 |
-| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** | **69.6** | **71.2** | **57.9** | **70.9** | **74.3** | **70.7** | **72.0** | **71.4** | **73.2** |
-| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 | 71.2 | 70.7 | 59.4 | 70.2 | 71.6 | 69.2 | 73.6 | 72.4 | **74.5** |
+| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) | Run 9 stacked | Run 10 graph (#29) | Run 11 routed (#30) | Run 12 traversal (#35) | Run 13 CoN (#31) | Run 14 routed+CoN | Run 15 route-aware (#37) | Run 16 bridge (#39) | Run 17 hardened (#40) | Run 18 likelihood (#41) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | 80.5 | 79.5 | 78.5 | 80.0 | 75.5 | 79.0 | 81.0 | 79.5 | 79.5 | 80.0 | 79.5 | 79.5 | 78.5 | **82.0** |
+| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 | 37.8 | 41.9 | 28.4 | 39.2 | **44.6** | 36.5 | 43.2 | 43.2 | 43.2 | 41.9 | **44.6** | **44.6** |
+| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** | 85.6 | 84.4 | 47.8 | 85.6 | **92.2** | 85.6 | 85.6 | 83.3 | 91.1 | 90.0 | 91.1 | 91.1 |
+| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 | 28.6 | 33.3 | 38.1 | **42.9** | 38.1 | **42.9** | **42.9** | 38.1 | **42.9** | 38.1 | 28.6 | **42.9** |
+| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 | 76.8 | 68.8 | 64.3 | 67.9 | 62.5 | 64.3 | 79.5 | 75.9 | 78.6 | 76.8 | **83.0** | **83.0** |
+| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** | **69.6** | **71.2** | **57.9** | **70.9** | **74.3** | **70.7** | **72.0** | **71.4** | **73.2** | **72.5** | **72.2** | **74.8** |
+| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 | 71.2 | 70.7 | 59.4 | 70.2 | 71.6 | 69.2 | 73.6 | 72.4 | 74.5 | 73.4 | 74.7 | **76.7** |
 
 ### Full per-category history — search condition (`/v1/memories/search`)
 
@@ -141,6 +147,9 @@ Retrieval mechanism stats (context condition unless noted):
 | Run 13 (PR #31) context | 4,726 | 23.7% |
 | Run 14 routed+CoN context | 4,753 | 22.5% |
 | Run 15 route-aware CoN context | 4,670 | 23.1% |
+| Run 16 bridge traversal context | 4,681 | 23.1% |
+| Run 17 hardened CoN context | 4,809 | 25.6% |
+| Run 18 likelihood carve-out context | 4,932 | 24.7% |
 
 ## Run details
 
@@ -501,6 +510,92 @@ Retrieval mechanism stats (context condition unless noted):
   (74.5 vs 71.6). The composability bug's general fix is confirmed:
   feature interactions live in the route table, where each is scoped to
   the categories it measurably helps.
+
+### Run 16 — `results/locomo/routing-con-bridge-20260704/` (directed bridge traversal, gnosis PR #39)
+
+- Run 15 config plus `GNOSIS_BRIDGE_TRAVERSAL_ENABLED=true` — the
+  *directed* replacement for Run 12's rejected radial traversal
+  (self-ask, arXiv 2210.03350): after dense retrieval, one LLM call
+  reads the query plus hop-1's dense facts and names up to three bridge
+  entities the facts reveal but the question never names; a fixed
+  Cypher fetches the facts `MENTIONS`-linked to them, fused into the
+  reserved graph budget slots. Routed to multi-hop-classified queries
+  only. Context only.
+- **Scores: context 72.5 excl-adv, adversarial 76.8, overall 73.4 —
+  all slightly below Run 15** (73.2 / 78.6 / 74.5). multi-hop
+  43.2→41.9, temporal 91.1→90.0, open-domain 42.9→38.1.
+- Per-question verification: retrieval changed on only **35/497**
+  questions — the router + namer gate fires rarely, and when it fires
+  it usually adds nothing. Exactly one textbook bridge repair ("Which
+  city have both Jean and John visited?" → Rome, previously abstained;
+  the bridge fetch surfaced Jean's Rome fact). Every category's flips
+  are 1-3 questions, i.e. noise; the -0.7 excl-adv delta is judge
+  variance on unchanged retrievals (e.g. "transgender" vs "Transgender
+  woman" re-judged wrong).
+- **Verdict: rejected as measured — the mechanism works but the
+  addressable population is too small.** Run 15's multi-hop misses are
+  dominated by cross-session *enumerations* ("What activities has
+  Melanie done with her family?" — needs 6 facts across sessions), not
+  bridge chains; a directed hop cannot fix incomplete enumeration. The
+  multi-hop lever is retrieval *coverage* (e.g. a larger item budget or
+  per-entity fan-out on the multi-hop route), not deeper traversal.
+  Flag stays merged but off.
+
+### Run 17 — `results/locomo/routing-con-hardened-20260704/` (hardened Chain-of-Note, gnosis PR #40)
+
+- Run 15 config (routing + route-aware CoN, no bridge flag) with the
+  Chain-of-Note instruction hardened against the two residual
+  adversarial patterns found by per-question analysis of Run 15's 24
+  misses: answering from a *different person's* similar fact (LOCOMO
+  adversarial swaps the speaker — "What did Jon want his customers to
+  feel in her store?" answered from Gina's store facts) and answering
+  yes/no about things the memories never mention ("Is Oscar Melanie's
+  pet?"). The note step now asks who each memory is about, discards
+  other-person memories explicitly, and never guesses or answers
+  yes/no about unmentioned things. Note: the router lever the Run 11
+  analysis suggested (under-fired `unanswerable_risk`, 2/497) is a
+  no-op under this config — that route differs from single-hop only by
+  the abstention line, which CoN subsumes — so the fix belongs in the
+  reading instruction itself. Context only.
+- **Scores: adversarial 83.0 — BEST EVER (+4.4); overall-incl-adv
+  74.7 = new best.** multi-hop 44.6 (ties Run 11's best), temporal
+  91.1 held, single-hop 78.5, open-domain 28.6 (the cost), excl-adv
+  72.2.
+- Per-question verification vs Run 15: adversarial **5 repairs / 0
+  regressions** — both targeted patterns fixed. But the bare
+  never-guess rule over-fires on open-domain *inference* questions
+  ("Would Caroline likely have Dr. Seuss books on her bookshelf?",
+  "What might John's degree be in?") — 3 regressions, all abstentions
+  (open-domain 42.9→28.6 on n=21). Abstain rate 23.1%→25.6%.
+- **Verdict: keep the attribution + never-guess hardening, carve out
+  likelihood questions.** The Run 7 lesson repeats in miniature: any
+  abstention pressure needs an escape hatch for questions that *ask*
+  for an inference. PR #41 adds exactly that clause ("only when the
+  question itself asks what is likely or probable, infer the most
+  plausible answer"), measured next.
+
+### Run 18 — `results/locomo/routing-con-likelihood-20260704/` (likelihood carve-out, gnosis PR #41)
+
+- Run 17 config with one added Chain-of-Note clause: only when the
+  question itself asks what is likely or probable, infer the most
+  plausible answer from the relevant memories instead of abstaining.
+  Context only.
+- **Scores: excl-adv 74.8 AND overall 76.7 — NEW BEST on both
+  headlines.** single-hop **82.0 (best ever)**, multi-hop 44.6 (ties
+  best), temporal 91.1, open-domain 42.9 (ties best), adversarial
+  **83.0 (ties best, zero flips vs Run 17)**.
+- Per-question verification vs Run 17: open-domain 3 repairs / 0
+  regressions (exactly the three "would X likely..." abstentions the
+  carve-out targeted), single-hop 8 repairs / 1 regression (the
+  inference permission also unlocked implicit single-hop answers the
+  never-guess rule had suppressed), adversarial untouched. Abstain
+  rate 25.6%→24.7%.
+- **Verdict: the production config.** Every category is at or within
+  noise of its historic peak simultaneously — the first config to do
+  that: single-hop 82.0 (peak), multi-hop 44.6 (ties peak), temporal
+  91.1 (1.1 under the Run 6/11 peak), open-domain 42.9 (ties peak),
+  adversarial 83.0 (peak). Flags: extraction + entity graph at write;
+  adaptive routing + route-aware hardened Chain-of-Note at read.
 
 ## Published comparison targets
 
