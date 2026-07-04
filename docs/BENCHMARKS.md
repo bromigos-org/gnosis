@@ -49,32 +49,34 @@ returns empty). That is the next real lever.
 ### Full per-category history — context condition (`/v1/memory/context`)
 
 Every run, so each category's progression is visible (e.g. temporal
-24→30→42→43→84→92, multi-hop's stubborn plateau).
+24→30→42→43→84→92, multi-hop's stubborn plateau). Runs 1–6 are
+cumulative; Runs 7–8 are isolation experiments (one flag alone on the
+Run 5 store) so they compare against Run 5, not each other.
 
-| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) |
-|---|---|---|---|---|---|---|
-| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | **80.5** | 79.5 |
-| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 |
-| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** |
-| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 |
-| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 |
-| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** |
-| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 |
+| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) |
+|---|---|---|---|---|---|---|---|---|
+| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | **80.5** | 79.5 | 78.5 | 80.0 |
+| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 | 37.8 | **41.9** |
+| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** | 85.6 | 84.4 |
+| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 | 28.6 | 33.3 |
+| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 | **76.8** | 68.8 |
+| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** | **69.6** | **71.2** |
+| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 | 71.2 | 70.7 |
 
 ### Full per-category history — search condition (`/v1/memories/search`)
 
 Runs where search was re-run (read-path changes measured on context only
 are omitted).
 
-| Category (n) | Run 1 | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) |
-|---|---|---|---|---|
-| single-hop (200) | 75.0 | 73.5 | 73.5 | 75.5 |
-| multi-hop (74) | 44.6 | 46.0 | 37.8 | 32.4 |
-| temporal (90) | 48.9 | 43.3 | 84.4 | **92.2** |
-| open-domain (21) | 42.9 | 33.3 | 38.1 | 38.1 |
-| adversarial (112) | 68.8 | 72.3 | 71.4 | 73.2 |
-| **overall excl. adv. (385)** | **61.3** | **59.0** | **67.3** | **69.1** |
-| overall (497) | 63.0 | 62.0 | 68.2 | 70.0 |
+| Category (n) | Run 1 | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) |
+|---|---|---|---|---|---|---|
+| single-hop (200) | 75.0 | 73.5 | 73.5 | 75.5 | 74.0 | 75.0 |
+| multi-hop (74) | 44.6 | 46.0 | 37.8 | 32.4 | 39.2 | 39.2 |
+| temporal (90) | 48.9 | 43.3 | 84.4 | **92.2** | 86.7 | 85.6 |
+| open-domain (21) | 42.9 | 33.3 | 38.1 | 38.1 | 33.3 | 42.9 |
+| adversarial (112) | 68.8 | 72.3 | 71.4 | 73.2 | 70.5 | 72.3 |
+| **overall excl. adv. (385)** | **61.3** | **59.0** | **67.3** | **69.1** | **68.1** | **68.8** |
+| overall (497) | 63.0 | 62.0 | 68.2 | 70.0 | 68.6 | 69.6 |
 
 Retrieval mechanism stats (context condition unless noted):
 
