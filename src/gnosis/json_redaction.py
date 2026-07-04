@@ -28,6 +28,11 @@ def json_object(value: object) -> JsonObject:
         return {}
 
 
+def validated_json_object(value: object) -> JsonObject:
+    """Validate to a ``JsonObject``, raising ``ValidationError`` on mismatch."""
+    return JSON_OBJECT_ADAPTER.validate_python(value)
+
+
 def json_compatible_object(value: object) -> JsonObject:
     """Coerce arbitrary objects through a JSON round-trip when needed."""
     parsed = json_object(value)
