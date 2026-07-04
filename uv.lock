@@ -544,6 +544,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx2" },
     { name = "mcp" },
     { name = "neo4j" },
     { name = "neo4j-agent-memory", extra = ["litellm"] },
@@ -565,6 +566,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.128.0" },
+    { name = "httpx2", specifier = ">=2.5.0" },
     { name = "mcp", specifier = ">=1.28.1" },
     { name = "neo4j", specifier = ">=5.28.0" },
     { name = "neo4j-agent-memory", extras = ["litellm"], specifier = "==0.5.0" },

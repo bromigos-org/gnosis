@@ -123,6 +123,58 @@ These rules decide who sees which memories and in what order. They are enforced 
 - **Default ingestion is verbatim, not distilled.** With the extraction flags off (the default), conversation adds store each turn as a dated `said_user`/`said_assistant` fact plus its embedding — no LLM runs at ingest. Gnosis behaves as a dated retrieval store until `GNOSIS_EXTRACT_*` features are enabled; treat extraction quality as the main headroom for recall quality.
 - **Visibility, space, guild, and channel boundaries** still isolate as before; user-centric sharing only applies within a matching scope.
 
+## Federation
+
+Two sovereign gnosis deployments (for example tenant `bromigos` and tenant `nolgia`) can selectively share memories. Federation is off by default in both directions, and one peer concept backs both the push and the pull path.
+
+### Peer model
+
+`GNOSIS_PEERS` is a JSON list of the remote deployments this instance may talk to, validated at startup:
+
+```json
+[
+  {
+    "name": "nolgia",
+    "base_url": "http://gnosis-nolgia.gnosis-nolgia.svc.cluster.local:8080",
+    "direction": "both",
+    "remote_tenant_id": "nolgia"
+  }
+]
+```
+
+`direction` is `push`, `pull`, or `both` and gates which federation operations may target the peer. Peer names must be unique. Each peer's outbound bearer token comes from `GNOSIS_PEER_<NAME>_TOKEN` (name uppercased, `-` mapped to `_`); its value must be the remote instance's `GNOSIS_FEDERATION_TOKEN`.
+
+### Shareable tagging is consent
+
+Nothing is federated implicitly. A memory can cross a deployment boundary only when its metadata carries `"shareable": true`. The gateway conjoins a mandatory `metadata.shareable == true` filter onto every federated read and every promote candidate scan, regardless of caller filters. Promotion strips `shareable` from the pushed copy, so sharing is never transitive: the receiving tenant decides its own consent tags.
+
+### The federation token class
+
+`GNOSIS_FEDERATION_TOKEN` (default empty, meaning inbound federation is disabled) is a dedicated inbound token class, checked with constant-time comparison like every other token class. Callers presenting it are federated and can reach exactly three routes:
+
+- `POST /v1/memories/search` and `POST /v1/memories/list`: reads, with the shareable-only conjunct injected server-side.
+- `POST /v1/memories`: writes, accepted only when `metadata.promoted_from` is present (`403` otherwise).
+
+Every other route answers `403` for this token class. Federated callers also cannot name `peers` in a search (`403`), so federation cannot loop between instances.
+
+### Promote (push, review-first)
+
+`POST /v1/memories/promote` with `{peer, scope, filters?, limit: 50, dry_run: true}` pushes shareable memories to a peer. Like dedup and consolidation, it is review-first: the default `dry_run=true` returns the candidate list (`{peer, count, candidates}`) with no side effects. With `dry_run=false`, each candidate is posted to the peer's `/v1/memories` as a verbatim add (`infer=false`) with redaction applied and provenance metadata `{promoted_from, source_memory_id, promoted_at}` merged in, under the scope `{tenant_id: <peer remote_tenant_id>, space_id: "federation", agent_id: "gnosis:<local tenant>", session_id: "promote", user_id: <same user>, visibility: "private_user"}`. The response is a manifest of `promoted` and `failed` entries; partial failure is tolerated and reported per memory. Pushes run with bounded concurrency and a ~15s per-call timeout. The route requires the normal service token, because callers promote their own scope; operator token classes are not accepted.
+
+### Federated search (pull)
+
+`POST /v1/memories/search` accepts an optional `peers: []` list. For each named pull-capable peer, the gateway fans the same query out to the peer's `/v1/memories/search` with the scope tenant mapped to the peer's `remote_tenant_id` (per-peer timeout ~10s). The remote side authenticates the peer token as a federated caller, so only explicitly shareable memories ever come back. Remote results merge with local ones by score descending, capped at `limit`, and every result gains `origin: "local" | "<peer name>"`. A failed or timed-out peer degrades gracefully into `peer_errors: [{peer, error}]` rather than a 5xx. Without `peers`, the response contract is unchanged.
+
+### Enabling bromigos and nolgia federation
+
+On the bromigos instance:
+
+- `GNOSIS_PEERS='[{"name": "nolgia", "base_url": "http://gnosis-nolgia.gnosis-nolgia.svc.cluster.local:8080", "direction": "both", "remote_tenant_id": "nolgia"}]'`
+- `GNOSIS_PEER_NOLGIA_TOKEN=<nolgia's GNOSIS_FEDERATION_TOKEN>`
+- `GNOSIS_FEDERATION_TOKEN=<bromigos inbound federation token>`
+
+On the nolgia instance, mirror it: name the `bromigos` peer with the bromigos base URL and `remote_tenant_id: "bromigos"`, set `GNOSIS_PEER_BROMIGOS_TOKEN` to bromigos' `GNOSIS_FEDERATION_TOKEN`, and set nolgia's own `GNOSIS_FEDERATION_TOKEN`. Tokens are expected to come from secret-backed deployment config, like the operator tokens.
+
 ## Request and data flow
 
 ```mermaid
@@ -191,6 +243,7 @@ The `/v1/memories` surface exposes provider-style CRUD over scoped long-term mem
 - `POST /v1/memories` adds memories: `messages` with `infer=true` syncs a conversation pair through the extraction path, `content` with `infer=false` stores a verbatim durable memory.
 - `POST /v1/memories/search` runs relevance-ranked semantic search with an optional mem0-v2-style `filters` DSL and `min_score` floor.
 - `POST /v1/memories/list` returns deterministic pages ordered by `created_at` descending, with `total`, `page`, and `page_size`.
+- `POST /v1/memories/promote` pushes shareable memories to a federation peer, review-first via `dry_run` (see [Federation](#federation)).
 - `PATCH /v1/memories/{memory_id}` updates content or metadata for a memory owned by the request scope.
 - `DELETE /v1/memories/{memory_id}` deletes a memory owned by the request scope.
 
@@ -255,6 +308,7 @@ Operator boundaries are split by token class.
 - `GNOSIS_EXPORT_OPERATOR_TOKEN` for graph export.
 - `GNOSIS_WRITE_OPERATOR_TOKEN` for direct entity, fact, and preference writes.
 - `GNOSIS_ADMIN_OPERATOR_TOKEN` for dedup apply, consolidation apply, and buffer flush.
+- `GNOSIS_FEDERATION_TOKEN` for inbound federated peers: shareable-only memory reads and promoted writes, nothing else (see [Federation](#federation)).
 
 Production should not rely on predictable token defaults. Operator tokens are expected to come from secret-backed deployment config.
 
@@ -271,6 +325,7 @@ Several features exist, but they are controlled and not silently enabled.
 - Buffered writes exist, but the default write mode is `sync`.
 - Memory update and delete are off by default (`GNOSIS_MEMORY_EDIT_ENABLED`).
 - The MCP server mount is off by default (`GNOSIS_MCP_ENABLED`).
+- Federation is off by default in both directions: no peers (`GNOSIS_PEERS`) and no inbound federation token (`GNOSIS_FEDERATION_TOKEN`).
 
 Preview comes before persistence. If extraction work is being evaluated, use `POST /v1/memory/extraction/preview` first.
 
@@ -336,6 +391,9 @@ Preview comes before persistence. If extraction work is being evaluated, use `PO
 - `GNOSIS_MEMORY_EDIT_ENABLED` gates `PATCH`/`DELETE /v1/memories/{memory_id}` and the MCP `delete_memory` tool (default `false`).
 - `GNOSIS_MCP_ENABLED` mounts the streamable-HTTP MCP server at `/mcp` (default `false`).
 - `GNOSIS_MCP_AGENT_ID` sets the `agent_id` written into MCP-scoped memories (default `mcp-client`).
+- `GNOSIS_PEERS` is the JSON federation peer registry (default `[]`, meaning no outbound federation).
+- `GNOSIS_PEER_<NAME>_TOKEN` is the outbound bearer token for the named peer (the remote instance's `GNOSIS_FEDERATION_TOKEN`).
+- `GNOSIS_FEDERATION_TOKEN` is the inbound federation token class (default empty, meaning inbound federation is disabled).
 
 ## Local development
 

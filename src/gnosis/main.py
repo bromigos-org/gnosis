@@ -6,7 +6,7 @@ from typing import Annotated, Final
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 
-from gnosis.auth import Authenticator, build_authenticator
+from gnosis.auth import Authenticator, MemoryCaller, build_authenticator
 from gnosis.backend import (
     BackendCapabilityUnavailable,
     BackendRequestError,
@@ -14,6 +14,15 @@ from gnosis.backend import (
     MemoryBackend,
     MemoryNotFoundError,
     Neo4jAgentMemoryBackend,
+)
+from gnosis.federation import (
+    FederationGateway,
+    FederationTransport,
+    PeerNotAllowedError,
+    PeerTokenUnavailableError,
+    UnknownPeerError,
+    merged_search_results,
+    shareable_filters,
 )
 from gnosis.mcp_server import BearerTokenMiddleware, build_mcp_server
 from gnosis.models import (
@@ -61,6 +70,9 @@ from gnosis.models import (
     MemoryDeleteResponse,
     MemoryListRequest,
     MemoryListResponse,
+    MemoryPromoteCandidate,
+    MemoryPromoteRequest,
+    MemoryPromoteResponse,
     MemoryScope,
     MemorySearchRequest,
     MemorySearchResponse,
@@ -138,10 +150,12 @@ def _legacy_context_warning() -> Callable[[], None]:
 def create_app(
     settings_factory: Callable[[], Settings] = load_settings,
     backend: MemoryBackend | None = None,
+    federation_transport: FederationTransport | None = None,
 ) -> FastAPI:
     settings = settings_factory()
     memory_backend = backend or Neo4jAgentMemoryBackend(settings)
     authenticator = build_authenticator(settings)
+    federation = FederationGateway(settings, transport=federation_transport)
 
     def get_backend() -> MemoryBackend:
         return memory_backend
@@ -176,7 +190,13 @@ def create_app(
     _register_health_route(app)
     _register_readiness_routes(app, settings, authenticator, get_backend)
     _register_message_routes(app, authenticator, get_backend)
-    _register_memory_provider_routes(app, settings, authenticator, get_backend)
+    _register_memory_provider_routes(
+        app,
+        settings,
+        authenticator,
+        get_backend,
+        federation,
+    )
     _register_event_routes(app, authenticator, get_backend)
     _register_context_routes(app, authenticator, get_backend)
     _register_operator_routes(app, settings, authenticator, get_backend)
@@ -196,6 +216,27 @@ def _register_exception_handlers(app: FastAPI) -> None:
             status_code=501,
             content={"detail": "capability_unavailable", "message": error.detail},
         )
+
+    @app.exception_handler(UnknownPeerError)
+    async def unknown_peer(
+        _request: object,
+        error: UnknownPeerError,
+    ) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"detail": error.detail})
+
+    @app.exception_handler(PeerNotAllowedError)
+    async def peer_not_allowed(
+        _request: object,
+        error: PeerNotAllowedError,
+    ) -> JSONResponse:
+        return JSONResponse(status_code=403, content={"detail": error.detail})
+
+    @app.exception_handler(PeerTokenUnavailableError)
+    async def peer_token_unavailable(
+        _request: object,
+        error: PeerTokenUnavailableError,
+    ) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": error.detail})
 
 
 def _register_health_route(app: FastAPI) -> None:
@@ -280,53 +321,123 @@ def _register_message_routes(
             raise HTTPException(status_code=400, detail=error.detail) from error
 
 
-def _register_memory_provider_routes(  # noqa: C901 - route grouping is intentional.
+def _register_memory_provider_routes(  # noqa: C901, PLR0915 - route grouping is intentional.
     app: FastAPI,
     settings: Settings,
     authenticator: Authenticator,
     get_backend: Callable[[], MemoryBackend],
+    federation: FederationGateway,
 ) -> None:
-    @app.post(
-        "/v1/memories",
-        dependencies=[Depends(authenticator.require_token)],
-    )
+    @app.post("/v1/memories")
     async def add_memories(
         request: MemoryAddRequest,
         memory: Annotated[MemoryBackend, Depends(get_backend)],
+        caller: Annotated[MemoryCaller, Depends(authenticator.resolve_memory_caller)],
     ) -> MemoryAddResponse:
         authenticator.require_scope(request.scope)
+        if caller is MemoryCaller.FEDERATED:
+            _require_federated_add_provenance(request)
         try:
             return await memory.add_memories(request)
         except BackendRequestError as error:
             raise HTTPException(status_code=400, detail=error.detail) from error
 
-    @app.post(
-        "/v1/memories/search",
-        dependencies=[Depends(authenticator.require_token)],
-    )
+    @app.post("/v1/memories/search")
     async def search_memories(
         request: MemorySearchRequest,
         memory: Annotated[MemoryBackend, Depends(get_backend)],
+        caller: Annotated[MemoryCaller, Depends(authenticator.resolve_memory_caller)],
     ) -> MemorySearchResponse:
         authenticator.require_scope(request.scope)
+        if caller is MemoryCaller.FEDERATED:
+            _require_no_federated_fanout(request)
+            request = request.model_copy(
+                update={"filters": shareable_filters(request.filters)},
+            )
+        for peer_name in request.peers:
+            _ = federation.require_pull_peer(peer_name)
         try:
-            return await memory.search_memories(request)
+            local = await memory.search_memories(request)
         except BackendRequestError as error:
             raise HTTPException(status_code=400, detail=error.detail) from error
+        if not request.peers:
+            return local
+        remote, peer_errors = await federation.search_peers(request)
+        return MemorySearchResponse(
+            results=merged_search_results(local.results, remote, request.limit),
+            peer_errors=peer_errors,
+        )
 
-    @app.post(
-        "/v1/memories/list",
-        dependencies=[Depends(authenticator.require_token)],
-    )
+    @app.post("/v1/memories/list")
     async def list_memories(
         request: MemoryListRequest,
         memory: Annotated[MemoryBackend, Depends(get_backend)],
+        caller: Annotated[MemoryCaller, Depends(authenticator.resolve_memory_caller)],
     ) -> MemoryListResponse:
         authenticator.require_scope(request.scope)
+        if caller is MemoryCaller.FEDERATED:
+            request = request.model_copy(
+                update={"filters": shareable_filters(request.filters)},
+            )
         try:
             return await memory.list_memories(request)
         except BackendRequestError as error:
             raise HTTPException(status_code=400, detail=error.detail) from error
+
+    @app.post(
+        "/v1/memories/promote",
+        dependencies=[Depends(authenticator.require_token)],
+    )
+    async def promote_memories(
+        request: MemoryPromoteRequest,
+        memory: Annotated[MemoryBackend, Depends(get_backend)],
+    ) -> MemoryPromoteResponse:
+        authenticator.require_scope(request.scope)
+        peer = federation.require_push_peer(request.peer)
+        try:
+            listing = await memory.list_memories(
+                MemoryListRequest(
+                    scope=request.scope,
+                    filters=shareable_filters(request.filters),
+                    page=1,
+                    page_size=request.limit,
+                ),
+            )
+        except BackendRequestError as error:
+            raise HTTPException(status_code=400, detail=error.detail) from error
+        candidates = [
+            MemoryPromoteCandidate(
+                memory_id=record.memory_id,
+                content=record.content,
+                metadata=record.metadata,
+            )
+            for record in listing.results
+        ]
+        if request.dry_run:
+            return MemoryPromoteResponse(
+                peer=peer.name,
+                count=len(candidates),
+                dry_run=True,
+                candidates=candidates,
+            )
+        outcome = await federation.promote(peer, request.scope, candidates)
+        _LOGGER.info(
+            "memory promotion applied",
+            extra={
+                "peer": peer.name,
+                "tenant_id": request.scope.tenant_id,
+                "user_id": request.scope.user_id,
+                "promoted": len(outcome.promoted),
+                "failed": len(outcome.failed),
+            },
+        )
+        return MemoryPromoteResponse(
+            peer=peer.name,
+            count=len(candidates),
+            dry_run=False,
+            promoted=outcome.promoted,
+            failed=outcome.failed,
+        )
 
     @app.patch(
         "/v1/memories/{memory_id}",
@@ -368,6 +479,23 @@ def _require_memory_edit_enabled(settings: Settings) -> None:
         raise HTTPException(
             status_code=403,
             detail="Memory editing is disabled by service policy.",
+        )
+
+
+def _require_federated_add_provenance(request: MemoryAddRequest) -> None:
+    promoted_from = request.metadata.get("promoted_from")
+    if not (isinstance(promoted_from, str) and promoted_from):
+        raise HTTPException(
+            status_code=403,
+            detail="federated writes require metadata.promoted_from",
+        )
+
+
+def _require_no_federated_fanout(request: MemorySearchRequest) -> None:
+    if request.peers:
+        raise HTTPException(
+            status_code=403,
+            detail="federated callers cannot request peer fan-out",
         )
 
 

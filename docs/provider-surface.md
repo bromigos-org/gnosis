@@ -7,6 +7,7 @@ This document records the agreed contract for the `/v1/memories` provider surfac
 - All routes use the existing bearer service token (`GNOSIS_TOKEN`).
 - Requests carry the existing `MemoryScope` (`tenant_id`, `space_id`, `agent_id`, `session_id`, `user_id`, `visibility`, optional `guild_id`, `channel_id`). Tenant enforcement matches the existing routes: a scope for another tenant is rejected with `403` before the backend runs.
 - Scoping semantics: `scope.user_id` (with the tenant) is the read filter for search and list. `agent_id` and caller `metadata` are write-side tags stored on records.
+- **Federation token class.** `POST /v1/memories`, `POST /v1/memories/search`, and `POST /v1/memories/list` additionally accept `GNOSIS_FEDERATION_TOKEN` (constant-time compared like every token class; the empty default disables it). Federated callers get the mandatory `metadata.shareable == true` filter conjunct injected on reads, must carry `metadata.promoted_from` on adds (`403` otherwise), cannot name `peers` in a search (`403`, prevents federation loops), and receive `403` on every other route - including `PATCH`/`DELETE /v1/memories/{memory_id}` and `POST /v1/memories/promote`.
 
 ## Endpoints
 
@@ -24,15 +25,32 @@ Memory ids are the SDK `Fact.id` UUIDs persisted as the `id` property on the `Fa
 
 ### `POST /v1/memories/search`
 
-Body: `{scope, query, filters?: FilterDSL, limit: int = 8, min_score?: float}`
+Body: `{scope, query, filters?: FilterDSL, limit: int = 8, min_score?: float, peers?: [str] = []}`
 
 Returns `{results: [{memory_id, content, score, metadata, created_at, updated_at}]}`, relevance-ranked by the SDK's vector similarity over long-term memories, scope-filtered, filter-evaluated, and redacted like other outbound payloads.
+
+The federation extension is contract-additive; existing clients are unaffected:
+
+- `peers` names federation peers to fan the same query out to (each must exist in `GNOSIS_PEERS` - `400` otherwise - and allow `pull` - `403` otherwise). The remote query maps `scope.tenant_id` to the peer's `remote_tenant_id`, keeps `user_id`, and never forwards `peers`, so fan-out is not transitive. Per-peer timeout is ~10s.
+- When `peers` is non-empty, local and remote results merge by score descending (missing scores sort as 0), capped at `limit`, and every result gains `origin: "local" | "<peer name>"`. `origin` is omitted for plain non-federated searches.
+- A failed, timed-out, or token-less peer never causes a 5xx; it is reported in `peer_errors: [{peer, error}]` (omitted when empty).
 
 ### `POST /v1/memories/list`
 
 Body: `{scope, filters?: FilterDSL, page: int = 1, page_size: int = 50}`
 
 Returns `{results: [...], total, page, page_size}` with deterministic ordering: `created_at` descending, then `id` ascending as a tiebreaker.
+
+### `POST /v1/memories/promote`
+
+Body: `{peer, scope, filters?: FilterDSL, limit: int = 50 (max 200), dry_run: bool = true}`
+
+Pushes the caller's shareable memories to a federation peer. The peer must exist (`400`) and allow `push` (`403`). Candidates come from the same list internals as `/v1/memories/list`, using the caller's scope plus the mandatory `metadata.shareable == true` conjunct - unshared memories can never be promoted, regardless of caller filters.
+
+- `dry_run=true` (the default - review-first, matching the dedup/consolidation posture) returns `{peer, count, dry_run, candidates: [{memory_id, content, metadata}]}` with no side effects.
+- `dry_run=false` posts each candidate to the peer's `/v1/memories` as a verbatim add (`content` + `infer=false`) with `Authorization: Bearer <GNOSIS_PEER_<NAME>_TOKEN>`, scope `{tenant_id: <peer remote_tenant_id>, space_id: "federation", agent_id: "gnosis:<local tenant>", session_id: "promote", user_id: <same>, visibility: "private_user"}`, redaction applied to outbound content and metadata, and provenance metadata `{promoted_from: <local tenant>, source_memory_id, promoted_at}` merged in (`shareable` is stripped so sharing is never transitive). Returns a manifest `{peer, count, dry_run, promoted: [{source_memory_id, peer_memory_id, event}], failed: [{source_memory_id, error}]}`; partial failure is tolerated and reported per memory. Pushes use bounded concurrency (4) with a ~15s per-call timeout. A missing outbound peer token is a `503`.
+
+Auth decision: the route requires the normal service token (`GNOSIS_TOKEN`), because callers promote their own scope; operator token classes and the federation token are not accepted (`403`).
 
 ### `PATCH /v1/memories/{memory_id}`
 
@@ -71,7 +89,7 @@ Provider memories are SDK long-term `Fact` nodes:
 
 These are consequences of the installed SDK and are the closest safe equivalents:
 
-1. **No SDK update/delete for single memories.** `neo4j-agent-memory==0.5.0` exposes no per-fact update or delete API. Update and delete are implemented as gateway-owned, parameterized Cypher (`SET .../coalesce` and `MATCH ... DETACH DELETE`) executed through the SDK client's graph write handle after the scope-ownership check. Ids are preserved across updates. If the SDK client exposes no graph write surface, the routes answer `501 capability_unavailable`.
+1. **No SDK update/delete for single memories.** `neo4j-agent-memory==0.5.0` exposes no per-fact update or delete API. Update and delete are implemented as gateway-owned, parameterized Cypher (`SET .../coalesce` and `MATCH ... DETACH DELETE`) executed through the SDK client's graph write handle after the scope-ownership check. Ids are preserved across updates. If the SDK client exposes no graph write surface, the routes answer `501 capability_unavailable`. Note that in 0.5.0 `client.graph` is a deprecation proxy that exposes `execute_write` only through dynamic `__getattr__` delegation, which the runtime-protocol `isinstance` check cannot see on Python 3.12+ (it resolves members with `inspect.getattr_static`); the write-handle acquisition therefore falls back to a duck-typed `execute_write` check so update/delete ride the same driver/session the read routes use instead of returning a spurious `501`.
 2. **Embedding refresh on content update.** Content updates re-embed through the SDK client's embedder when available so semantic search stays correct; if no embedder is reachable the previous embedding is left in place (the memory stays findable, possibly with slightly stale ranking) rather than being dropped from the vector index.
 3. **Extraction-mode adds are the turn-sync path.** The SDK has entity/relation extraction but no separate fact-extraction batch API; `messages` + `infer=true` therefore rides the same short-term + long-term path as `/v1/messages`, with entity/relation extraction governed by the existing `GNOSIS_EXTRACT_*` flags (off by default). `event: "NONE"` is reserved in the response schema but not currently emitted.
 4. **List scan cap.** Because metadata lives in a JSON string, exact filtering happens in the gateway after Cypher narrowing; list pagination therefore scans at most 2000 scoped rows per request (newest first) before paging. `total` is exact within that window.
@@ -96,3 +114,6 @@ These are consequences of the installed SDK and are the closest safe equivalents
 - `GNOSIS_MEMORY_EDIT_ENABLED` (default `false`)
 - `GNOSIS_MCP_ENABLED` (default `false`)
 - `GNOSIS_MCP_AGENT_ID` (default `mcp-client`)
+- `GNOSIS_PEERS` (default `[]`) - JSON federation peer registry: `[{"name", "base_url", "direction": "both"|"push"|"pull", "remote_tenant_id"}]`, validated at startup with unique names.
+- `GNOSIS_PEER_<NAME>_TOKEN` - outbound bearer token per peer (peer name uppercased, `-` mapped to `_`); the value is the remote instance's `GNOSIS_FEDERATION_TOKEN`.
+- `GNOSIS_FEDERATION_TOKEN` (default empty = inbound federation disabled) - the inbound federation token class described under Auth and scope.

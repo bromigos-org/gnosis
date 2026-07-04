@@ -23,6 +23,7 @@ from pydantic import TypeAdapter  # noqa: E402
 from gnosis.backend import (  # noqa: E402
     BackendCapabilityUnavailable,
     BackendRequestError,
+    GraphWriteQuery,
     MemoryClientContext,
     MemoryNotFoundError,
     Neo4jAgentMemoryBackend,
@@ -400,9 +401,60 @@ async def test_delete_memory_when_sdk_has_no_graph_write_access() -> None:
         )
 
 
+@pytest.mark.anyio
+async def test_update_memory_when_sdk_wraps_writes_in_a_delegating_proxy() -> None:
+    # Given: the deployed SDK shape - client.graph is a proxy that exposes
+    # execute_write only through dynamic __getattr__ delegation, which the
+    # runtime protocol isinstance check cannot see on Python 3.12+.
+    writer = FakeGraphWriter(write_rows=[{"object": "new content"}])
+    proxy = FakeGraphWriteProxy(inner=writer)
+    assert not isinstance(proxy, GraphWriteQuery)
+    client = FakeMemoryClient(graph=proxy)
+    client.query.rows = [_memory_row(_MEMORY_ID, "old", "2026-06-27T00:00:00+00:00")]
+    backend = _backend(client)
+
+    # When: the caller updates a memory in scope.
+    response = await backend.update_memory(
+        _MEMORY_ID,
+        MemoryUpdateRequest(scope=_scope(), content="new content"),
+    )
+
+    # Then: the update rides the proxied write handle instead of a 501.
+    assert response.memory_id == _MEMORY_ID
+    assert response.content == "new content"
+    write_query, write_params = writer.writes[0]
+    assert "SET f.object" in write_query
+    assert write_params is not None
+    assert write_params["memory_id"] == _MEMORY_ID
+
+
+@pytest.mark.anyio
+async def test_delete_memory_when_sdk_wraps_writes_in_a_delegating_proxy() -> None:
+    # Given: the deployed SDK proxy shape around the graph write handle.
+    writer = FakeGraphWriter()
+    client = FakeMemoryClient(graph=FakeGraphWriteProxy(inner=writer))
+    client.query.rows = [_memory_row(_MEMORY_ID, "old", "2026-06-27T00:00:00+00:00")]
+    backend = _backend(client)
+
+    # When: the caller deletes a memory in scope.
+    response = await backend.delete_memory(
+        _MEMORY_ID,
+        MemoryDeleteRequest(scope=_scope()),
+    )
+
+    # Then: the delete rides the proxied write handle instead of a 501.
+    assert response.memory_id == _MEMORY_ID
+    write_query, write_params = writer.writes[0]
+    assert "DETACH DELETE f" in write_query
+    assert write_params == {"memory_id": _MEMORY_ID}
+
+
 def _graph(client: "FakeMemoryClient") -> "FakeGraphWriter":
-    assert client.graph is not None
-    return client.graph
+    graph = client.graph
+    assert graph is not None
+    if isinstance(graph, FakeGraphWriteProxy):
+        return graph.inner
+    return graph
 
 
 def _backend(client: "FakeMemoryClient") -> Neo4jAgentMemoryBackend:
@@ -610,11 +662,29 @@ class FakeGraphWriter:
 
 
 @dataclass(slots=True)
+class FakeGraphWriteProxy:
+    """Mirrors the SDK's ``_DeprecatedGraphProxy`` around the write handle.
+
+    ``execute_write`` is reachable only through dynamic ``__getattr__``
+    delegation, exactly like ``neo4j-agent-memory==0.5.0``'s bolt proxy.
+    """
+
+    inner: FakeGraphWriter
+
+    def __getattr__(self, name: str) -> object:
+        if name == "execute_write":
+            return self.inner.execute_write
+        raise AttributeError(name)
+
+
+@dataclass(slots=True)
 class FakeMemoryClient:
     short_term: FakeShortTermMemory = field(default_factory=FakeShortTermMemory)
     long_term: FakeLongTermMemory = field(default_factory=FakeLongTermMemory)
     query: FakeCypherQuery = field(default_factory=FakeCypherQuery)
-    graph: FakeGraphWriter | None = field(default_factory=FakeGraphWriter)
+    graph: FakeGraphWriter | FakeGraphWriteProxy | None = field(
+        default_factory=FakeGraphWriter,
+    )
 
     async def __aenter__(self) -> Self:
         return self

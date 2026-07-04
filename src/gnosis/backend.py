@@ -2111,10 +2111,22 @@ async def _require_scoped_memory(
 
 
 def _graph_write_query(client: MemoryClientContext) -> GraphWriteQuery:
+    """Acquire the graph write handle used by memory update and delete.
+
+    The runtime-protocol ``isinstance`` check alone is too strict for the
+    installed SDK: since Python 3.12 it resolves members with
+    ``inspect.getattr_static``, and ``neo4j-agent-memory==0.5.0`` returns a
+    ``client.graph`` proxy that forwards ``execute_write`` to the same driver
+    the read routes use only through dynamic ``__getattr__`` delegation. Fall
+    back to a duck-typed check so that proxy stays usable.
+    """
     graph: object = getattr(client, "graph", None)
-    if not isinstance(graph, GraphWriteQuery):
-        raise BackendCapabilityUnavailable(_MEMORY_WRITE_UNAVAILABLE_DETAIL)
-    return graph
+    if isinstance(graph, GraphWriteQuery):
+        return graph
+    execute_write: object = getattr(graph, "execute_write", None)
+    if graph is not None and callable(execute_write):
+        return cast("GraphWriteQuery", graph)
+    raise BackendCapabilityUnavailable(_MEMORY_WRITE_UNAVAILABLE_DETAIL)
 
 
 async def _memory_embedding(
