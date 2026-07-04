@@ -1549,7 +1549,7 @@ class Neo4jAgentMemoryBackend:
         facts = _fuse_graph_facts(facts, graph_facts)
         facts = await self._recall_filtered_facts(request.query, facts)
         facts = self._superseded_facts(facts)
-        facts = facts[: request.max_items]
+        facts = _cut_with_graph_reserve(facts, request.max_items)
         if not facts:
             return LongTermFactsContext()
         expansion = await self._verbatim_expansion(client, facts, metadata, decision)
@@ -4159,6 +4159,33 @@ def _graph_facts_to_candidates(facts: Sequence[JsonObject]) -> list[JsonObject]:
             },
         )
     return candidates
+
+
+# At most this fraction of the context item budget is reserved for
+# graph-derived candidates, so dense relevance keeps the bulk of the slots.
+_GRAPH_RESERVE_DIVISOR: Final[int] = 4
+
+
+def _cut_with_graph_reserve(
+    facts: list[JsonObject],
+    max_items: int,
+) -> list[JsonObject]:
+    """Apply the item budget while reserving tail slots for graph candidates.
+
+    ``_fuse_graph_facts`` appends graph-derived candidates after the dense
+    ranking, so a plain ``facts[:max_items]`` cut silently dropped every one
+    of them whenever dense retrieval filled the candidate pool (always, on a
+    populated store) - the fusion leg ran but never rendered. Up to a quarter
+    of the budget now goes to the highest-ranked graph candidates; dense
+    candidates keep the rest, in ranking order. A pure passthrough cut when
+    no graph candidate is present.
+    """
+    graph = [fact for fact in facts if fact.get("graphqa") is True]
+    if not graph or len(facts) <= max_items:
+        return facts[:max_items]
+    dense = [fact for fact in facts if fact.get("graphqa") is not True]
+    reserve = min(len(graph), max(1, max_items // _GRAPH_RESERVE_DIVISOR))
+    return [*dense[: max_items - reserve], *graph[:reserve]]
 
 
 def _fuse_graph_facts(

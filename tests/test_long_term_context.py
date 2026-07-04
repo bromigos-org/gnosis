@@ -1681,6 +1681,64 @@ async def test_graphqa_fusion_dedupes_node_already_in_dense_results() -> None:
 
 
 @pytest.mark.anyio
+async def test_graphqa_fusion_survives_item_budget_over_full_dense_pool() -> None:
+    # Given: dense retrieval fills the candidate pool past the item budget
+    # (the production shape: 100 candidates, max_items 8) and the graph route
+    # yields one traversal fact ranked after all of them.
+    scope = _scope()
+    dense = [
+        _fact_record(
+            subject=f"user:{index}",
+            predicate="fact",
+            object_value=f"dense filler fact number {index}",
+            metadata=_scope_metadata(scope),
+        )
+        for index in range(30)
+    ]
+    graph_store = FusionGraphStore(
+        facts=[
+            _graph_fact(
+                node_id="graph-node-1",
+                summary="The city library is on Elm Street",
+            ),
+        ],
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_graphqa_fusion_enabled=True),
+        memory_client_factory=MemoryClientFactory(
+            RecordingMemoryClient(
+                query=RecordingQuery(),
+                long_term=RecordingLongTermMemory(search_results=dense),
+            ),
+        ),
+        graph_store=graph_store,
+    )
+
+    # When: context is assembled with a budget smaller than the dense pool.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="which street is the library on?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+            max_items=8,
+        ),
+    )
+
+    # Then: the graph fact holds a reserved slot instead of being cut, the
+    # budget is respected, and dense candidates keep the remaining slots in
+    # ranking order.
+    content = response.sections[0].content
+    assert "- The city library is on Elm Street" in content
+    fact_lines = [line for line in content.splitlines() if line.startswith("- ")]
+    assert len(fact_lines) == 8
+    assert "dense filler fact number 0" in content
+    assert "dense filler fact number 6" in content
+    assert "dense filler fact number 7" not in content
+
+
+@pytest.mark.anyio
 async def test_graphqa_fusion_planner_failure_degrades_to_dense_only(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
