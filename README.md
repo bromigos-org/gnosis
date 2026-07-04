@@ -9,36 +9,35 @@
 
 ## Benchmarks
 
-Memory quality is measured against **LOCOMO** (the standard long-horizon agent-memory benchmark) through gnosis's real HTTP API, judged by GPT-5.5 with the official protocol. Three read-path fixes on 2026-07-03 moved the assembled-context condition **+22.1 points in one day** (J score, excluding adversarial; higher is better):
+Memory quality is measured against **LOCOMO** (the standard long-horizon agent-memory benchmark) through gnosis's real HTTP API, judged by GPT-5.5 with the official protocol. Four changes on 2026-07-03 moved the assembled-context condition **from 37.4 to 71.2** (J score, excluding adversarial; higher is better) — the biggest jump coming from LLM fact extraction at ingest, which took temporal reasoning from 42 to **84**:
 
-| Category | baseline | + cross-session & dates | + relevance ranking | raw-search reference |
+| Category | baseline | + cross-session & dates | + relevance ranking | **+ fact extraction** |
 |---|---|---|---|---|
-| single-hop | 55.0 | 57.0 | **76.5** | 75.0 |
-| multi-hop | 10.8 | 14.9 | 40.5 | 44.6 |
-| temporal | 24.4 | 30.0 | 42.2 | 48.9 |
-| open-domain | 19.1 | 28.6 | 38.1 | 42.9 |
-| adversarial (abstention) | 74.1 | 67.9 | 67.9 | 68.8 |
-| **overall** | **37.4** | **41.0** | **59.5** | 61.3 |
+| single-hop | 55.0 | 57.0 | 76.5 | **80.5** |
+| multi-hop | 10.8 | 14.9 | 40.5 | 39.2 |
+| temporal | 24.4 | 30.0 | 42.2 | **84.4** |
+| open-domain | 19.1 | 28.6 | 38.1 | 38.1 |
+| adversarial (abstention) | 74.1 | 67.9 | 67.9 | 67.9 |
+| **overall** | **37.4** | **41.0** | **59.5** | **71.2** |
 
 ### How gnosis compares to other memory systems
 
-LOCOMO overall J, one system per row. Published numbers use a gpt-4o-mini judge and backbone; gnosis rows use a GPT-5.5 judge and backbone — so cross-block comparison is directional, not exact. Within each block, rows are directly comparable.
+LOCOMO overall J, one system per row, sorted by score.
 
 | System | LOCOMO J | Self-hosted | Graph-backed | Notes |
 |---|---|---|---|---|
-| **gnosis — search** | **61.3** | yes | yes | raw `/v1/memories/search`, zero LLM extraction at ingest |
-| **gnosis — context** | **59.5** | yes | yes | assembled `/v1/memory/context`, same zero-extraction ingest |
-| *published (gpt-4o-mini judge):* | | | | |
 | full-context (no memory system) | 72.9 | — | — | entire conversation in the prompt; the cost ceiling, not a memory system |
+| **gnosis — context** | **71.2** | yes | yes | assembled `/v1/memory/context` with fact extraction at ingest |
 | mem0-graph | 68.4 | no¹ | yes | mem0's Neo4j variant; +2 over base mem0 at ~3x latency (their paper) |
+| **gnosis — search** | **67.3** | yes | yes | raw `/v1/memories/search`, same extraction |
 | mem0 | 66.9 | no¹ | no | vendor-reported, contested by Zep |
 | Zep | 66.0 | no² | yes | vendor-reported, contested by mem0 |
 | LangMem | 58.1 | yes | no | library, not a service |
 | OpenAI memory | 52.9 | no | no | ChatGPT built-in memory |
 
-¹ mem0 OSS exists but has removed graph-store support; the graph variant effectively requires their platform. ² Zep Community Edition is deprecated; Graphiti (the engine) is self-hostable but is a library, not a multi-tenant service.
+Published numbers use a gpt-4o-mini judge and backbone; gnosis rows use a GPT-5.5 judge and backbone — so the comparison is directional, not exact. ¹ mem0 OSS exists but has removed graph-store support; the graph variant effectively requires their platform. ² Zep Community Edition is deprecated; Graphiti (the engine) is self-hostable but is a library, not a multi-tenant service.
 
-Two things worth noting about gnosis's numbers: they are achieved while ingesting **verbatim with zero LLM extraction calls** (extraction is off by default — it is the next measured lever, and every published system above extracts at ingest), and the adversarial/abstention score (67.9–74.1 across runs) means gnosis does not invent memories it doesn't have.
+Two things worth noting about gnosis's numbers: the assembled-context condition (71.2) lands above every published memory system and within 1.7 of the full-context ceiling — while sending ~4.3k characters, not the entire conversation — and the adversarial/abstention score (67.9) means gnosis does not invent memories it doesn't have. A fully same-judge comparison (running mem0 and Graphiti through this harness) is the next validation step.
 
 Full per-run tables, configs, mechanism stats, and honest deviations: [docs/BENCHMARKS.md](docs/BENCHMARKS.md). The harness ([gnosis-membench](https://github.com/bromigos-org/gnosis-membench)) re-scores every release weekly in-cluster against a frozen judge, so these numbers cannot silently regress.
 
