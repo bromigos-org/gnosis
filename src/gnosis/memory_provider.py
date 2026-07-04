@@ -82,6 +82,18 @@ MATCH (f:Fact {{id: $memory_id}})
 LIMIT 1
 """
 
+# Batched scope-narrowed lookup for facts-to-verbatim expansion: fetch the
+# source verbatim turns of ranked extracted facts by id in one round trip.
+# The scope fragments narrow in-query and the gateway re-checks scope on the
+# deserialized rows, so a source id can never surface a cross-scope turn.
+LOOKUP_MEMORIES_BY_IDS_CYPHER: Final[str] = f"""
+MATCH (f:Fact)
+WHERE f.id IN $memory_ids
+  AND f.metadata IS NOT NULL
+  AND all(fragment IN $scope_fragments WHERE f.metadata CONTAINS fragment)
+{MEMORY_RETURN_CYPHER}
+"""
+
 LOOKUP_LATEST_MEMORY_CYPHER: Final[str] = f"""
 MATCH (f:Fact)
 WHERE f.subject = $subject

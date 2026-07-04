@@ -103,6 +103,8 @@ class Settings(BaseSettings):
     gnosis_sufficiency_check_enabled: bool = False
     gnosis_sufficiency_model: str = ""
     gnosis_abstention_prompt_enabled: bool = False
+    gnosis_fact_verbatim_expansion_enabled: bool = False
+    gnosis_fact_verbatim_expansion_max: int = Field(default=5, ge=1)
     gnosis_fact_extraction_enabled: bool = False
     gnosis_fact_extraction_model: str = ""
     gnosis_fact_extraction_context_turns: int = Field(default=10, ge=0)

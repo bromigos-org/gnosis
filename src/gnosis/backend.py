@@ -60,6 +60,7 @@ from gnosis.memory_provider import (
     EXTRACTED_FACT_PREDICATE,
     LEXICAL_MEMORY_SEARCH_CYPHER,
     LOOKUP_LATEST_MEMORY_CYPHER,
+    LOOKUP_MEMORIES_BY_IDS_CYPHER,
     LOOKUP_MEMORY_CYPHER,
     RECENT_TURN_MEMORIES_CYPHER,
     TURN_MEMORY_PREDICATE_PREFIX,
@@ -1467,12 +1468,118 @@ class Neo4jAgentMemoryBackend:
         facts = facts[: request.max_items]
         if not facts:
             return LongTermFactsContext()
+        expansion = await self._verbatim_expansion(client, facts, metadata)
         lines = ["### Long-Term Facts"]
-        lines.extend(_fact_context_line(fact) for fact in facts)
+        for fact in facts:
+            lines.append(_fact_context_line(fact))
+            fact_id = fact.get("id")
+            if isinstance(fact_id, str):
+                lines.extend(
+                    f"  quote: {_redacted_text(quote)}"
+                    for quote in expansion.get(fact_id, ())
+                )
         return LongTermFactsContext(
             context="\n".join(lines),
             markers=_fact_markers(facts),
         )
+
+    async def _verbatim_expansion(
+        self,
+        client: MemoryClientContext,
+        facts: list[JsonObject],
+        scope_metadata: Mapping[str, JsonValue],
+    ) -> dict[str, list[str]]:
+        """Map each top extracted fact to its source verbatim turn text(s).
+
+        Frontier technique (EverMemOS facts->episodes; True Memory verbatim):
+        rank on the compact extracted fact for precision, then surface the
+        linked raw turn(s) for nuance. A no-op empty mapping while
+        GNOSIS_FACT_VERBATIM_EXPANSION_ENABLED is off (byte-identical output).
+        Only the highest-ranked GNOSIS_FACT_VERBATIM_EXPANSION_MAX extracted
+        facts expand; a verbatim turn already present in the ranked facts (or
+        already attached to an earlier fact) is never double-rendered; the
+        scoped batch lookup re-checks scope on every fetched row so a source
+        id can never leak a cross-scope turn. Any lookup failure or empty
+        source set degrades to the compact fact alone.
+        """
+        if not self._app_settings.gnosis_fact_verbatim_expansion_enabled:
+            return {}
+        targets = _verbatim_expansion_targets(
+            facts,
+            cap=self._app_settings.gnosis_fact_verbatim_expansion_max,
+        )
+        wanted_ids: set[str] = {
+            source_id for _, source_ids in targets for source_id in source_ids
+        }
+        if not wanted_ids:
+            return {}
+        verbatim = await self._fetch_verbatim_turns(
+            client,
+            sorted(wanted_ids),
+            scope_metadata,
+        )
+        if not verbatim:
+            return {}
+        rendered: set[str] = set()
+        expansion: dict[str, list[str]] = {}
+        for fact_id, source_ids in targets:
+            quotes: list[str] = []
+            for source_id in source_ids:
+                if source_id not in verbatim or source_id in rendered:
+                    continue
+                rendered.add(source_id)
+                quotes.append(verbatim[source_id])
+            if quotes:
+                expansion[fact_id] = quotes
+        if expansion:
+            _LOGGER.info(
+                "facts-to-verbatim expansion attached source turns",
+                extra={"expanded": len(expansion), "candidates": len(facts)},
+            )
+        return expansion
+
+    async def _fetch_verbatim_turns(
+        self,
+        client: MemoryClientContext,
+        memory_ids: list[str],
+        scope_metadata: Mapping[str, JsonValue],
+    ) -> dict[str, str]:
+        """Batch-fetch source verbatim turns by id, re-checking scope.
+
+        One parameterized Cypher lookup narrowed by the scope metadata
+        fragments; every returned row is scope-re-checked with the same
+        predicate the ranked read uses, so a cross-scope turn is dropped and
+        never rendered. A lookup failure degrades to no expansion.
+        """
+        try:
+            rows = await client.query.cypher(
+                LOOKUP_MEMORIES_BY_IDS_CYPHER,
+                {
+                    "memory_ids": list(memory_ids),
+                    "scope_fragments": _metadata_fragments(scope_metadata),
+                },
+            )
+        except (
+            RuntimeError,
+            OSError,
+            Neo4jError,
+            BackendCapabilityUnavailable,
+        ) as error:
+            _LOGGER.warning(
+                "verbatim expansion lookup failed; keeping compact facts",
+                extra={"error_type": type(error).__name__},
+            )
+            return {}
+        verbatim: dict[str, str] = {}
+        for row in rows:
+            memory = stored_memory_from_row(row)
+            if memory is None:
+                continue
+            fact = _fact_from_memory(memory)
+            if not _fact_matches_scope(fact, scope_metadata):
+                continue
+            verbatim[memory.memory_id] = memory.content
+        return verbatim
 
     async def add_memories(self, request: MemoryAddRequest) -> MemoryAddResponse:
         _require_memory_add_mode(request)
@@ -3643,6 +3750,54 @@ def _fact_raw_metadata(fact: JsonObject) -> JsonObject:
         except ValidationError:
             return {}
     return {}
+
+
+def _verbatim_expansion_targets(
+    facts: list[JsonObject],
+    *,
+    cap: int,
+) -> list[tuple[str, list[str]]]:
+    """Highest-ranked extracted facts to expand, with novel source turn ids.
+
+    Source ids already present as ranked facts are dropped so a verbatim turn
+    independently in the result set is never double-rendered; at most ``cap``
+    facts (rank order) are returned.
+    """
+    present_ids = {
+        fact_id
+        for fact in facts
+        if isinstance(fact_id := fact.get("id"), str) and fact_id
+    }
+    targets: list[tuple[str, list[str]]] = []
+    for fact in facts:
+        if len(targets) >= cap:
+            break
+        fact_id = fact.get("id")
+        if str(fact.get("predicate")) != EXTRACTED_FACT_PREDICATE or not isinstance(
+            fact_id,
+            str,
+        ):
+            continue
+        source_ids = [
+            source_id
+            for source_id in _fact_source_memory_ids(fact)
+            if source_id not in present_ids
+        ]
+        if source_ids:
+            targets.append((fact_id, source_ids))
+    return targets
+
+
+def _fact_source_memory_ids(fact: JsonObject) -> list[str]:
+    """Provenance ids of the verbatim turns an extracted fact was derived from."""
+    source_ids = _fact_raw_metadata(fact).get("source_memory_ids")
+    if not isinstance(source_ids, list):
+        return []
+    return [
+        source_id
+        for source_id in source_ids
+        if isinstance(source_id, str) and source_id
+    ]
 
 
 def _metadata_entities(metadata: Mapping[str, JsonValue]) -> list[str]:

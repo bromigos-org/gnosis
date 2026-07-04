@@ -855,6 +855,384 @@ async def test_sufficiency_llm_failure_degrades_to_not_assessed() -> None:
     assert response.sufficiency.reason is None
 
 
+def _extracted_fact_with_sources(  # noqa: PLR0913 - Test builder mirrors stored shape.
+    *,
+    memory_id: str,
+    object_value: str,
+    entities: list[str],
+    event_date: str,
+    source_memory_ids: list[str],
+    scope: MemoryScope,
+) -> FactRecord:
+    fact = _extracted_fact(
+        memory_id=memory_id,
+        subject="user:789",
+        object_value=object_value,
+        entities=entities,
+        event_date=event_date,
+        scope=scope,
+    )
+    fact.metadata["source_memory_ids"] = cast("JsonValue", source_memory_ids)
+    return fact
+
+
+def _verbatim_row(
+    *,
+    memory_id: str,
+    object_value: str,
+    metadata: dict[str, str],
+) -> JsonObject:
+    return {
+        "id": memory_id,
+        "subject": "user:789",
+        "predicate": "said_user",
+        "object": object_value,
+        "metadata": json.dumps(metadata),
+        "created_at": "2023-05-07T00:00:00Z",
+        "updated_at": None,
+    }
+
+
+@dataclass(slots=True)
+class FailingQuery:
+    cypher_calls: list["CypherCall"] = field(default_factory=list)
+
+    async def cypher(
+        self,
+        query: str,
+        params: dict[str, JsonValue] | None = None,
+    ) -> list[JsonObject]:
+        self.cypher_calls.append(CypherCall(statement=query, parameters=params or {}))
+        msg = "verbatim lookup boom"
+        raise RuntimeError(msg)
+
+
+@pytest.mark.anyio
+async def test_verbatim_expansion_attaches_source_turn_when_enabled() -> None:
+    # Given: one ranked extracted fact linking to a stored verbatim turn.
+    scope = _scope()
+    extracted = _extracted_fact_with_sources(
+        memory_id="fact-1",
+        object_value="Maria adopted a dog",
+        entities=["Maria"],
+        event_date="2023-05-07",
+        source_memory_ids=["turn-1"],
+        scope=scope,
+    )
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                _verbatim_row(
+                    memory_id="turn-1",
+                    object_value="I finally adopted a golden retriever named Biscuit!",
+                    metadata=_scope_metadata(scope),
+                ),
+            ],
+        ),
+        long_term=RecordingLongTermMemory(search_results=[extracted]),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_fact_verbatim_expansion_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled with the expansion flag on.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="what pet did Maria adopt?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the compact fact renders followed by an indented verbatim quote.
+    content = response.sections[0].content
+    assert "user:789 fact: Maria adopted a dog" in content
+    assert "  quote: I finally adopted a golden retriever named Biscuit!" in content
+
+
+@pytest.mark.anyio
+async def test_verbatim_expansion_respects_cap() -> None:
+    # Given: two ranked extracted facts but a one-fact expansion budget.
+    scope = _scope()
+    first = _extracted_fact_with_sources(
+        memory_id="fact-1",
+        object_value="Maria adopted a dog",
+        entities=["Maria"],
+        event_date="2023-05-07",
+        source_memory_ids=["turn-1"],
+        scope=scope,
+    )
+    second = _extracted_fact_with_sources(
+        memory_id="fact-2",
+        object_value="Alice moved to Lisbon",
+        entities=["Alice"],
+        event_date="2023-06-01",
+        source_memory_ids=["turn-2"],
+        scope=scope,
+    )
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                _verbatim_row(
+                    memory_id="turn-1",
+                    object_value="verbatim about the dog",
+                    metadata=_scope_metadata(scope),
+                ),
+                _verbatim_row(
+                    memory_id="turn-2",
+                    object_value="verbatim about Lisbon",
+                    metadata=_scope_metadata(scope),
+                ),
+            ],
+        ),
+        long_term=RecordingLongTermMemory(search_results=[first, second]),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(
+            gnosis_fact_verbatim_expansion_enabled=True,
+            gnosis_fact_verbatim_expansion_max=1,
+        ),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="tell me about Maria and Alice",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: only the top-ranked fact is expanded; the second stays compact.
+    content = response.sections[0].content
+    assert "  quote: verbatim about the dog" in content
+    assert "verbatim about Lisbon" not in content
+    # Only the requested (novel) source id is looked up.
+    assert client.query.cypher_calls[0].parameters["memory_ids"] == ["turn-1"]
+
+
+@pytest.mark.anyio
+async def test_verbatim_expansion_skips_already_present_turn() -> None:
+    # Given: the source verbatim turn is itself independently a ranked fact.
+    scope = _scope()
+    extracted = _extracted_fact_with_sources(
+        memory_id="fact-1",
+        object_value="Maria adopted a dog",
+        entities=["Maria"],
+        event_date="2023-05-07",
+        source_memory_ids=["turn-1"],
+        scope=scope,
+    )
+    present_turn = _fact_record(
+        subject="turn-1",
+        object_value="I adopted a golden retriever",
+        metadata=_scope_metadata(scope),
+    )
+    client = RecordingMemoryClient(
+        query=RecordingQuery(),
+        long_term=RecordingLongTermMemory(search_results=[extracted, present_turn]),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_fact_verbatim_expansion_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="what pet did Maria adopt?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: no quote line is emitted and no verbatim lookup runs.
+    content = response.sections[0].content
+    assert "quote:" not in content
+    assert client.query.cypher_calls == []
+
+
+@pytest.mark.anyio
+async def test_verbatim_expansion_drops_cross_scope_turn() -> None:
+    # Given: the lookup surfaces a verbatim row from another tenant.
+    scope = _scope()
+    extracted = _extracted_fact_with_sources(
+        memory_id="fact-1",
+        object_value="Maria adopted a dog",
+        entities=["Maria"],
+        event_date="2023-05-07",
+        source_memory_ids=["turn-1"],
+        scope=scope,
+    )
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                _verbatim_row(
+                    memory_id="turn-1",
+                    object_value="cross-tenant secret turn",
+                    metadata=_scope_metadata(_scope(tenant_id="other-tenant")),
+                ),
+            ],
+        ),
+        long_term=RecordingLongTermMemory(search_results=[extracted]),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_fact_verbatim_expansion_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="what pet did Maria adopt?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the cross-scope turn never leaks into the prompt.
+    content = response.sections[0].content
+    assert "cross-tenant secret turn" not in content
+    assert "quote:" not in content
+
+
+@pytest.mark.anyio
+async def test_verbatim_expansion_off_is_byte_identical() -> None:
+    # Given: an extracted fact with a linked turn, flag left at its default.
+    scope = _scope()
+    extracted = _extracted_fact_with_sources(
+        memory_id="fact-1",
+        object_value="Maria adopted a dog",
+        entities=["Maria"],
+        event_date="2023-05-07",
+        source_memory_ids=["turn-1"],
+        scope=scope,
+    )
+
+    def build(*, enabled: bool) -> Neo4jAgentMemoryBackend:
+        return Neo4jAgentMemoryBackend(
+            _settings(gnosis_fact_verbatim_expansion_enabled=enabled),
+            memory_client_factory=MemoryClientFactory(
+                RecordingMemoryClient(
+                    query=RecordingQuery(
+                        rows=[
+                            _verbatim_row(
+                                memory_id="turn-1",
+                                object_value="raw turn text",
+                                metadata=_scope_metadata(scope),
+                            ),
+                        ],
+                    ),
+                    long_term=RecordingLongTermMemory(search_results=[extracted]),
+                ),
+            ),
+            graph_store=RecordingGraphStore(),
+        )
+
+    request = MemoryContextRequest(
+        scope=scope,
+        query="what pet did Maria adopt?",
+        include_short_term=False,
+        include_reasoning=False,
+        include_graph=False,
+    )
+
+    # When/Then: the disabled output has no quote and no lookup runs.
+    off = await build(enabled=False).get_memory_context(request)
+    content = off.sections[0].content
+    assert "quote:" not in content
+    assert "raw turn text" not in content
+
+
+@pytest.mark.anyio
+async def test_verbatim_expansion_lookup_failure_degrades_to_compact() -> None:
+    # Given: the verbatim lookup raises.
+    scope = _scope()
+    extracted = _extracted_fact_with_sources(
+        memory_id="fact-1",
+        object_value="Maria adopted a dog",
+        entities=["Maria"],
+        event_date="2023-05-07",
+        source_memory_ids=["turn-1"],
+        scope=scope,
+    )
+    client = RecordingMemoryClient(
+        query=cast("RecordingQuery", cast("object", FailingQuery())),
+        long_term=RecordingLongTermMemory(search_results=[extracted]),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_fact_verbatim_expansion_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="what pet did Maria adopt?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the compact fact still renders; no quote line is attached.
+    content = response.sections[0].content
+    assert "user:789 fact: Maria adopted a dog" in content
+    assert "quote:" not in content
+
+
+@pytest.mark.anyio
+async def test_verbatim_expansion_ignores_non_extracted_facts() -> None:
+    # Given: only a verbatim turn fact (no extracted units) is ranked.
+    scope = _scope()
+    turn = _fact_record(
+        subject="tenant:bromigos:message:one",
+        object_value="the library opens at nine",
+        metadata=_scope_metadata(scope),
+    )
+    client = RecordingMemoryClient(
+        query=RecordingQuery(),
+        long_term=RecordingLongTermMemory(search_results=[turn]),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_fact_verbatim_expansion_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="when does the library open?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: no expansion is attempted for non-extracted facts.
+    content = response.sections[0].content
+    assert "quote:" not in content
+    assert client.query.cypher_calls == []
+
+
 @dataclass(frozen=True, slots=True)
 class CypherCall:
     statement: str
