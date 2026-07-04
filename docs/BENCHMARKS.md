@@ -19,7 +19,9 @@ mem0 paper's convention). gnosis embeddings: `local-qwen3-embedding-0.6b`
 
 **37.4 → 41.0 → 59.5 → 58.7 → 71.2** (2026-07-03), against a raw-search
 reference of 61.3. Run 5 (fact extraction at ingest) is the current best
-and passes every published system's LOCOMO number.
+and passes every published system's LOCOMO number. Run 6 (add hybrid BM25
+retrieval on top of the Run 5 store) is a wash: context 71.4, search 69.1 —
+temporal improves but multi-hop regresses (details below).
 
 | Category (n) | Run 1: context | Run 1: search | Run 3 (PR #7): context | Run 4 (PR #13): context | **Run 5 (PR #14): context** | **Run 5 (PR #14): search** |
 |---|---|---|---|---|---|---|
@@ -154,6 +156,22 @@ Retrieval mechanism stats (context condition unless noted):
   context 71.2 now exceeds published mem0 (66.9), mem0-graph (68.4), Zep
   (66.0) and sits 1.7 under the full-context ceiling (72.9) — while sending
   ~4.3k chars, not the whole conversation.
+
+### Run 6 — `results/locomo/hybrid-extraction-20260703/` (measures gnosis PR #15)
+
+- Same extracted store as Run 5 (read-path-only), `GNOSIS_HYBRID_RETRIEVAL_ENABLED=true`
+  added (BM25 full-text fused with dense via RRF). gnosis-side gpt-5.5.
+- **Scores: context 71.4 (+0.2 vs Run 5), search 69.1 (+1.8).** A genuine
+  tradeoff, consistent across both conditions: temporal **+7.8** (84.4→92.2,
+  BM25 nails exact dates/names) and adversarial +1.8–3.5 (lexical mismatch →
+  nothing retrieved → correct abstention), but **multi-hop −5.4** (39.2→33.8
+  context, 37.8→32.4 search) — lexical matching surfaces similar-but-wrong
+  facts that displace the intermediate-fact chain multi-hop needs.
+- Verdict: net-neutral on context, mildly positive on search. NOT the
+  multi-hop fix — multi-hop needs graph traversal, not lexical matching
+  (→ graph-QA fusion, gnosis PR #21). Hybrid's temporal/abstention gains are
+  real; best used alongside a multi-hop route rather than alone. Leave
+  default-off pending a combined graph-QA + hybrid run.
 
 ## Published comparison targets
 
