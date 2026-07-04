@@ -2,6 +2,7 @@
 
 Mirror of the canonical log in [gnosis-membench/RESULTS.md](https://github.com/bromigos-org/gnosis-membench/blob/main/RESULTS.md); the harness repo is the source of truth for new runs.
 
+
 Canonical record of all gnosis memory-quality benchmark runs. Every run uses the
 frozen comparison config unless a deviation is noted. Raw artifacts
 (`answers_*.jsonl`, `graded_*.jsonl`, `results.json`, `report.md`) live in the
@@ -19,29 +20,29 @@ mem0 paper's convention). gnosis embeddings: `local-qwen3-embedding-0.6b`
 
 ## Trajectory (headline: context condition, J excl. adversarial)
 
-**37.4 → 41.0 → 59.5 → 58.7** (2026-07-03), against a raw-search
-reference of 61.3.
+**37.4 → 41.0 → 59.5 → 58.7 → 71.2** (2026-07-03), against a raw-search
+reference of 61.3. Run 5 (fact extraction at ingest) is the current best
+and passes every published system's LOCOMO number.
 
-| Category (n) | Run 1 baseline: context | Run 1 baseline: search | Run 2 (PR #6): context | Run 3 (PR #7): context | Run 4 (PR #13): context | Run 4 (PR #13): search |
+| Category (n) | Run 1: context | Run 1: search | Run 3 (PR #7): context | Run 4 (PR #13): context | **Run 5 (PR #14): context** | **Run 5 (PR #14): search** |
 |---|---|---|---|---|---|---|
-| single-hop (200) | 55.0 | 75.0 | 57.0 | **76.5** | 74.5 | 73.5 |
-| multi-hop (74) | 10.8 | 44.6 | 14.9 | 40.5 | 40.5 | 46.0 |
-| temporal (90) | 24.4 | 48.9 | 30.0 | 42.2 | 43.3 | 43.3 |
-| open-domain (21) | 19.1 | 42.9 | 28.6 | 38.1 | 38.1 | 33.3 |
-| adversarial (112) | 74.1 | 68.8 | 67.9 | 67.9 | 67.9 | 72.3 |
-| **overall excl. adversarial (385)** | **37.4** | **61.3** | **41.0** | **59.5** | **58.7** | **59.0** |
-| overall (497) | 45.7 | 63.0 | 47.1 | 61.4 | 60.8 | 62.0 |
+| single-hop (200) | 55.0 | 75.0 | 76.5 | 74.5 | **80.5** | 73.5 |
+| multi-hop (74) | 10.8 | 44.6 | 40.5 | 40.5 | 39.2 | 37.8 |
+| temporal (90) | 24.4 | 48.9 | 42.2 | 43.3 | **84.4** | **84.4** |
+| open-domain (21) | 19.1 | 42.9 | 38.1 | 38.1 | 38.1 | 38.1 |
+| adversarial (112) | 74.1 | 68.8 | 67.9 | 67.9 | 67.9 | 71.4 |
+| **overall excl. adversarial (385)** | **37.4** | **61.3** | **59.5** | **58.7** | **71.2** | **67.3** |
+| overall (497) | 45.7 | 63.0 | 61.4 | 60.8 | 70.4 | 68.2 |
 
 Retrieval mechanism stats (context condition unless noted):
 
-| Run | avg retrieved chars | % retrievals dated | % "no information" answers |
-|---|---|---|---|
-| Run 1 baseline | 947 | 0% | 36.0% |
-| Run 2 (PR #6) | 10,018 | 100% | 31.4% |
-| Run 3 (PR #7) | 5,218 | 100% | 21.9% |
-| Run 4 (PR #13) | 2,093 | 100% | 20.5% |
-| (search reference) | 4,231 | 100% | 22.3% |
-| Run 4 (PR #13) search | 1,122 | 100% | 23.5% |
+| Run | avg retrieved chars | % "no information" answers |
+|---|---|---|
+| Run 1 baseline | 947 | 36.0% |
+| Run 3 (PR #7) | 5,218 | 21.9% |
+| Run 4 (PR #13) | 2,093 | 20.5% |
+| Run 5 (PR #14) context | 4,349 | 20.5% |
+| Run 5 (PR #14) search | 2,175 | 22.7% |
 
 ## Run details
 
@@ -122,6 +123,40 @@ Retrieval mechanism stats (context condition unless noted):
   latency. The 60-73% retrieval-payload cut is real and would matter under
   tight context budgets or expensive answer models; reconsider with a
   fast/cheap filter model.
+
+### Run 5 — `results/locomo/extraction-20260703/` (measures gnosis PR #14) — CURRENT BEST
+
+- gnosis main @ `a4a9254` (edu-v1 LLM fact extraction at ingest behind
+  `GNOSIS_FACT_EXTRACTION_ENABLED`). Recall filter OFF (Run 4 showed it flat),
+  so this isolates extraction. Deviations from frozen config:
+  `GNOSIS_FACT_EXTRACTION_ENABLED=true`, gnosis-side `GNOSIS_LLM=openai/gpt-5.5`
+  (the extractor needs a real model). **Fresh ingest required** (write-path
+  change): neo4j wiped, LOCOMO subset 3 re-ingested as turn-pair adds so
+  extraction fires per pair.
+- Answering + judging both `gpt-5.5` via the responses shim. Both conditions run.
+- **Scores: context 71.2 J excl. adversarial (+11.7 over Run 3), search 67.3
+  (+6.0 over the Run 1 search reference).** The win is almost entirely
+  temporal: context temporal 42.2 → **84.4 (+42.2)**, search 48.9 → 84.4
+  (+35.5) — dated, self-contained fact units make "when" questions answerable.
+  single-hop also up on context (76.5 → 80.5). multi-hop did NOT improve
+  (context 40.5 → 39.2, search 44.6 → 37.8) — extraction makes facts
+  answerable but does not connect them across hops; that is the next target
+  (hybrid retrieval PR #15 + graph-QA fusion).
+- Extraction mechanism: 3,365 extracted `fact`-predicate units created from
+  the turn-pairs (~3.3 per pair), stored alongside 1,037 verbatim `said_*`
+  facts (non-compressive). Context retrieved 4,349 avg chars / 20.5% no-info;
+  search 2,175 chars / 22.7% no-info.
+- Cost: one gpt-5.5 extraction call per turn-pair at ingest (inline in PR #14
+  — ~2-5 s each; a background-mode worker is required before production
+  enablement so Discord/hermes writes are not blocked in the hot path).
+- Ops note: the run survived a Docker Desktop crash mid-search-answering; the
+  resumable driver reprocessed only the remaining answers after the stack (and
+  its LiteLLM key env) was restored. No data lost.
+- **Verdict: extraction is the biggest single lever measured. Ship it to
+  production** (behind a background-extraction worker for latency). gnosis
+  context 71.2 now exceeds published mem0 (66.9), mem0-graph (68.4), Zep
+  (66.0) and sits 1.7 under the full-context ceiling (72.9) — while sending
+  ~4.3k chars, not the whole conversation.
 
 ## Published comparison targets
 
