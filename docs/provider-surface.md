@@ -31,6 +31,8 @@ Body: `{scope, query, filters?: FilterDSL, limit: int = 8, min_score?: float, pe
 
 Returns `{results: [{memory_id, content, score, metadata, created_at, updated_at}]}`, relevance-ranked by the SDK's vector similarity over long-term memories, scope-filtered, filter-evaluated, and redacted like other outbound payloads.
 
+With `GNOSIS_HYBRID_RETRIEVAL_ENABLED` on (default `false`), a BM25 full-text search (`db.index.fulltext.queryNodes` over the gateway-owned `fact_object_fulltext` index on `Fact.object`, created idempotently on first use) runs beside the vector search, narrowed by the same parameterized tenant/user metadata fragments as the other provider reads; the two candidate rankings are fused with Reciprocal Rank Fusion (k=60, dedupe by `memory_id` keeping the dense record), and everything downstream - scope re-check, FilterDSL, `min_score` against the vector score only, recall filter, `limit` cap - is unchanged. The response contract keeps `score` as the vector similarity when the dense ranking saw the record; a hit that fused in through the lexical leg alone returns `score: 0.0` (RRF rank, not similarity, admitted it - which also means `min_score` filters it out when set). User query text is Lucene-sanitized (special characters escaped, boolean operator words defused) so it can never inject full-text query syntax, and any full-text index or query failure logs a structured warning and degrades to dense-only retrieval - the read never fails because of the lexical leg. The same hybrid fusion runs inside `/v1/memory/context` long-term fact assembly.
+
 With `GNOSIS_RECALL_FILTER_ENABLED` on (default `false`), one `GNOSIS_LLM` call screens the top `GNOSIS_RECALL_FILTER_CANDIDATES` (default 30) scope/filter/score-passing candidates against the query and keeps only those that could help answer it, preserving rank order and the `limit` cap. The filter can only remove or keep candidates - it never adds any, so scope enforcement is untouched - and a failed call or an empty selection degrades to the unfiltered ranking with a structured warning (`candidates_in`/`kept` counts are logged on success). The same filter runs inside `/v1/memory/context` long-term fact assembly. For a federated search (`peers` named), the backend skips its local pass and the route applies the filter once over the merged local+remote result set (remote results are already shareable-only), keeping the budget at one LLM call per request.
 
 The federation extension is contract-additive; existing clients are unaffected:
@@ -117,6 +119,7 @@ These are consequences of the installed SDK and are the closest safe equivalents
 
 - `GNOSIS_RECALL_FILTER_ENABLED` (default `false`) - post-retrieval LLM recall filter over long-term candidates in `/v1/memories/search` and `/v1/memory/context`.
 - `GNOSIS_RECALL_FILTER_CANDIDATES` (default `30`) - how many top-ranked candidates go to the filter call.
+- `GNOSIS_HYBRID_RETRIEVAL_ENABLED` (default `false`) - BM25 full-text search fused with the vector ranking via RRF (k=60) in `/v1/memories/search` and `/v1/memory/context`.
 - `GNOSIS_MEMORY_EDIT_ENABLED` (default `false`)
 - `GNOSIS_MCP_ENABLED` (default `false`)
 - `GNOSIS_MCP_AGENT_ID` (default `mcp-client`)

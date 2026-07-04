@@ -53,9 +53,11 @@ from gnosis.memory_filters import (
     parse_filters,
 )
 from gnosis.memory_provider import (
+    CREATE_FACT_OBJECT_FULLTEXT_INDEX_CYPHER,
     CREATE_MEMORY_CYPHER,
     DELETE_MEMORY_CYPHER,
     EXTRACTED_FACT_PREDICATE,
+    LEXICAL_MEMORY_SEARCH_CYPHER,
     LOOKUP_LATEST_MEMORY_CYPHER,
     LOOKUP_MEMORY_CYPHER,
     RECENT_TURN_MEMORIES_CYPHER,
@@ -63,6 +65,8 @@ from gnosis.memory_provider import (
     UPDATE_MEMORY_CYPHER,
     VERBATIM_MEMORY_PREDICATE,
     StoredMemory,
+    fuse_memory_rankings,
+    lexical_stored_memory,
     list_memories_cypher,
     memory_add_event,
     memory_filter_fields,
@@ -71,6 +75,7 @@ from gnosis.memory_provider import (
     memory_score,
     merged_memory_metadata,
     public_memory_metadata,
+    sanitize_lucene_query,
     scope_read_fragments,
     session_read_fragments,
     stored_memories_from_sdk,
@@ -1043,6 +1048,7 @@ class Neo4jAgentMemoryBackend:
         )
         self._skill_registry: SkillRegistry = skill_registry or InMemorySkillRegistry()
         self._event_fact_promoter: EventFactPromoter = EventFactPromoter()
+        self._fulltext_index_ready: bool = False
         self._dedup_candidates: dict[str, DedupCandidateState] = {}
         self._dedup_idempotency: dict[str, DedupIdempotencyRecord] = {}
         self._consolidation_dry_runs: dict[str, ConsolidationDryRunState] = {}
@@ -1342,7 +1348,7 @@ class Neo4jAgentMemoryBackend:
         candidates against the query before the item budget applies.
         """
         metadata = _scope_metadata(request.scope)
-        facts = await _query_ranked_facts(client, request.query, metadata)
+        facts = await self._query_ranked_facts(client, request.query, metadata)
         if not facts:
             facts = await _query_recent_facts(client, metadata)
         facts = await self._recall_filtered_facts(request.query, facts)
@@ -1625,9 +1631,15 @@ class Neo4jAgentMemoryBackend:
                 request.query,
                 limit=_MEMORY_SEARCH_CANDIDATE_LIMIT,
             )
+            candidates = await self._hybrid_memory_candidates(
+                client,
+                request.query,
+                scope_read_fragments(request.scope),
+                stored_memories_from_sdk(raw_records),
+            )
         budget = self._search_match_budget(request)
         matches: list[StoredMemory] = []
-        for memory in stored_memories_from_sdk(raw_records):
+        for memory in candidates:
             if not memory_matches_scope(memory, request.scope):
                 continue
             if not matches_filters(filters, memory_filter_fields(memory)):
@@ -1644,6 +1656,123 @@ class Neo4jAgentMemoryBackend:
                 for memory in matches[: request.limit]
             ],
         )
+
+    async def _query_ranked_facts(
+        self,
+        client: MemoryClientContext,
+        query: str,
+        scope_metadata: Mapping[str, JsonValue],
+    ) -> list[JsonObject]:
+        """Long-term fact candidates ranked by embedding similarity.
+
+        Reuses the /v1/memories/search candidate path (SDK ``search_facts``
+        plus the same hybrid lexical fusion behind
+        GNOSIS_HYBRID_RETRIEVAL_ENABLED) so context and search rank identical
+        stored data the same way, then re-checks scope on the deserialized
+        records. Nothing ranked (no query, no embedder, no lexical hits)
+        tells the caller to fall back to recency ordering.
+        """
+        if not query:
+            return []
+        raw_records = await client.long_term.search_facts(
+            query,
+            limit=_MEMORY_SEARCH_CANDIDATE_LIMIT,
+        )
+        candidates = await self._hybrid_memory_candidates(
+            client,
+            query,
+            _metadata_fragments(scope_metadata),
+            stored_memories_from_sdk(raw_records),
+        )
+        return [
+            fact
+            for memory in candidates
+            if _fact_matches_scope(fact := _fact_from_memory(memory), scope_metadata)
+        ]
+
+    async def _hybrid_memory_candidates(
+        self,
+        client: MemoryClientContext,
+        query: str,
+        scope_fragments: list[JsonValue],
+        dense: list[StoredMemory],
+    ) -> list[StoredMemory]:
+        """Fuse the dense ranking with BM25 lexical candidates via RRF.
+
+        A no-op passthrough of the dense ranking while
+        GNOSIS_HYBRID_RETRIEVAL_ENABLED is off (safe default) and whenever the
+        lexical leg has nothing to add, so the dense-only behavior is
+        byte-identical with the flag off.
+        """
+        if not self._app_settings.gnosis_hybrid_retrieval_enabled:
+            return dense
+        lexical = await self._lexical_memory_candidates(
+            client,
+            query,
+            scope_fragments,
+        )
+        if not lexical:
+            return dense
+        return fuse_memory_rankings(dense, lexical)
+
+    async def _lexical_memory_candidates(
+        self,
+        client: MemoryClientContext,
+        query: str,
+        scope_fragments: list[JsonValue],
+    ) -> list[StoredMemory]:
+        """BM25 full-text candidates over Fact content, best score first.
+
+        The Lucene query string is sanitized so user input can never inject
+        Lucene operators, and any full-text failure (index bootstrap or
+        query) degrades to an empty lexical leg with a structured warning -
+        the read never fails because of the lexical path.
+        """
+        lucene_query = sanitize_lucene_query(query)
+        if not lucene_query:
+            return []
+        try:
+            await self._ensure_fulltext_index(client)
+            rows = await client.query.cypher(
+                LEXICAL_MEMORY_SEARCH_CYPHER,
+                {
+                    "query": lucene_query,
+                    "scope_fragments": scope_fragments,
+                    "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
+                },
+            )
+        except (
+            RuntimeError,
+            OSError,
+            Neo4jError,
+            BackendCapabilityUnavailable,
+        ) as error:
+            _LOGGER.warning(
+                "lexical memory search failed; degrading to dense-only retrieval",
+                extra={"error_type": type(error).__name__},
+            )
+            return []
+        return [
+            lexical_stored_memory(memory)
+            for row in rows
+            if (memory := stored_memory_from_row(row)) is not None
+        ]
+
+    async def _ensure_fulltext_index(self, client: MemoryClientContext) -> None:
+        """Create the gateway-owned Fact full-text index if absent.
+
+        The SDK owns the rest of the Fact schema, so this idempotent
+        ``CREATE FULLTEXT INDEX ... IF NOT EXISTS`` goes through the same
+        graph write handle the direct Fact writes use, once per backend
+        instance; a failed attempt retries on the next lexical read.
+        """
+        if self._fulltext_index_ready:
+            return
+        _ = await _graph_write_query(client).execute_write(
+            CREATE_FACT_OBJECT_FULLTEXT_INDEX_CYPHER,
+            {},
+        )
+        self._fulltext_index_ready = True
 
     async def filter_recalled_memories(
         self,
@@ -3217,31 +3346,6 @@ def _urlsafe_b64encode(value: bytes) -> str:
 def _urlsafe_b64decode(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
     return base64.urlsafe_b64decode(value + padding)
-
-
-async def _query_ranked_facts(
-    client: MemoryClientContext,
-    query: str,
-    scope_metadata: Mapping[str, JsonValue],
-) -> list[JsonObject]:
-    """Long-term fact candidates ranked by embedding similarity.
-
-    Reuses the /v1/memories/search candidate path (SDK ``search_facts``) so
-    context and search rank identical stored data the same way, then re-checks
-    scope on the deserialized records. The SDK returns nothing without an
-    embedder, which tells the caller to fall back to recency ordering.
-    """
-    if not query:
-        return []
-    raw_records = await client.long_term.search_facts(
-        query,
-        limit=_MEMORY_SEARCH_CANDIDATE_LIMIT,
-    )
-    return [
-        fact
-        for memory in stored_memories_from_sdk(raw_records)
-        if _fact_matches_scope(fact := _fact_from_memory(memory), scope_metadata)
-    ]
 
 
 async def _query_recent_facts(

@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     gnosis_rustfs_retention_days: int | None = Field(default=None, ge=1)
     gnosis_recall_filter_enabled: bool = False
     gnosis_recall_filter_candidates: int = Field(default=30, ge=1)
+    gnosis_hybrid_retrieval_enabled: bool = False
     gnosis_fact_extraction_enabled: bool = False
     gnosis_fact_extraction_model: str = ""
     gnosis_fact_extraction_context_turns: int = Field(default=10, ge=0)

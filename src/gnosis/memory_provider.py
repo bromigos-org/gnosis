@@ -7,8 +7,9 @@ semantics on the deserialized records before anything leaves the service.
 """
 
 import json
+import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Final
 
@@ -45,6 +46,25 @@ _PRIVATE_METADATA_KEYS: Final[frozenset[str]] = _SCOPE_METADATA_KEYS | {
 VERBATIM_MEMORY_PREDICATE: Final[str] = "memory"
 TURN_MEMORY_PREDICATE_PREFIX: Final[str] = "said_"
 EXTRACTED_FACT_PREDICATE: Final[str] = "fact"
+
+# Standard Reciprocal Rank Fusion constant (EverMemOS uses the same k=60).
+RRF_K: Final[int] = 60
+
+# Lucene query syntax that user input must never inject: every special
+# character (https://lucene.apache.org/ escaping rules) plus the bare boolean
+# operator words, which are only operators when uppercase.
+_LUCENE_SPECIAL_CHARS: Final[frozenset[str]] = frozenset('+-&|!(){}[]^"~*?:\\/')
+_LUCENE_OPERATOR_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:AND|OR|NOT)\b")
+
+FACT_OBJECT_FULLTEXT_INDEX: Final[str] = "fact_object_fulltext"
+
+# Neo4j 5.x full-text (Lucene/BM25) index over stored fact content. The SDK
+# owns the rest of the Fact schema, so this one gateway-owned index is created
+# idempotently through the same graph write handle the direct Fact writes use.
+CREATE_FACT_OBJECT_FULLTEXT_INDEX_CYPHER: Final[str] = f"""
+CREATE FULLTEXT INDEX {FACT_OBJECT_FULLTEXT_INDEX} IF NOT EXISTS
+FOR (f:Fact) ON EACH [f.object]
+"""
 
 MEMORY_RETURN_CYPHER: Final[str] = """
 RETURN f.id AS id,
@@ -121,6 +141,20 @@ MATCH (f:Fact {id: $memory_id})
 DETACH DELETE f
 """
 
+# Lexical (BM25) candidates for hybrid retrieval. Scoped exactly like the
+# other provider reads: parameterized metadata fragments narrow in-query and
+# the gateway re-checks scope on the deserialized records afterwards. The
+# query string must already be Lucene-sanitized (``sanitize_lucene_query``).
+LEXICAL_MEMORY_SEARCH_CYPHER: Final[str] = f"""
+CALL db.index.fulltext.queryNodes('{FACT_OBJECT_FULLTEXT_INDEX}', $query)
+YIELD node AS f, score
+WHERE f.metadata IS NOT NULL
+  AND all(fragment IN $scope_fragments WHERE f.metadata CONTAINS fragment)
+{MEMORY_RETURN_CYPHER}
+ORDER BY score DESC
+LIMIT $candidate_limit
+"""
+
 
 def list_memories_cypher(narrowing_fragment: str) -> str:
     return f"""
@@ -157,6 +191,76 @@ def session_read_fragments(scope: MemoryScope) -> list[JsonValue]:
         *scope_read_fragments(scope),
         _metadata_json_fragment("session_id", scope.session_id),
     ]
+
+
+def sanitize_lucene_query(query: str) -> str:
+    """Neutralize Lucene query syntax in user-supplied search text.
+
+    Every Lucene special character is backslash-escaped and the bare boolean
+    operator words (AND/OR/NOT) are lowercased - the index analyzer lowercases
+    terms anyway, so matching is unchanged - which means user input can never
+    inject Lucene operators, field selectors, or unbalanced syntax. An empty
+    result tells the caller to skip the lexical leg entirely.
+    """
+    escaped = "".join(
+        f"\\{char}" if char in _LUCENE_SPECIAL_CHARS else char for char in query
+    )
+    return _LUCENE_OPERATOR_PATTERN.sub(
+        lambda match: match.group(0).lower(),
+        escaped,
+    ).strip()
+
+
+def fuse_memory_rankings(
+    dense: Sequence[StoredMemory],
+    lexical: Sequence[StoredMemory],
+    *,
+    k: int = RRF_K,
+) -> list[StoredMemory]:
+    """Fuse the dense and lexical candidate rankings with standard RRF.
+
+    Each ranking contributes ``1 / (k + rank)`` per memory (rank is 1-based
+    within that ranking; on a duplicate id the best rank wins) and the summed
+    scores decide the fused order. When both rankings carry the same memory
+    the dense record is kept as the representative so its vector similarity
+    survives into the response; ties keep dense-first arrival order.
+    """
+    fused_scores: dict[str, float] = {}
+    representatives: dict[str, StoredMemory] = {}
+    for ranking in (dense, lexical):
+        rank = 0
+        seen: set[str] = set()
+        for memory in ranking:
+            if memory.memory_id in seen:
+                continue
+            seen.add(memory.memory_id)
+            rank += 1
+            fused_scores[memory.memory_id] = fused_scores.get(
+                memory.memory_id,
+                0.0,
+            ) + 1.0 / (k + rank)
+            _ = representatives.setdefault(memory.memory_id, memory)
+    arrival_order = {
+        memory_id: position for position, memory_id in enumerate(fused_scores)
+    }
+    return [
+        representatives[memory_id]
+        for memory_id in sorted(
+            fused_scores,
+            key=lambda memory_id: (-fused_scores[memory_id], arrival_order[memory_id]),
+        )
+    ]
+
+
+def lexical_stored_memory(memory: StoredMemory) -> StoredMemory:
+    """Tag a lexical candidate with a zero vector-similarity score.
+
+    Keeps the response contract: ``score`` stays the vector similarity when
+    the dense ranking saw the record (the dense representative wins fusion
+    dedupe), while a purely lexical hit surfaces with score 0.0 because RRF
+    rank, not similarity, admitted it.
+    """
+    return replace(memory, metadata={**memory.metadata, "similarity": 0.0})
 
 
 def stored_memory_from_sdk(record: object) -> StoredMemory | None:
