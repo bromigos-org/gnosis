@@ -102,6 +102,9 @@ class Settings(BaseSettings):
     gnosis_fact_extraction_enabled: bool = False
     gnosis_fact_extraction_model: str = ""
     gnosis_fact_extraction_context_turns: int = Field(default=10, ge=0)
+    gnosis_fact_extraction_mode: Literal["sync", "background"] = "sync"
+    gnosis_fact_extraction_max_concurrency: int = Field(default=2, ge=1)
+    gnosis_fact_extraction_max_pending: int = Field(default=200, ge=1)
     gnosis_prompt_entities_enabled: bool = False
     gnosis_prompt_preferences_enabled: bool = False
     gnosis_prompt_reasoning_enabled: bool = False
