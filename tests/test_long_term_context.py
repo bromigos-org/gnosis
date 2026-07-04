@@ -1120,7 +1120,7 @@ async def test_routed_multi_hop_reads_with_the_expanded_item_budget() -> None:
     ]
     settings = _settings(
         gnosis_adaptive_routing_enabled=True,
-        gnosis_multi_hop_budget_multiplier=2,
+        gnosis_coverage_budget_multiplier=2,
     )
     client = RecordingMemoryClient(
         query=RecordingQuery(),
