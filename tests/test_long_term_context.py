@@ -818,6 +818,101 @@ async def test_chain_of_note_instruction_prepended_when_enabled() -> None:
 
 
 @pytest.mark.anyio
+async def test_routed_temporal_query_reads_without_chain_of_note() -> None:
+    # Given: Chain-of-Note AND adaptive routing on, and the classifier tags
+    # the query temporal (whose hybrid retrieval texture the note step
+    # measurably harms - Run 14: temporal 92.2 -> 83.3).
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:one",
+                        predicate="said_user",
+                        object_value="the library opened on 2023-05-07",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    router = RecordingQueryRouter(verdict=RouteVerdict(route="temporal"))
+    backend = Neo4jAgentMemoryBackend(
+        _settings(
+            gnosis_chain_of_note_enabled=True,
+            gnosis_adaptive_routing_enabled=True,
+        ),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+        query_router=router,
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="when did the library open?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: no reading instruction renders on the temporal route even though
+    # the Chain-of-Note flag is globally on; the memory still renders.
+    assert all(section.source != "instructions" for section in response.sections)
+    assert "the library opened on 2023-05-07" in response.sections[0].content
+
+
+@pytest.mark.anyio
+async def test_routed_multi_hop_query_keeps_chain_of_note() -> None:
+    # Given: Chain-of-Note AND adaptive routing on with a multi-hop verdict.
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:one",
+                        predicate="said_user",
+                        object_value="the library opens at nine",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    router = RecordingQueryRouter(verdict=RouteVerdict(route="multi_hop"))
+    backend = Neo4jAgentMemoryBackend(
+        _settings(
+            gnosis_chain_of_note_enabled=True,
+            gnosis_adaptive_routing_enabled=True,
+        ),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+        query_router=router,
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="which street is the library where Alice works on?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the note-taking instruction still leads on the multi-hop route.
+    assert response.sections[0].source == "instructions"
+    assert "take notes on each memory" in response.sections[0].content
+
+
+@pytest.mark.anyio
 async def test_chain_of_note_takes_precedence_over_abstention_prompt() -> None:
     # Given: both prompt-only reading aids enabled at once.
     scope = _scope()
