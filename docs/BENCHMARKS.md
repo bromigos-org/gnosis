@@ -48,16 +48,36 @@ Write-path change (fresh ingest, new store):
 |---|---|---|---|---|
 | 10 (PR #29) | entity graph + graph-QA fusion (+ extraction) | 70.9 | 67.5 | **multi-hop FLAT at 39.2** — the graph alone is inert; needs a decomposition driver (T1). Headline −0.3 = noise. |
 
-**Current best: Run 5/6, context ~71.2–71.4** — above every published
-system's LOCOMO number (see comparison below), within ~1.5 of the
-full-context ceiling. Read-path tweaks after extraction are marginal.
-Run 9 proved stacking the measured winners globally *destroys* the score
-(temporal 84→48; the losing side of every tradeoff compounds), and
-Run 10 proved a materialized entity graph with only LLM-planned Cypher
-driving it does not move multi-hop (39.2, unchanged). The two results
-point at the same next lever: **per-query adaptive routing (PR #30) to
-keep each category's peak, plus sequential query decomposition (T1) to
-actually traverse the graph on multi-hop queries.**
+Read-path changes on the Run 10 entity-graph store:
+
+| Run | Change under test | Context J | Search J | Verdict |
+|---|---|---|---|---|
+| 11 (PR #30+#33) | adaptive per-query routing (T3) | **74.3** | 68.8 | **NEW BEST +2.9.** Single-hop 81.0 and multi-hop 44.6 both best-ever, temporal 92.2 peak kept — routing composes the per-category winners. Cost: adversarial −5.4 (router under-fires `unanswerable_risk`: 2/497). |
+| 12 (PR #34+#35) | entity-anchored graph traversal (T1) alone | 70.7 | 67.3 | **rejected as a global flag** — multi-hop went *down* (39.2→36.5): neighborhood facts displace 5 ranked-dense slots on every query for no bridge gain; adversarial −3.6 (extra facts manufacture false support). |
+| 13 (PR #31) | Chain-of-Note reading instruction (T2) alone | 72.0 | — | **kept** — **adversarial 79.5, best ever (+11.6)** AND excl-adv +1.1 (multi-hop +4.0): strictly dominates the Run 7 abstention prompt, which bought adversarial by *costing* answerable. |
+| 14 | routing (T3) + Chain-of-Note (T2) combined | 71.4 | — | **does not compose** — worse than either alone on its own front (excl-adv 74.3→71.4, adv 79.5→75.9). Temporal 92.2→83.3: CoN's "state what the memory says" makes the reader parrot relative dates from hybrid's raw turns. |
+
+**Current best: Run 11, context 74.3 excl-adv (headline); Run 13, 73.6
+overall-incl-adv** — adaptive routing is the first change since
+extraction to move the headline, and it did it exactly as designed:
+Run 9 proved stacking the measured winners globally *destroys* the
+score (temporal 84→48; the losing side of every tradeoff compounds),
+and Run 11 proved routing each query to its category's measured-best
+feature set *composes* them (temporal keeps hybrid's 92.2 peak while
+multi-hop, freed from hybrid and given verbatim expansion, sets a best
+at 44.6). Run 12 then killed the obvious multi-hop follow-up:
+deterministic entity-anchored traversal (T1) applied globally *costs*
+multi-hop — blind RELATES neighborhood expansion floods the reserved
+budget slots without resolving bridges. Run 13 measured Chain-of-Note
+(T2) as the first strict win since extraction: adversarial 79.5 (best
+ever) with the answerable side *also* up. But Run 14 showed the two
+winners do NOT stack (71.4, worse than either alone on its own front):
+CoN's note step makes the reader trust hybrid's raw relative-dated
+turns on temporal queries ("last Saturday" instead of the resolved
+date). The composability lesson now repeats at the prompt level. Next
+levers: route-aware reading instructions (CoN everywhere *except*
+temporal-routed queries), a router that emits `unanswerable_risk`
+reliably, and directed (not radial) hop-2 traversal for multi-hop.
 
 ### Full per-category history — context condition (`/v1/memory/context`)
 
@@ -66,32 +86,35 @@ Every run, so each category's progression is visible (e.g. temporal
 cumulative; Runs 7–9 are read-path experiments on the Run 5 store
 (7–8 one flag alone, 9 stacked) so they compare against Run 5, not each
 other; Run 10 is a fresh ingest (new store: extraction + entity graph)
-with graph-QA fusion on at read time.
+with graph-QA fusion on at read time; Runs 11–12 are read-path
+experiments on the Run 10 store (11: adaptive routing on, all global
+read flags off; 12: graph traversal alone; 13: Chain-of-Note alone;
+14: routing + Chain-of-Note together).
 
-| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) | Run 9 stacked | Run 10 graph (#29) |
-|---|---|---|---|---|---|---|---|---|---|---|
-| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | **80.5** | 79.5 | 78.5 | 80.0 | 75.5 | 79.0 |
-| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 | 37.8 | **41.9** | 28.4 | 39.2 |
-| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** | 85.6 | 84.4 | 47.8 | 85.6 |
-| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 | 28.6 | 33.3 | 38.1 | **42.9** |
-| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 | **76.8** | 68.8 | 64.3 | 67.9 |
-| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** | **69.6** | **71.2** | **57.9** | **70.9** |
-| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 | 71.2 | 70.7 | 59.4 | 70.2 |
+| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) | Run 9 stacked | Run 10 graph (#29) | Run 11 routed (#30) | Run 12 traversal (#35) | Run 13 CoN (#31) | Run 14 routed+CoN |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | 80.5 | 79.5 | 78.5 | 80.0 | 75.5 | 79.0 | **81.0** | 79.5 | 79.5 | 80.0 |
+| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 | 37.8 | 41.9 | 28.4 | 39.2 | **44.6** | 36.5 | 43.2 | 43.2 |
+| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** | 85.6 | 84.4 | 47.8 | 85.6 | **92.2** | 85.6 | 85.6 | 83.3 |
+| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 | 28.6 | 33.3 | 38.1 | **42.9** | 38.1 | **42.9** | **42.9** | 38.1 |
+| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 | 76.8 | 68.8 | 64.3 | 67.9 | 62.5 | 64.3 | **79.5** | 75.9 |
+| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** | **69.6** | **71.2** | **57.9** | **70.9** | **74.3** | **70.7** | **72.0** | **71.4** |
+| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 | 71.2 | 70.7 | 59.4 | 70.2 | 71.6 | 69.2 | **73.6** | 72.4 |
 
 ### Full per-category history — search condition (`/v1/memories/search`)
 
 Runs where search was re-run (read-path changes measured on context only
 are omitted).
 
-| Category (n) | Run 1 | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) | Run 9 stacked | Run 10 graph (#29) |
-|---|---|---|---|---|---|---|---|---|
-| single-hop (200) | 75.0 | 73.5 | 73.5 | 75.5 | 74.0 | 75.0 | 40.5 | 74.0 |
-| multi-hop (74) | 44.6 | 46.0 | 37.8 | 32.4 | 39.2 | 39.2 | 4.0 | 35.1 |
-| temporal (90) | 48.9 | 43.3 | 84.4 | **92.2** | 86.7 | 85.6 | 27.8 | 86.7 |
-| open-domain (21) | 42.9 | 33.3 | 38.1 | 38.1 | 33.3 | 42.9 | 14.3 | 38.1 |
-| adversarial (112) | 68.8 | 72.3 | 71.4 | 73.2 | 70.5 | 72.3 | **81.2** | 75.0 |
-| **overall excl. adv. (385)** | **61.3** | **59.0** | **67.3** | **69.1** | **68.1** | **68.8** | **29.1** | **67.5** |
-| overall (497) | 63.0 | 62.0 | 68.2 | 70.0 | 68.6 | 69.6 | 40.8 | 69.2 |
+| Category (n) | Run 1 | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) | Run 9 stacked | Run 10 graph (#29) | Run 11 routed (#30) | Run 12 traversal (#35) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| single-hop (200) | 75.0 | 73.5 | 73.5 | **75.5** | 74.0 | 75.0 | 40.5 | 74.0 | 74.5 | 73.5 |
+| multi-hop (74) | **44.6** | 46.0 | 37.8 | 32.4 | 39.2 | 39.2 | 4.0 | 35.1 | 35.1 | 33.8 |
+| temporal (90) | 48.9 | 43.3 | 84.4 | **92.2** | 86.7 | 85.6 | 27.8 | 86.7 | 90.0 | 87.8 |
+| open-domain (21) | 42.9 | 33.3 | 38.1 | 38.1 | 33.3 | **42.9** | 14.3 | 38.1 | **42.9** | 38.1 |
+| adversarial (112) | 68.8 | 72.3 | 71.4 | 73.2 | 70.5 | 72.3 | **81.2** | 75.0 | 74.1 | 76.8 |
+| **overall excl. adv. (385)** | **61.3** | **59.0** | **67.3** | **69.1** | **68.1** | **68.8** | **29.1** | **67.5** | **68.8** | **67.3** |
+| overall (497) | 63.0 | 62.0 | 68.2 | 70.0 | 68.6 | 69.6 | 40.8 | 69.2 | 70.0 | 69.4 |
 
 Retrieval mechanism stats (context condition unless noted):
 
@@ -106,6 +129,11 @@ Retrieval mechanism stats (context condition unless noted):
 | Run 9 stacked search | 503 | 55.5% |
 | Run 10 (PR #29) context | 4,367 | 20.5% |
 | Run 10 (PR #29) search | 2,189 | 23.5% |
+| Run 11 (PR #30) context | 4,392 | 19.3% |
+| Run 11 (PR #30) search | 2,210 | 23.1% |
+| Run 12 (PR #35) context | 4,345 | 19.3% |
+| Run 13 (PR #31) context | 4,726 | 23.7% |
+| Run 14 routed+CoN context | 4,753 | 22.5% |
 
 ## Run details
 
@@ -302,6 +330,142 @@ Retrieval mechanism stats (context condition unless noted):
   and resumed; partial conv-30/conv-41 data wiped by scope before each
   re-ingest so no duplicates). Ingest wall-clock ~15 min effective at
   concurrency 4–8; answer+grade ~55 min for both conditions.
+
+### Run 11 — `results/locomo/adaptive-routing-20260704/` (measures gnosis PR #30 + #33)
+
+- Same Run 10 store (read-path-only; extraction + entity graph in the
+  data). gnosis main @ PR #33: `GNOSIS_ADAPTIVE_ROUTING_ENABLED=true`,
+  every global read-path flag off — the router's decision is the only
+  source of per-query features. One gpt-5.5 classification call per
+  query tags it `temporal` / `multi_hop` / `single_hop` /
+  `unanswerable_risk` / `aggregative`; the route applies that category's
+  measured-best set (temporal→hybrid BM25; multi-hop→graph-QA fusion +
+  verbatim expansion, no hybrid; unanswerable-risk→abstention prompt;
+  single-hop/aggregative→plain dense). Both conditions rerun.
+- **Scores: context 74.3 J excl. adversarial — NEW BEST (+2.9 vs Run 6's
+  71.4; +3.4 vs Run 10 on the same store). Search 68.8 (ties Run 8's
+  best-since-extraction).** Per category (context): single-hop **81.0**
+  (best ever), multi-hop **44.6** (best ever — first move off the ~40
+  plateau), temporal **92.2** (ties the Run 6 hybrid peak), open-domain
+  38.1, adversarial 62.5 (−5.4 vs Run 10). Overall including adversarial
+  71.6 — also a best.
+- Mechanism verified per-question vs Run 10: 19 flips wrong→correct
+  (8 temporal, 6 single-hop, 5 multi-hop) against 12 correct→wrong
+  (6 of them adversarial). Temporal's +6.6 is hybrid quarantined to
+  temporal queries; multi-hop's +5.4 came from verbatim expansion
+  alone — the graph-QA fusion leg the route also enables was silently
+  dead (its candidates were always cut by the item budget, the PR #34
+  bug, found *after* this run) — so routed multi-hop still has headroom.
+- The adversarial give-back is a router blind spot, not an abstention
+  failure: only 2 of 497 context payloads carried the abstention
+  instruction (both open-domain questions), i.e. the classifier almost
+  never emits `unanswerable_risk` on LOCOMO's presupposition-style
+  adversarial questions ("What kind of counseling workshop did Melanie
+  attend?" → routed single-hop → answered "LGBTQ+ counseling workshop"
+  from adjacent facts instead of refusing). 70/112 adversarial context
+  answers still abstained (down from 76 in Run 10). Fixes to try: an
+  explicit presupposition-check line in the router guide, or handing
+  abstention to Chain-of-Note (T2) globally instead of routing it.
+- Ops notes: the first smoke test of routing 500'd every read — the
+  LiteLLM gpt-5.5 route answers a single-enum JSON schema with the bare
+  enum value, which the SDK's strict parser rejects, and `ValidationError`
+  escaped the router's failure fallback. Fixed in gnosis PR #33 (lenient
+  parse + fallback catches ValidationError) before the run. Answer+grade
+  ~19 min for both conditions at concurrency 8 (routing adds one cheap
+  LLM call per query; no visible latency impact at this concurrency).
+
+### Run 12 — `results/locomo/graph-traversal-20260704/` (measures gnosis PR #34 + #35)
+
+- Same Run 10 store (read-path-only). Two merged changes under test:
+  the **PR #34 budget fix** (graph-derived candidates get up to a
+  quarter of `max_items` reserved instead of always being cut — found
+  by code inspection after Run 11: `_fuse_graph_facts` appended graph
+  candidates after the ~100-deep dense ranking, so the `max_items=20`
+  cut silently dropped every one; the graph-QA fusion leg had **never
+  rendered a single node in any prior run**), and **PR #35 entity
+  traversal (T1)**: `GNOSIS_GRAPH_TRAVERSAL_ENABLED=true` alone,
+  routing/fusion/hybrid off. Traversal pins the query's entity mentions
+  as `:Entity` seeds (deterministic n-gram normalization, zero extra
+  LLM calls), expands 1–2 `RELATES` hops, and fuses the edge-provenance
+  facts into the reserved slots. Both conditions rerun.
+- **Scores: context 70.7 (−0.2 vs Run 10 = noise), search 67.3 (−0.2).
+  The target metric went the WRONG way: multi-hop 39.2→36.5 context /
+  35.1→33.8 search.** temporal 85.6 flat, single-hop 79.5 (−0.5 noise),
+  open-domain 42.9 flat-at-its-best, adversarial 64.3 (−3.6).
+- Failure mechanism (13 correct→wrong vs Run 10, spread across all
+  categories, vs 8 repairs): with the flag global, *every* query pins
+  seeds (LOCOMO questions almost always name a speaker), so every
+  context gives up to 5 ranked-dense slots to RELATES-neighborhood
+  facts. Those neighbors are topically adjacent but rarely the bridge
+  evidence — dense retrieval already surfaces the seed's own facts; the
+  expansion adds the seed's *other* facts, displacing the ranked tail
+  where multi-hop chain links actually lived. Adversarial −3.6 is the
+  familiar false-support pattern: more adjacent facts, more material to
+  answer presupposed questions from.
+- **Verdict: rejected as a standalone/global flag.** Blind 2-hop
+  neighborhood expansion is not decomposition — the graph needs
+  *directed* hop-2 (resolve the bridge entity first, then expand only
+  through it), not radial flooding. The flag stays merged (default-off)
+  and routed-multi-hop-only wiring exists (`RouteDecision`), but it is
+  NOT added to the route table without a measured multi-hop win. The
+  PR #34 budget fix is kept — it is a correctness fix and its effect
+  here is bounded by what fills the reserved slots.
+- Ops: answer+grade ~15.5 min, both conditions, concurrency 8.
+
+### Run 13 — `results/locomo/chain-of-note-20260704/` (measures gnosis PR #31)
+
+- Same Run 10 store (read-path-only, prompt-only change):
+  `GNOSIS_CHAIN_OF_NOTE_ENABLED=true` alone — a standing read-then-reason
+  instruction prepended as a leading `instructions` section (note each
+  memory's relevance and contradictions, ignore similar-but-irrelevant
+  memories, answer only from relevant ones or say you don't know; arXiv
+  2311.09210, LongMemEval 2410.10813). Context condition only — the
+  instruction never appears in `/v1/memories/search` payloads.
+- **Scores: context 72.0 J excl. adversarial (+1.1 vs Run 10) with
+  adversarial 79.5 — best ever, +11.6 vs Run 10 and +2.7 over the Run 7
+  abstention prompt's previous record.** Overall including adversarial
+  **73.6, the best overall of any run.** multi-hop 43.2 (+4.0),
+  open-domain 42.9, single-hop 79.5, temporal 85.6.
+- Mechanism (25 wrong→correct vs Run 10 against only 8 losses):
+  14 adversarial repairs — 89/112 adversarial answers abstained (vs
+  76 in Run 10) — *plus* 3 multi-hop and net gains on temporal and
+  single-hop. The note step rejects retrieved similar-but-wrong facts
+  instead of answering from them, which is exactly the dual profile the
+  papers promised (higher rejection AND higher answer quality under
+  noisy retrieval). Contrast Run 7's bare abstention prompt: adversarial
+  +8.9 but −1.6 on answerable. Chain-of-Note strictly dominates it.
+- **Verdict: kept; the first candidate for a production default-on among
+  the read-path prompts.** Also the natural partner for routing: Run 11
+  won retrieval (74.3 excl-adv) but gave back adversarial (62.5);
+  Chain-of-Note repairs exactly that seam from the reading side. The
+  combined config (routing + CoN) is measured next as Run 14.
+
+### Run 14 — `results/locomo/routing-chain-of-note-20260704/` (T3 + T2 combined)
+
+- Same Run 10 store: `GNOSIS_ADAPTIVE_ROUTING_ENABLED=true` +
+  `GNOSIS_CHAIN_OF_NOTE_ENABLED=true` (CoN takes precedence over the
+  routed abstention instruction by design — it subsumes the grounding
+  line). Context only. Hypothesis: routing's retrieval wins (74.3) plus
+  CoN's adversarial repair (79.5) compose, since they occupy different
+  seams (retrieval vs reading).
+- **Scores: context 71.4 excl-adv, adversarial 75.9 — worse than either
+  parent on its own front** (Run 11: 74.3 excl-adv; Run 13: 79.5 adv).
+  temporal **92.2→83.3** is the damage. multi-hop 43.2, single-hop 80.0,
+  open-domain 38.1.
+- Failure mechanism (verified per-question vs Run 11: 10 temporal flips
+  correct→wrong): on temporal-routed queries, hybrid BM25 surfaces the
+  raw verbatim turns with relative dates alongside the resolved
+  extracted facts, and CoN's "state what each memory says" step makes
+  the reader faithfully report the raw turn's phrasing — Run 11 answered
+  "2023-05-20", Run 14 answers "last Saturday". The abstention side
+  works as intended (adversarial +13.4 over Run 11, 16 repairs), but the
+  reading instruction interacts with hybrid's retrieval texture.
+- **Verdict: do not stack blindly — the composability lesson repeats at
+  the prompt level.** The obvious fix is route-aware reading: apply CoN
+  on every route *except* temporal (whose hybrid+dated-facts pipeline
+  needs no note step), i.e. make the reading instruction part of the
+  route table rather than a global flag. Candidate next change, needs
+  its own run.
 
 ## Published comparison targets
 
