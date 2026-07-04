@@ -48,6 +48,7 @@ def test_unrouted_decision_mirrors_global_flags() -> None:
         gnosis_fact_verbatim_expansion_enabled=True,
         gnosis_abstention_prompt_enabled=True,
         gnosis_graph_traversal_enabled=True,
+        gnosis_bridge_traversal_enabled=True,
         gnosis_chain_of_note_enabled=True,
     )
 
@@ -62,6 +63,7 @@ def test_unrouted_decision_mirrors_global_flags() -> None:
         verbatim_expansion=True,
         abstention_prompt=True,
         graph_traversal=True,
+        bridge_traversal=True,
         chain_of_note=True,
     )
 
@@ -75,6 +77,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
         verbatim_expansion=False,
         abstention_prompt=False,
         graph_traversal=False,
+        bridge_traversal=False,
         chain_of_note=False,
     )
 
@@ -92,6 +95,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 verbatim_expansion=False,
                 abstention_prompt=False,
                 graph_traversal=False,
+                bridge_traversal=False,
                 chain_of_note=False,
             ),
         ),
@@ -107,6 +111,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 verbatim_expansion=True,
                 abstention_prompt=False,
                 graph_traversal=False,
+                bridge_traversal=False,
                 chain_of_note=False,
             ),
         ),
@@ -121,6 +126,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 verbatim_expansion=False,
                 abstention_prompt=True,
                 graph_traversal=False,
+                bridge_traversal=False,
                 chain_of_note=False,
             ),
         ),
@@ -134,6 +140,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 verbatim_expansion=False,
                 abstention_prompt=False,
                 graph_traversal=False,
+                bridge_traversal=False,
                 chain_of_note=False,
             ),
         ),
@@ -147,6 +154,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 verbatim_expansion=False,
                 abstention_prompt=False,
                 graph_traversal=False,
+                bridge_traversal=False,
                 chain_of_note=False,
             ),
         ),
@@ -165,6 +173,18 @@ def test_routed_multi_hop_honors_the_traversal_flag() -> None:
     assert RouteDecision.for_route("multi_hop", settings).graph_traversal is True
     assert RouteDecision.for_route("temporal", settings).graph_traversal is False
     assert RouteDecision.for_route("single_hop", settings).graph_traversal is False
+
+
+def test_routed_multi_hop_honors_the_bridge_traversal_flag() -> None:
+    # Given: directed bridge traversal enabled globally alongside routing.
+    settings = _settings(gnosis_bridge_traversal_enabled=True)
+
+    # When/Then: only the multi-hop route runs the directed bridge hop;
+    # every other route leaves it off even though the flag is on.
+    assert RouteDecision.for_route("multi_hop", settings).bridge_traversal is True
+    assert RouteDecision.for_route("temporal", settings).bridge_traversal is False
+    assert RouteDecision.for_route("single_hop", settings).bridge_traversal is False
+    assert RouteDecision.for_route("multi_hop", _settings()).bridge_traversal is False
 
 
 def test_routed_chain_of_note_skips_the_temporal_route() -> None:

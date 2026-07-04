@@ -111,6 +111,7 @@ class RouteDecision:
     verbatim_expansion: bool
     abstention_prompt: bool
     graph_traversal: bool
+    bridge_traversal: bool
     chain_of_note: bool
 
     @classmethod
@@ -123,6 +124,7 @@ class RouteDecision:
             verbatim_expansion=settings.gnosis_fact_verbatim_expansion_enabled,
             abstention_prompt=settings.gnosis_abstention_prompt_enabled,
             graph_traversal=settings.gnosis_graph_traversal_enabled,
+            bridge_traversal=settings.gnosis_bridge_traversal_enabled,
             chain_of_note=settings.gnosis_chain_of_note_enabled,
         )
 
@@ -133,7 +135,9 @@ class RouteDecision:
         Entity traversal is not yet in any route's measured-best set, so a
         routed request runs it only where it *could* win - multi-hop - and
         only when its own flag is on; the flag alone (routing off) applies
-        it to every query for standalone measurement.
+        it to every query for standalone measurement. Directed bridge
+        traversal follows the same contract: multi-hop only, and only when
+        its own flag is on.
 
         Chain-of-Note is route-aware by measurement: stacked globally with
         routing it *cost* temporal 8.9 points (Run 14, 2026-07-04) because
@@ -150,6 +154,9 @@ class RouteDecision:
             abstention_prompt=route == "unanswerable_risk",
             graph_traversal=(
                 route == "multi_hop" and settings.gnosis_graph_traversal_enabled
+            ),
+            bridge_traversal=(
+                route == "multi_hop" and settings.gnosis_bridge_traversal_enabled
             ),
             chain_of_note=(
                 route != "temporal" and settings.gnosis_chain_of_note_enabled

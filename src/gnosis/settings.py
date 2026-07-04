@@ -107,6 +107,7 @@ class Settings(BaseSettings):
     gnosis_read_supersession_enabled: bool = False
     gnosis_entity_graph_enabled: bool = False
     gnosis_graph_traversal_enabled: bool = False
+    gnosis_bridge_traversal_enabled: bool = False
     gnosis_adaptive_routing_enabled: bool = False
     gnosis_routing_model: str = ""
     gnosis_sufficiency_check_enabled: bool = False
