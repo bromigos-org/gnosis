@@ -1,45 +1,117 @@
 import asyncio
-import base64
-import binascii
-import hashlib
 import hmac
 import json
 import logging
-from collections.abc import Awaitable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
-from typing import (
-    Final,
-    Literal,
-    Protocol,
-    Self,
-    TypedDict,
-    assert_never,
-    cast,
-    runtime_checkable,
-)
+from datetime import UTC, datetime
+from typing import Final, Literal
 from uuid import UUID, uuid4
 
 from neo4j.exceptions import Neo4jError
-from neo4j_agent_memory import MemoryClient, MemoryConfig, MemorySettings, Neo4jConfig
-from neo4j_agent_memory.llm.adapters.litellm import (
-    LiteLLMEmbeddingProvider,
-    LiteLLMProvider,
-)
-from neo4j_agent_memory.memory.long_term import EntityType
+from neo4j_agent_memory import MemoryClient, MemorySettings
+from neo4j_agent_memory.llm.adapters.litellm import LiteLLMEmbeddingProvider
 from neo4j_agent_memory.memory.reasoning import ReasoningStep as SdkReasoningStep
 from neo4j_agent_memory.memory.reasoning import ReasoningTrace as SdkReasoningTrace
 from neo4j_agent_memory.memory.reasoning import ToolCall, ToolCallStatus, ToolStats
 from neo4j_agent_memory.schema.models import EntityRef
 from openai import OpenAIError
-from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from gnosis.backend_protocols import (
+    BackendCapabilityUnavailable,
+    BackendRequestError,
+    ExtractionPreviewBackend,
+    MemoryBackend,
+    MemoryNotFoundError,
+    RecallFilteringBackend,
+)
 from gnosis.bridge_traversal import (
     BRIDGE_MENTION_CYPHER,
     BridgeNamer,
     LiteLLMBridgeNamer,
     bridge_parameters,
     parse_bridge_names,
+)
+from gnosis.dedup_consolidation import (
+    CONSOLIDATION_APPLY_REQUIRED_DETAIL as _CONSOLIDATION_APPLY_REQUIRED_DETAIL,
+)
+from gnosis.dedup_consolidation import (
+    CONSOLIDATION_IDEMPOTENCY_DETAIL as _CONSOLIDATION_IDEMPOTENCY_DETAIL,
+)
+from gnosis.dedup_consolidation import (
+    CONSOLIDATION_TOKEN_TTL as _CONSOLIDATION_TOKEN_TTL,
+)
+from gnosis.dedup_consolidation import (
+    CONSOLIDATION_UNAVAILABLE_DETAIL as _CONSOLIDATION_UNAVAILABLE_DETAIL,
+)
+from gnosis.dedup_consolidation import (
+    DEDUP_APPLY_REQUIRED_DETAIL as _DEDUP_APPLY_REQUIRED_DETAIL,
+)
+from gnosis.dedup_consolidation import (
+    DEDUP_IDEMPOTENCY_DETAIL as _DEDUP_IDEMPOTENCY_DETAIL,
+)
+from gnosis.dedup_consolidation import (
+    DEDUP_TOKEN_TTL as _DEDUP_TOKEN_TTL,
+)
+from gnosis.dedup_consolidation import (
+    DEDUP_UNAVAILABLE_DETAIL as _DEDUP_UNAVAILABLE_DETAIL,
+)
+from gnosis.dedup_consolidation import (
+    UNSAFE_CONSOLIDATION_REPORT_KEYS as _UNSAFE_CONSOLIDATION_REPORT_KEYS,
+)
+from gnosis.dedup_consolidation import (
+    ConsolidationCapableMemoryClient,
+    ConsolidationDryRunState,
+    ConsolidationIdempotencyRecord,
+    ConsolidationMemory,
+    ConsolidationTokenClaims,
+    DedupCandidateState,
+    DedupCapableLongTermMemory,
+    DedupIdempotencyRecord,
+    DedupTokenClaims,
+)
+from gnosis.dedup_consolidation import (
+    apply_dedup_operation as _apply_dedup_operation,
+)
+from gnosis.dedup_consolidation import (
+    consolidation_apply_fingerprint as _consolidation_apply_fingerprint,
+)
+from gnosis.dedup_consolidation import (
+    consolidation_request_fingerprint as _consolidation_request_fingerprint,
+)
+from gnosis.dedup_consolidation import (
+    consolidation_token as _consolidation_token,
+)
+from gnosis.dedup_consolidation import (
+    dedup_candidate as _dedup_candidate,
+)
+from gnosis.dedup_consolidation import (
+    dedup_snapshot_hash as _dedup_snapshot_hash,
+)
+from gnosis.dedup_consolidation import (
+    dedup_stats_payload as _dedup_stats_payload,
+)
+from gnosis.dedup_consolidation import (
+    dedup_token as _dedup_token,
+)
+from gnosis.dedup_consolidation import (
+    require_consolidation_token as _require_consolidation_token,
+)
+from gnosis.dedup_consolidation import (
+    require_current_consolidation_dry_run as _require_current_consolidation_dry_run,
+)
+from gnosis.dedup_consolidation import (
+    require_current_dedup_candidate as _require_current_dedup_candidate,
+)
+from gnosis.dedup_consolidation import (
+    require_dedup_token as _require_dedup_token,
+)
+from gnosis.dedup_consolidation import (
+    run_consolidation_operation as _run_consolidation_operation,
+)
+from gnosis.dedup_consolidation import (
+    safe_consolidation_report as _safe_consolidation_report,
 )
 from gnosis.entity_graph import (
     CREATE_ENTITY_SCOPE_INDEX_CYPHER,
@@ -66,6 +138,27 @@ from gnosis.fact_extraction import (
 from gnosis.graph_probe import StructuredGraphStore, direct_neo4j_driver_factory
 from gnosis.graph_query_qa import LiteLLMGraphQueryPlanner
 from gnosis.graph_store import DirectNeo4jGraphStore, Neo4jGraphExecutor
+from gnosis.json_redaction import (
+    hash_json as _hash_json,
+)
+from gnosis.json_redaction import (
+    json_object as _json_object,
+)
+from gnosis.json_redaction import (
+    metadata_from_json as _metadata_from_json,
+)
+from gnosis.json_redaction import (
+    redacted_object as _redacted_object,
+)
+from gnosis.json_redaction import (
+    redacted_optional_text as _redacted_optional_text,
+)
+from gnosis.json_redaction import (
+    redacted_text as _redacted_text,
+)
+from gnosis.json_redaction import (
+    string_metadata as _string_metadata,
+)
 from gnosis.memory_filters import (
     FilterValidationError,
     MemoryFilter,
@@ -117,16 +210,12 @@ from gnosis.models import (
     ConsolidationApplyResponse,
     ConsolidationDryRunRequest,
     ConsolidationDryRunResponse,
-    ConsolidationOperationName,
     ContextRequest,
     ContextResponse,
     DedupApplyRequest,
     DedupApplyResponse,
-    DedupCandidate,
     DedupCandidateRequest,
     DedupCandidateResponse,
-    DedupEntitySnapshot,
-    DedupOperationName,
     DedupStatsRequest,
     DedupStatsResponse,
     DiagnosticsConfig,
@@ -147,8 +236,6 @@ from gnosis.models import (
     FactWriteRequest,
     GraphContextRequest,
     GraphContextResponse,
-    GraphExportNode,
-    GraphExportRelationship,
     GraphExportRequest,
     GraphExportResponse,
     JsonObject,
@@ -215,6 +302,42 @@ from gnosis.recall_filter import (
     keep_relevant_candidates,
 )
 from gnosis.redaction import redact_secrets
+from gnosis.sdk_client import (
+    BufferErrorCapableMemoryClient,
+    BufferFlushCapableMemoryClient,
+    BufferPendingCapableMemoryClient,
+    CypherQuery,
+    GraphCapableMemoryClient,
+    GraphNodeLike,
+    GraphRelationshipLike,
+    GraphWriteQuery,
+    LongTermFactMemory,
+    LongTermMemory,
+    MemoryClientContext,
+    MemoryClientFactory,
+    MemoryConfigKwargs,
+    MemoryGraphLike,
+    ReasoningMemory,
+    ShortTermMemory,
+    StatsCapableMemoryClient,
+    TextEmbedder,
+    litellm_embedding_model,
+)
+from gnosis.sdk_client import (
+    build_memory_settings as _build_memory_settings,
+)
+from gnosis.sdk_client import (
+    graph_export_response as _graph_export_response,
+)
+from gnosis.sdk_client import (
+    graph_write_query as _graph_write_query,
+)
+from gnosis.sdk_client import (
+    memory_client_context as _memory_client_context,
+)
+from gnosis.sdk_client import (
+    memory_embedding as _memory_embedding,
+)
 from gnosis.settings import Settings
 from gnosis.skill_registry import InMemorySkillRegistry, SkillRegistry
 from gnosis.sufficiency import (
@@ -223,6 +346,47 @@ from gnosis.sufficiency import (
     bounded_reason,
 )
 from gnosis.supersession import FactFreshness, drop_superseded, slot_key
+
+__all__ = [
+    "BackendCapabilityUnavailable",
+    "BackendRequestError",
+    "BufferErrorCapableMemoryClient",
+    "BufferFlushCapableMemoryClient",
+    "BufferPendingCapableMemoryClient",
+    "ConsolidationCapableMemoryClient",
+    "ConsolidationDryRunState",
+    "ConsolidationIdempotencyRecord",
+    "ConsolidationMemory",
+    "ConsolidationTokenClaims",
+    "CypherQuery",
+    "DedupCandidateState",
+    "DedupCapableLongTermMemory",
+    "DedupIdempotencyRecord",
+    "DedupTokenClaims",
+    "ExtractionPolicy",
+    "ExtractionPreviewBackend",
+    "GraphCapableMemoryClient",
+    "GraphNodeLike",
+    "GraphRelationshipLike",
+    "GraphWriteQuery",
+    "LongTermFactMemory",
+    "LongTermFactsContext",
+    "LongTermMemory",
+    "MemoryBackend",
+    "MemoryClientContext",
+    "MemoryClientFactory",
+    "MemoryConfigKwargs",
+    "MemoryGraphLike",
+    "MemoryNotFoundError",
+    "Neo4jAgentMemoryBackend",
+    "ReasoningMemory",
+    "RecallFilteringBackend",
+    "ShortTermMemory",
+    "StatsCapableMemoryClient",
+    "TextEmbedder",
+    "build_direct_graph_store",
+    "litellm_embedding_model",
+]
 
 _JSON_OBJECT_ADAPTER: Final[TypeAdapter[JsonObject]] = TypeAdapter(JsonObject)
 _ENTITY_RECORD_ADAPTER: Final[TypeAdapter[EntityRecord]] = TypeAdapter(EntityRecord)
@@ -267,31 +431,7 @@ _SDK_BUFFER_WAIT_UNAVAILABLE_DETAIL: Final[str] = "SDK buffer wait is unavailabl
 _EXTRACTION_DRAIN_TIMEOUT_SECONDS: Final[float] = 10.0
 _NO_EXCLUDED_MEMORY_IDS: Final[frozenset[str]] = frozenset()
 _SDK_GRAPH_UNAVAILABLE_DETAIL: Final[str] = "SDK graph export is unavailable."
-_DEDUP_UNAVAILABLE_DETAIL: Final[str] = "SDK deduplication is unavailable."
 _QUERY_EMBEDDER_UNAVAILABLE_DETAIL: Final[str] = "SDK query embedder is unavailable."
-_DEDUP_APPLY_REQUIRED_DETAIL: Final[str] = (
-    "Deduplication apply requests require apply=true."
-)
-_DEDUP_TOKEN_DETAIL: Final[str] = "Deduplication dry-run token is invalid or expired."  # noqa: S105
-_DEDUP_STALE_DETAIL: Final[str] = "Deduplication candidate is stale."
-_DEDUP_IDEMPOTENCY_DETAIL: Final[str] = (
-    "Idempotency key was already used for a different deduplication request."
-)
-_DEDUP_TOKEN_TTL: Final[timedelta] = timedelta(minutes=15)
-_DEDUP_TOKEN_PARTS: Final[int] = 2
-_DEDUP_PENDING_TOKEN: Final[str] = "pending"  # noqa: S105
-_CONSOLIDATION_UNAVAILABLE_DETAIL: Final[str] = "SDK consolidation is unavailable."
-_CONSOLIDATION_APPLY_REQUIRED_DETAIL: Final[str] = (
-    "Consolidation apply requests require apply=true."
-)
-_CONSOLIDATION_TOKEN_DETAIL: Final[str] = (
-    "Consolidation dry-run token is invalid or expired."  # noqa: S105
-)
-_CONSOLIDATION_STALE_DETAIL: Final[str] = "Consolidation dry-run report is stale."
-_CONSOLIDATION_IDEMPOTENCY_DETAIL: Final[str] = (
-    "Idempotency key was already used for a different consolidation request."
-)
-_CONSOLIDATION_TOKEN_TTL: Final[timedelta] = timedelta(minutes=15)
 _REASONING_READ_UNAVAILABLE_DETAIL: Final[str] = "SDK reasoning read is unavailable."
 _MEMORY_MODE_DETAIL: Final[str] = (
     "Provide messages with infer=true or content with infer=false."
@@ -299,28 +439,9 @@ _MEMORY_MODE_DETAIL: Final[str] = (
 _MEMORY_MESSAGES_INFER_DETAIL: Final[str] = "messages require infer=true."
 _MEMORY_CONTENT_INFER_DETAIL: Final[str] = "content requires infer=false."
 _MEMORY_UPDATE_FIELDS_DETAIL: Final[str] = "Memory updates require content or metadata."
-_MEMORY_WRITE_UNAVAILABLE_DETAIL: Final[str] = "SDK graph writes are unavailable."
 _MEMORY_ID_UNAVAILABLE_DETAIL: Final[str] = "SDK did not expose a stable memory id."
-_MEMORY_NOT_FOUND_DETAIL: Final[str] = "memory not found in scope"
 _MEMORY_LIST_SCAN_LIMIT: Final[int] = 2000
 _MEMORY_SEARCH_CANDIDATE_LIMIT: Final[int] = 100
-_UNSAFE_CONSOLIDATION_REPORT_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "authorization",
-        "chain_of_thought",
-        "credentials",
-        "cypher",
-        "embedding",
-        "embeddings",
-        "password",
-        "prompt",
-        "raw_prompt",
-        "rustfs_credentials",
-        "secret",
-        "thought",
-        "token",
-    },
-)
 _UNSAFE_REASONING_KEYS: Final[frozenset[str]] = _UNSAFE_CONSOLIDATION_REPORT_KEYS | {
     "task_embedding",
     "tool_calls",
@@ -378,675 +499,6 @@ _CHAIN_OF_NOTE_INSTRUCTION: Final[str] = (
     "itself asks what is likely or probable, infer the most plausible "
     "answer from the relevant memories instead of saying you don't know."
 )
-
-
-class MemoryConfigKwargs(TypedDict, total=False):
-    multi_tenant: bool
-    write_mode: Literal["sync", "buffered"]
-    max_pending: int
-    conversation_ttl_days: int | None
-    audit_read: bool
-    fact_deduplication_enabled: bool
-    trace_embedding_enabled: bool
-
-
-class MemoryBackend(Protocol):
-    async def readiness(self) -> BackendReadiness: ...
-    def diagnostics(self, readiness: BackendReadiness) -> DiagnosticsResponse: ...
-    async def buffer_status(self) -> BufferStatus: ...
-    async def flush_buffer(self) -> BufferFlushResponse: ...
-    async def shutdown(self) -> None: ...
-    async def add_message(
-        self,
-        request: MessageWriteRequest,
-    ) -> MessageWriteResponse: ...
-    async def get_context(self, request: ContextRequest) -> ContextResponse: ...
-    async def get_memory_context(
-        self,
-        request: MemoryContextRequest,
-    ) -> MemoryContextResponse: ...
-    async def add_memories(self, request: MemoryAddRequest) -> MemoryAddResponse: ...
-    async def search_memories(
-        self,
-        request: MemorySearchRequest,
-    ) -> MemorySearchResponse: ...
-    async def list_memories(
-        self,
-        request: MemoryListRequest,
-    ) -> MemoryListResponse: ...
-    async def update_memory(
-        self,
-        memory_id: str,
-        request: MemoryUpdateRequest,
-    ) -> MemoryUpdateResponse: ...
-    async def delete_memory(
-        self,
-        memory_id: str,
-        request: MemoryDeleteRequest,
-    ) -> MemoryDeleteResponse: ...
-    async def ingest_event(self, event: ClientEvent) -> EventIngestResult: ...
-    async def ingest_events(
-        self,
-        request: ClientEventBatchRequest,
-    ) -> ClientEventBatchResponse: ...
-    async def get_graph_context(
-        self,
-        request: GraphContextRequest,
-    ) -> GraphContextResponse: ...
-    async def get_sdk_stats(self, request: SdkStatsRequest) -> SdkStatsResponse: ...
-    async def get_dedup_stats(
-        self,
-        request: DedupStatsRequest,
-    ) -> DedupStatsResponse: ...
-    async def find_dedup_candidates(
-        self,
-        request: DedupCandidateRequest,
-    ) -> DedupCandidateResponse: ...
-    async def apply_dedup_candidate(
-        self,
-        request: DedupApplyRequest,
-    ) -> DedupApplyResponse: ...
-    async def dry_run_consolidation(
-        self,
-        request: ConsolidationDryRunRequest,
-    ) -> ConsolidationDryRunResponse: ...
-    async def apply_consolidation(
-        self,
-        request: ConsolidationApplyRequest,
-    ) -> ConsolidationApplyResponse: ...
-    async def export_graph(
-        self,
-        request: GraphExportRequest,
-    ) -> GraphExportResponse: ...
-    async def search_entities(
-        self,
-        request: EntitySearchRequest,
-    ) -> EntitySearchResponse: ...
-    async def search_facts(self, request: FactSearchRequest) -> FactSearchResponse: ...
-    async def search_preferences(
-        self,
-        request: PreferenceSearchRequest,
-    ) -> PreferenceSearchResponse: ...
-    async def add_entity(self, request: EntityWriteRequest) -> EntityRecord: ...
-    async def add_fact(self, request: FactWriteRequest) -> FactRecord: ...
-    async def add_preference(
-        self,
-        request: PreferenceWriteRequest,
-    ) -> PreferenceRecord: ...
-    async def list_skills(self, request: SkillListRequest) -> SkillListResponse: ...
-    async def propose_skill(self, proposal: SkillProposal) -> SkillProposal: ...
-    async def record_skill_usage(self, usage: SkillUsage) -> EventIngestResult: ...
-    async def start_reasoning_trace(
-        self,
-        request: ReasoningTraceStartRequest,
-    ) -> ReasoningTraceStartResponse: ...
-    async def add_reasoning_step(
-        self,
-        request: ReasoningStepRequest,
-    ) -> ReasoningStepResponse: ...
-    async def record_reasoning_tool_call(
-        self,
-        request: ReasoningToolCallRequest,
-    ) -> ReasoningToolCallResponse: ...
-    async def complete_reasoning_trace(
-        self,
-        request: ReasoningTraceCompleteRequest,
-    ) -> ReasoningTraceCompleteResponse: ...
-    async def get_reasoning_context(
-        self,
-        request: ReasoningContextRequest,
-    ) -> ReasoningContextResponse: ...
-    async def list_reasoning_traces(
-        self,
-        request: ReasoningTraceListRequest,
-    ) -> ReasoningTraceListResponse: ...
-    async def get_reasoning_trace(
-        self,
-        request: ReasoningTraceDetailRequest,
-    ) -> ReasoningTraceDetailResponse: ...
-    async def find_similar_reasoning_traces(
-        self,
-        request: ReasoningSimilarTracesRequest,
-    ) -> ReasoningSimilarTracesResponse: ...
-    async def search_reasoning_steps(
-        self,
-        request: ReasoningStepSearchRequest,
-    ) -> ReasoningStepSearchResponse: ...
-    async def get_reasoning_tool_stats(
-        self,
-        request: ReasoningToolStatsRequest,
-    ) -> ReasoningToolStatsResponse: ...
-
-
-@runtime_checkable
-class ExtractionPreviewBackend(Protocol):
-    async def preview_extraction(
-        self,
-        request: ExtractionPreviewRequest,
-    ) -> ExtractionPreviewResponse: ...
-
-
-@runtime_checkable
-class RecallFilteringBackend(Protocol):
-    async def filter_recalled_memories(
-        self,
-        query: str,
-        records: Sequence[MemoryRecord],
-    ) -> list[MemoryRecord]: ...
-
-
-class MemoryClientFactory(Protocol):
-    def __call__(self, settings: MemorySettings) -> "MemoryClientContext": ...
-
-
-class ShortTermMemory(Protocol):
-    async def add_message(  # noqa: PLR0913
-        self,
-        session_id: str,
-        role: str,
-        content: str,
-        *,
-        user_identifier: str,
-        metadata: dict[str, str],
-        extract_entities: bool,
-        extract_relations: bool,
-    ) -> object: ...
-
-    async def get_context(
-        self,
-        query: str,
-        *,
-        session_id: str,
-        max_messages: int,
-        metadata_filters: dict[str, str],
-    ) -> str: ...
-
-
-class LongTermFactMemory(Protocol):
-    async def search_entities(
-        self,
-        query: str,
-        *,
-        entity_types: list[EntityType | str] | None = None,
-        limit: int = 10,
-        threshold: float = 0.7,
-    ) -> object: ...
-
-    async def search_facts(
-        self,
-        query: str,
-        *,
-        limit: int = 10,
-        threshold: float = 0.7,
-    ) -> object: ...
-
-    async def search_preferences(
-        self,
-        query: str,
-        *,
-        category: str | None = None,
-        limit: int = 10,
-        threshold: float = 0.7,
-    ) -> object: ...
-
-    async def add_entity(  # noqa: PLR0913 - Mirrors neo4j-agent-memory SDK API.
-        self,
-        name: str,
-        entity_type: EntityType | str,
-        *,
-        subtype: str | None = None,
-        description: str | None = None,
-        aliases: list[str] | None = None,
-        attributes: JsonObject | None = None,
-        resolve: bool = True,
-        generate_embedding: bool = True,
-        deduplicate: bool = True,
-        geocode: bool = True,
-        enrich: bool = True,
-        coordinates: tuple[float, float] | None = None,
-        metadata: JsonObject | None = None,
-    ) -> object: ...
-
-    async def add_fact(  # noqa: PLR0913 - Mirrors neo4j-agent-memory SDK API.
-        self,
-        subject: str,
-        predicate: str,
-        obj: str,
-        *,
-        confidence: float = 1.0,
-        valid_from: datetime | None = None,
-        valid_until: datetime | None = None,
-        generate_embedding: bool = True,
-        metadata: JsonObject | None = None,
-    ) -> object: ...
-
-    async def add_preference(  # noqa: PLR0913 - Mirrors neo4j-agent-memory SDK API.
-        self,
-        category: str,
-        preference: str,
-        *,
-        context: str | None = None,
-        confidence: float = 1.0,
-        generate_embedding: bool = True,
-        metadata: JsonObject | None = None,
-        user_identifier: str | None = None,
-        applies_to: object | None = None,
-    ) -> object: ...
-
-    async def get_context(self, query: str, *, max_items: int) -> str: ...
-
-
-class LongTermMemory(Protocol):
-    async def search_entities(
-        self,
-        query: str,
-        *,
-        entity_types: list[EntityType | str] | None = None,
-        limit: int = 10,
-        threshold: float = 0.7,
-    ) -> list[EntityRecord]: ...
-
-    async def search_facts(
-        self,
-        query: str,
-        *,
-        limit: int = 10,
-        threshold: float = 0.7,
-    ) -> list[FactRecord]: ...
-
-    async def search_preferences(
-        self,
-        query: str,
-        *,
-        category: str | None = None,
-        limit: int = 10,
-        threshold: float = 0.7,
-    ) -> list[PreferenceRecord]: ...
-
-    async def add_entity(  # noqa: PLR0913 - Mirrors neo4j-agent-memory SDK API.
-        self,
-        name: str,
-        entity_type: EntityType | str,
-        *,
-        subtype: str | None = None,
-        description: str | None = None,
-        aliases: list[str] | None = None,
-        attributes: JsonObject | None = None,
-        resolve: bool = True,
-        generate_embedding: bool = True,
-        deduplicate: bool = True,
-        geocode: bool = True,
-        enrich: bool = True,
-        coordinates: tuple[float, float] | None = None,
-        metadata: JsonObject | None = None,
-    ) -> EntityRecord: ...
-
-    async def add_fact(  # noqa: PLR0913 - Mirrors neo4j-agent-memory SDK API.
-        self,
-        subject: str,
-        predicate: str,
-        obj: str,
-        *,
-        confidence: float = 1.0,
-        valid_from: datetime | None = None,
-        valid_until: datetime | None = None,
-        generate_embedding: bool = True,
-        metadata: JsonObject | None = None,
-    ) -> FactRecord: ...
-
-    async def add_preference(  # noqa: PLR0913 - Mirrors neo4j-agent-memory SDK API.
-        self,
-        category: str,
-        preference: str,
-        *,
-        context: str | None = None,
-        confidence: float = 1.0,
-        generate_embedding: bool = True,
-        metadata: JsonObject | None = None,
-        user_identifier: str | None = None,
-        applies_to: object | None = None,
-    ) -> PreferenceRecord: ...
-
-    async def get_preferences_for(
-        self,
-        user_identifier: str,
-        *,
-        applies_to: object | None = None,
-        active_only: bool = True,
-        as_of: datetime | None = None,
-    ) -> list[PreferenceRecord]: ...
-
-    async def get_facts_about(
-        self,
-        subject: str,
-        *,
-        limit: int = 100,
-    ) -> list[FactRecord]: ...
-
-    async def link_entity_to_message(  # noqa: PLR0913 - Mirrors SDK API.
-        self,
-        entity: EntityRecord | UUID,
-        message_id: UUID | str,
-        *,
-        confidence: float = 1.0,
-        start_pos: int | None = None,
-        end_pos: int | None = None,
-        context: str | None = None,
-    ) -> bool: ...
-
-    async def link_entity_to_extractor(
-        self,
-        entity: EntityRecord | UUID,
-        extractor_name: str,
-        *,
-        confidence: float = 1.0,
-        extraction_time_ms: float | None = None,
-    ) -> bool: ...
-
-    async def get_context(self, query: str, *, max_items: int) -> str: ...
-
-
-@runtime_checkable
-class DedupCapableLongTermMemory(Protocol):
-    def get_deduplication_stats(self) -> Awaitable[object]: ...
-    def find_potential_duplicates(
-        self,
-        *,
-        limit: int = 100,
-    ) -> Awaitable[list[tuple[object, object, float]]]: ...
-    def review_duplicate(
-        self,
-        source_id: UUID,
-        target_id: UUID,
-        *,
-        confirm: bool,
-    ) -> Awaitable[bool]: ...
-    def merge_duplicate_entities(
-        self,
-        source_id: UUID,
-        target_id: UUID,
-    ) -> Awaitable[tuple[object, object] | None]: ...
-
-
-@runtime_checkable
-class ConsolidationMemory(Protocol):
-    def archive_expired_conversations(
-        self,
-        *,
-        ttl_days: int | None = None,
-        dry_run: bool = True,
-    ) -> Awaitable[object]: ...
-
-    def dedupe_entities(
-        self,
-        *,
-        similarity_threshold: float = 0.95,
-        max_pairs: int = 10000,
-        dry_run: bool = True,
-    ) -> Awaitable[object]: ...
-
-    def detect_superseded_preferences(
-        self,
-        *,
-        user_identifier: str | None = None,
-        similarity_threshold: float = 0.92,
-        dry_run: bool = True,
-    ) -> Awaitable[object]: ...
-
-    def summarize_long_traces(
-        self,
-        *,
-        min_steps: int = 20,
-        max_traces: int = 1000,
-        dry_run: bool = True,
-    ) -> Awaitable[object]: ...
-
-
-@runtime_checkable
-class ConsolidationCapableMemoryClient(Protocol):
-    @property
-    def consolidation(self) -> ConsolidationMemory: ...
-
-
-@dataclass(frozen=True, slots=True)
-class DedupCandidateState:
-    candidate_id: str
-    version: int
-    scope: MemoryScope
-    source_id: UUID
-    target_id: UUID
-    graph_snapshot_hash: str
-
-
-@dataclass(frozen=True, slots=True)
-class DedupTokenClaims:
-    scope: MemoryScope
-    candidate_id: str
-    candidate_version: int
-    graph_snapshot_hash: str
-    operation: DedupOperationName
-    expires_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class DedupIdempotencyRecord:
-    request_fingerprint: str
-    response: DedupApplyResponse
-
-
-@dataclass(frozen=True, slots=True)
-class ConsolidationDryRunState:
-    scope: MemoryScope
-    operation: ConsolidationOperationName
-    graph_snapshot_hash: str
-    request_fingerprint: str
-
-
-@dataclass(frozen=True, slots=True)
-class ConsolidationTokenClaims:
-    scope: MemoryScope
-    operation: ConsolidationOperationName
-    graph_snapshot_hash: str
-    request_fingerprint: str
-    expires_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class ConsolidationIdempotencyRecord:
-    request_fingerprint: str
-    response: ConsolidationApplyResponse
-
-
-class ReasoningMemory(Protocol):
-    async def get_context(self, query: str, *, max_traces: int) -> str: ...
-    async def start_trace(  # noqa: PLR0913 - Mirrors neo4j-agent-memory SDK API.
-        self,
-        session_id: str,
-        task: str,
-        *,
-        generate_embedding: bool,
-        metadata: JsonObject | None,
-        triggered_by_message_id: str | None,
-        user_identifier: str,
-    ) -> SdkReasoningTrace: ...
-    async def add_step(  # noqa: PLR0913 - Mirrors neo4j-agent-memory SDK API.
-        self,
-        trace_id: UUID,
-        *,
-        thought: None,
-        action: str | None,
-        observation: str | None,
-        generate_embedding: bool,
-        metadata: JsonObject | None,
-    ) -> SdkReasoningStep: ...
-    async def record_tool_call(  # noqa: PLR0913 - Mirrors neo4j-agent-memory SDK API.
-        self,
-        step_id: UUID,
-        tool_name: str,
-        arguments: JsonObject,
-        *,
-        result: JsonValue | None,
-        status: ToolCallStatus,
-        duration_ms: int | None,
-        error: str | None,
-        message_id: str | None,
-        touched_entities: list[EntityRef],
-    ) -> ToolCall: ...
-    async def complete_trace(
-        self,
-        trace_id: UUID,
-        *,
-        outcome: str | None,
-        success: bool | None,
-        generate_step_embeddings: bool,
-    ) -> SdkReasoningTrace: ...
-    async def list_traces(
-        self,
-        *,
-        session_id: str | None = None,
-        success_only: bool | None = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[SdkReasoningTrace]: ...
-    async def get_trace(self, trace_id: UUID | str) -> SdkReasoningTrace | None: ...
-    async def get_trace_with_steps(
-        self,
-        trace_id: UUID,
-    ) -> SdkReasoningTrace | None: ...
-    async def get_similar_traces(
-        self,
-        task: str,
-        *,
-        limit: int = 5,
-        success_only: bool = True,
-        threshold: float = 0.7,
-    ) -> list[SdkReasoningTrace]: ...
-    async def search_steps(
-        self,
-        query: str,
-        *,
-        limit: int = 10,
-        success_only: bool = True,
-        threshold: float = 0.7,
-    ) -> Sequence[object]: ...
-    async def get_tool_stats(
-        self,
-        tool_name: str | None = None,
-    ) -> list[ToolStats]: ...
-
-
-class CypherQuery(Protocol):
-    async def cypher(
-        self,
-        query: str,
-        params: dict[str, JsonValue] | None = None,
-    ) -> list[JsonObject]: ...
-
-
-class MemoryClientContext(Protocol):
-    @property
-    def short_term(self) -> ShortTermMemory: ...
-    @property
-    def long_term(self) -> LongTermFactMemory: ...
-    @property
-    def reasoning(self) -> ReasoningMemory: ...
-    @property
-    def query(self) -> CypherQuery: ...
-    async def __aenter__(self) -> Self: ...
-    async def __aexit__(
-        self,
-        exc_type: object,
-        exc_val: object,
-        exc_tb: object,
-    ) -> None: ...
-
-
-@runtime_checkable
-class StatsCapableMemoryClient(Protocol):
-    def get_stats(self) -> Awaitable[object]: ...
-
-
-@runtime_checkable
-class BufferFlushCapableMemoryClient(Protocol):
-    def flush(self) -> Awaitable[object]: ...
-
-
-@runtime_checkable
-class BufferPendingCapableMemoryClient(Protocol):
-    def wait_for_pending(self) -> Awaitable[object]: ...
-
-
-@runtime_checkable
-class BufferErrorCapableMemoryClient(Protocol):
-    @property
-    def write_errors(self) -> Sequence[object]: ...
-
-
-class GraphNodeLike(Protocol):
-    id: str
-    labels: Sequence[str]
-    properties: object
-
-
-class GraphRelationshipLike(Protocol):
-    id: str
-    type: str
-    from_node: str
-    to_node: str
-    properties: object
-
-
-class MemoryGraphLike(Protocol):
-    nodes: Sequence[GraphNodeLike]
-    relationships: Sequence[GraphRelationshipLike]
-    metadata: object
-
-
-@runtime_checkable
-class GraphCapableMemoryClient(Protocol):
-    def get_graph(
-        self,
-        *,
-        memory_types: list[Literal["short_term", "long_term", "reasoning"]] | None,
-        session_id: str | None,
-        include_embeddings: bool,
-        limit: int,
-    ) -> Awaitable[MemoryGraphLike]: ...
-
-
-@runtime_checkable
-class GraphWriteQuery(Protocol):
-    def execute_write(
-        self,
-        query: str,
-        parameters: dict[str, JsonValue] | None = None,
-    ) -> Awaitable[list[JsonObject]]: ...
-
-
-@runtime_checkable
-class TextEmbedder(Protocol):
-    def embed(self, text: str) -> Awaitable[list[float]]: ...
-
-
-class BackendRequestError(Exception):
-    def __init__(self, detail: str) -> None:
-        self.detail: str
-        self.detail = detail
-        super().__init__(detail)
-
-
-class MemoryNotFoundError(Exception):
-    def __init__(self, detail: str = _MEMORY_NOT_FOUND_DETAIL) -> None:
-        self.detail: str
-        self.detail = detail
-        super().__init__(detail)
-
-
-class BackendCapabilityUnavailable(Exception):  # noqa: N818 - Public API name.
-    def __init__(self, detail: str) -> None:
-        self.detail: str
-        self.detail = detail
-        super().__init__(detail)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3349,41 +2801,12 @@ async def _require_scoped_memory(
     raise MemoryNotFoundError
 
 
-def _graph_write_query(client: MemoryClientContext) -> GraphWriteQuery:
-    """Acquire the graph write handle used by memory update and delete.
-
-    The runtime-protocol ``isinstance`` check alone is too strict for the
-    installed SDK: since Python 3.12 it resolves members with
-    ``inspect.getattr_static``, and ``neo4j-agent-memory==0.5.0`` returns a
-    ``client.graph`` proxy that forwards ``execute_write`` to the same driver
-    the read routes use only through dynamic ``__getattr__`` delegation. Fall
-    back to a duck-typed check so that proxy stays usable.
-    """
-    graph: object = getattr(client, "graph", None)
-    if isinstance(graph, GraphWriteQuery):
-        return graph
-    execute_write: object = getattr(graph, "execute_write", None)
-    if graph is not None and callable(execute_write):
-        return cast("GraphWriteQuery", graph)
-    raise BackendCapabilityUnavailable(_MEMORY_WRITE_UNAVAILABLE_DETAIL)
-
-
 def _required_query_embedding(
     embedding: list[JsonValue] | None,
 ) -> list[JsonValue]:
     if embedding is None:
         raise BackendCapabilityUnavailable(_QUERY_EMBEDDER_UNAVAILABLE_DETAIL)
     return embedding
-
-
-async def _memory_embedding(
-    client: MemoryClientContext,
-    text: str,
-) -> list[JsonValue] | None:
-    embedder: object = getattr(client.long_term, "embedder", None)
-    if not isinstance(embedder, TextEmbedder):
-        return None
-    return [float(item) for item in await embedder.embed(text)]
 
 
 def _updated_memory_content(rows: list[JsonObject], fallback: str) -> str:
@@ -3403,63 +2826,10 @@ def _memory_edit_audit(memory_id: str, scope: MemoryScope) -> dict[str, str]:
     }
 
 
-def _build_memory_settings(settings: Settings) -> MemorySettings:
-    return MemorySettings(
-        backend="bolt",
-        neo4j=Neo4jConfig(
-            uri=settings.neo4j_uri,
-            username=settings.neo4j_username,
-            password=SecretStr(settings.neo4j_password),
-        ),
-        llm=LiteLLMProvider(
-            settings.gnosis_llm,
-            api_base=settings.litellm_base_url,
-            api_key=settings.litellm_api_key,
-        ),
-        embedding=LiteLLMEmbeddingProvider(
-            litellm_embedding_model(settings.gnosis_embedding),
-            dimensions=settings.gnosis_embedding_dimensions,
-            api_base=settings.litellm_base_url,
-            api_key=settings.litellm_api_key,
-        ),
-        memory=_build_memory_config(settings),
-    )
-
-
-def _memory_client_context(client: object) -> MemoryClientContext:
-    return cast("MemoryClientContext", client)
-
-
 def _buffer_readiness_status(write_errors: int) -> Literal["ready", "degraded"]:
     if write_errors == 0:
         return "ready"
     return "degraded"
-
-
-def _build_memory_config(settings: Settings) -> MemoryConfig:
-    config = MemoryConfigKwargs(multi_tenant=True)
-    supported_fields = MemoryConfig.model_fields
-    if "write_mode" in supported_fields:
-        config["write_mode"] = settings.gnosis_write_mode
-    if "max_pending" in supported_fields:
-        config["max_pending"] = settings.gnosis_max_pending
-    if "conversation_ttl_days" in supported_fields:
-        config["conversation_ttl_days"] = settings.gnosis_conversation_ttl_days
-    if "audit_read" in supported_fields:
-        config["audit_read"] = settings.gnosis_audit_read
-    if "fact_deduplication_enabled" in supported_fields:
-        config["fact_deduplication_enabled"] = (
-            settings.gnosis_fact_deduplication_enabled
-        )
-    if "trace_embedding_enabled" in supported_fields:
-        config["trace_embedding_enabled"] = settings.gnosis_trace_embedding_enabled
-    return MemoryConfig(**config)
-
-
-def litellm_embedding_model(model: str) -> str:
-    if "/" in model:
-        return model
-    return f"openai/{model}"
 
 
 def _message_extraction_policy(
@@ -3727,426 +3097,6 @@ def _redacted_preference(record: PreferenceRecord) -> PreferenceRecord:
             "metadata": _redacted_object(record.metadata),
         },
     )
-
-
-def _dedup_stats_payload(stats: object) -> JsonObject:
-    if isinstance(stats, BaseModel):
-        return _json_object(stats.model_dump(mode="json"))
-    try:
-        return _json_compatible_object(vars(stats))
-    except TypeError:
-        return _json_compatible_object(stats)
-
-
-def _dedup_candidate(
-    source: object,
-    target: object,
-    similarity: float,
-) -> DedupCandidate:
-    source_snapshot = _dedup_entity_snapshot(source)
-    target_snapshot = _dedup_entity_snapshot(target)
-    fingerprint = _hash_json(
-        {
-            "source_id": source_snapshot.id,
-            "target_id": target_snapshot.id,
-            "similarity": similarity,
-        },
-    )
-    return DedupCandidate(
-        candidate_id=f"dedup-{fingerprint[:24]}",
-        version=1,
-        source=source_snapshot,
-        target=target_snapshot,
-        similarity=similarity,
-        reject_dry_run_token=_DEDUP_PENDING_TOKEN,
-        merge_dry_run_token=_DEDUP_PENDING_TOKEN,
-    )
-
-
-def _dedup_entity_snapshot(entity: object) -> DedupEntitySnapshot:
-    record = _dedup_entity_payload(entity)
-    return DedupEntitySnapshot(
-        id=_required_text(record, "id"),
-        name=_required_text(record, "name"),
-        type=_required_text(record, "type"),
-        subtype=_optional_text(record, "subtype"),
-        description=_redacted_optional_text(_optional_text(record, "description")),
-        confidence=_optional_float(record, "confidence", 1.0),
-        aliases=_string_list(record.get("aliases")),
-        attributes=_redacted_object(_json_member_object(record, "attributes")),
-        metadata=_redacted_object(_json_member_object(record, "metadata")),
-    )
-
-
-def _dedup_entity_payload(entity: object) -> JsonObject:
-    if isinstance(entity, BaseModel):
-        return _json_object(entity.model_dump(mode="json"))
-    try:
-        return _json_compatible_object(vars(entity))
-    except TypeError:
-        return _json_compatible_object(entity)
-
-
-def _dedup_snapshot_hash(
-    scope: MemoryScope,
-    candidates: list[DedupCandidate],
-) -> str:
-    return _hash_json(
-        {
-            "scope": _json_object(scope.model_dump(mode="json")),
-            "candidates": [
-                candidate.model_dump(
-                    mode="json",
-                    exclude={"reject_dry_run_token", "merge_dry_run_token"},
-                )
-                for candidate in candidates
-            ],
-        },
-    )
-
-
-def _dedup_token(
-    settings: Settings,
-    claims: DedupTokenClaims,
-) -> str:
-    payload = _json_object(
-        {
-            "scope": claims.scope.model_dump(mode="json"),
-            "candidate_id": claims.candidate_id,
-            "candidate_version": claims.candidate_version,
-            "graph_snapshot_hash": claims.graph_snapshot_hash,
-            "operation": claims.operation,
-            "expires_at": claims.expires_at.isoformat(),
-        },
-    )
-    payload_bytes = _canonical_json(payload).encode()
-    encoded_payload = _urlsafe_b64encode(payload_bytes)
-    signature = hmac.new(
-        settings.gnosis_admin_operator_token.encode(),
-        payload_bytes,
-        hashlib.sha256,
-    ).hexdigest()
-    return f"{encoded_payload}.{signature}"
-
-
-def _require_current_dedup_candidate(
-    request: DedupApplyRequest,
-    state: DedupCandidateState | None,
-) -> DedupCandidateState:
-    if state is None:
-        raise BackendRequestError(_DEDUP_STALE_DETAIL)
-    if state.version != request.candidate_version:
-        raise BackendRequestError(_DEDUP_STALE_DETAIL)
-    if state.scope != request.scope:
-        raise BackendRequestError(_DEDUP_STALE_DETAIL)
-    if state.graph_snapshot_hash != request.graph_snapshot_hash:
-        raise BackendRequestError(_DEDUP_STALE_DETAIL)
-    return state
-
-
-def _require_dedup_token(settings: Settings, request: DedupApplyRequest) -> None:
-    payload = _dedup_token_payload(settings, request.dry_run_token)
-    expected = _json_object(
-        {
-            "scope": request.scope.model_dump(mode="json"),
-            "candidate_id": request.candidate_id,
-            "candidate_version": request.candidate_version,
-            "graph_snapshot_hash": request.graph_snapshot_hash,
-            "operation": request.operation,
-        },
-    )
-    for key, value in expected.items():
-        if payload.get(key) != value:
-            raise BackendRequestError(_DEDUP_TOKEN_DETAIL)
-    expires_at = _optional_text(payload, "expires_at")
-    if expires_at is None:
-        raise BackendRequestError(_DEDUP_TOKEN_DETAIL)
-    try:
-        expiry = datetime.fromisoformat(expires_at)
-    except (ValueError, binascii.Error) as error:
-        raise BackendRequestError(_DEDUP_TOKEN_DETAIL) from error
-    if expiry <= datetime.now(UTC):
-        raise BackendRequestError(_DEDUP_TOKEN_DETAIL)
-
-
-def _dedup_token_payload(settings: Settings, token: str) -> JsonObject:
-    parts = token.split(".", maxsplit=1)
-    if len(parts) != _DEDUP_TOKEN_PARTS:
-        raise BackendRequestError(_DEDUP_TOKEN_DETAIL)
-    encoded_payload, signature = parts
-    try:
-        payload_bytes = _urlsafe_b64decode(encoded_payload)
-    except ValueError as error:
-        raise BackendRequestError(_DEDUP_TOKEN_DETAIL) from error
-    expected_signature = hmac.new(
-        settings.gnosis_admin_operator_token.encode(),
-        payload_bytes,
-        hashlib.sha256,
-    ).hexdigest()
-    if not hmac.compare_digest(signature, expected_signature):
-        raise BackendRequestError(_DEDUP_TOKEN_DETAIL)
-    try:
-        return _JSON_OBJECT_ADAPTER.validate_json(payload_bytes)
-    except ValidationError as error:
-        raise BackendRequestError(_DEDUP_TOKEN_DETAIL) from error
-
-
-async def _run_consolidation_operation(
-    consolidation: ConsolidationMemory,
-    request: ConsolidationDryRunRequest | ConsolidationApplyRequest,
-    *,
-    dry_run: bool,
-) -> object:
-    match request.operation:
-        case "archive_expired_conversations":
-            return await consolidation.archive_expired_conversations(
-                ttl_days=request.ttl_days,
-                dry_run=dry_run,
-            )
-        case "dedupe_entities":
-            return await consolidation.dedupe_entities(
-                similarity_threshold=request.similarity_threshold or 0.95,
-                max_pairs=request.max_pairs or 10000,
-                dry_run=dry_run,
-            )
-        case "detect_superseded_preferences":
-            return await consolidation.detect_superseded_preferences(
-                user_identifier=request.user_identifier,
-                similarity_threshold=request.similarity_threshold or 0.92,
-                dry_run=dry_run,
-            )
-        case "summarize_long_traces":
-            return await consolidation.summarize_long_traces(
-                min_steps=request.min_steps or 20,
-                max_traces=request.max_traces or 1000,
-                dry_run=dry_run,
-            )
-    assert_never(request.operation)
-
-
-def _safe_consolidation_report(report: object) -> JsonObject:
-    if isinstance(report, BaseModel):
-        payload = _json_object(report.model_dump(mode="json"))
-    else:
-        try:
-            payload = _json_compatible_object(vars(report))
-        except TypeError:
-            payload = _json_compatible_object(report)
-    return _strip_unsafe_consolidation_fields(_redacted_object(payload))
-
-
-def _strip_unsafe_consolidation_fields(value: JsonObject) -> JsonObject:
-    safe: JsonObject = {}
-    for key, item in value.items():
-        normalized = key.casefold()
-        if normalized in _UNSAFE_CONSOLIDATION_REPORT_KEYS:
-            continue
-        safe[key] = _strip_unsafe_consolidation_value(item)
-    return safe
-
-
-def _strip_unsafe_consolidation_value(value: JsonValue) -> JsonValue:
-    match value:
-        case dict():
-            return _strip_unsafe_consolidation_fields(_json_object(value))
-        case list():
-            return [_strip_unsafe_consolidation_value(item) for item in value]
-        case _:
-            return value
-
-
-def _consolidation_request_fingerprint(
-    request: ConsolidationDryRunRequest | ConsolidationApplyRequest,
-) -> str:
-    return _hash_json(
-        _json_object(
-            request.model_dump(
-                mode="json",
-                exclude={
-                    "audit",
-                    "apply",
-                    "dry_run_token",
-                    "graph_snapshot_hash",
-                    "idempotency_key",
-                },
-            ),
-        ),
-    )
-
-
-def _consolidation_apply_fingerprint(request: ConsolidationApplyRequest) -> str:
-    return _hash_json(
-        _json_object(
-            request.model_dump(mode="json", exclude={"idempotency_key"}),
-        ),
-    )
-
-
-def _consolidation_token(settings: Settings, claims: ConsolidationTokenClaims) -> str:
-    payload = _json_object(
-        {
-            "scope": claims.scope.model_dump(mode="json"),
-            "operation": claims.operation,
-            "graph_snapshot_hash": claims.graph_snapshot_hash,
-            "request_fingerprint": claims.request_fingerprint,
-            "expires_at": claims.expires_at.isoformat(),
-        },
-    )
-    payload_bytes = _canonical_json(payload).encode()
-    encoded_payload = _urlsafe_b64encode(payload_bytes)
-    signature = hmac.new(
-        settings.gnosis_admin_operator_token.encode(),
-        payload_bytes,
-        hashlib.sha256,
-    ).hexdigest()
-    return f"{encoded_payload}.{signature}"
-
-
-def _require_current_consolidation_dry_run(
-    request: ConsolidationApplyRequest,
-    state: ConsolidationDryRunState | None,
-) -> ConsolidationDryRunState:
-    if state is None:
-        raise BackendRequestError(_CONSOLIDATION_STALE_DETAIL)
-    if state.scope != request.scope:
-        raise BackendRequestError(_CONSOLIDATION_STALE_DETAIL)
-    if state.operation != request.operation:
-        raise BackendRequestError(_CONSOLIDATION_STALE_DETAIL)
-    if state.request_fingerprint != _consolidation_request_fingerprint(request):
-        raise BackendRequestError(_CONSOLIDATION_STALE_DETAIL)
-    return state
-
-
-def _require_consolidation_token(
-    settings: Settings,
-    request: ConsolidationApplyRequest,
-    state: ConsolidationDryRunState,
-) -> None:
-    payload = _consolidation_token_payload(settings, request.dry_run_token)
-    expected = _json_object(
-        {
-            "scope": request.scope.model_dump(mode="json"),
-            "operation": request.operation,
-            "graph_snapshot_hash": request.graph_snapshot_hash,
-            "request_fingerprint": state.request_fingerprint,
-        },
-    )
-    for key, value in expected.items():
-        if payload.get(key) != value:
-            raise BackendRequestError(_CONSOLIDATION_TOKEN_DETAIL)
-    expires_at = _optional_text(payload, "expires_at")
-    if expires_at is None:
-        raise BackendRequestError(_CONSOLIDATION_TOKEN_DETAIL)
-    try:
-        expiry = datetime.fromisoformat(expires_at)
-    except (ValueError, binascii.Error) as error:
-        raise BackendRequestError(_CONSOLIDATION_TOKEN_DETAIL) from error
-    if expiry <= datetime.now(UTC):
-        raise BackendRequestError(_CONSOLIDATION_TOKEN_DETAIL)
-
-
-def _consolidation_token_payload(settings: Settings, token: str) -> JsonObject:
-    parts = token.split(".", maxsplit=1)
-    if len(parts) != _DEDUP_TOKEN_PARTS:
-        raise BackendRequestError(_CONSOLIDATION_TOKEN_DETAIL)
-    encoded_payload, signature = parts
-    try:
-        payload_bytes = _urlsafe_b64decode(encoded_payload)
-    except ValueError as error:
-        raise BackendRequestError(_CONSOLIDATION_TOKEN_DETAIL) from error
-    expected_signature = hmac.new(
-        settings.gnosis_admin_operator_token.encode(),
-        payload_bytes,
-        hashlib.sha256,
-    ).hexdigest()
-    if not hmac.compare_digest(signature, expected_signature):
-        raise BackendRequestError(_CONSOLIDATION_TOKEN_DETAIL)
-    try:
-        return _JSON_OBJECT_ADAPTER.validate_json(payload_bytes)
-    except ValidationError as error:
-        raise BackendRequestError(_CONSOLIDATION_TOKEN_DETAIL) from error
-
-
-async def _apply_dedup_operation(
-    long_term: DedupCapableLongTermMemory,
-    request: DedupApplyRequest,
-    state: DedupCandidateState,
-) -> JsonObject:
-    match request.operation:
-        case "reject":
-            rejected = await long_term.review_duplicate(
-                state.source_id,
-                state.target_id,
-                confirm=False,
-            )
-            return {"rejected": rejected}
-        case "merge":
-            merged = await long_term.merge_duplicate_entities(
-                state.source_id,
-                state.target_id,
-            )
-            return {"merged": merged is not None}
-
-
-def _required_text(record: JsonObject, field_name: str) -> str:
-    value = record.get(field_name)
-    if isinstance(value, str) and value:
-        return value
-    raise BackendRequestError(_DEDUP_UNAVAILABLE_DETAIL)
-
-
-def _optional_text(record: JsonObject, field_name: str) -> str | None:
-    value = record.get(field_name)
-    if isinstance(value, str) and value:
-        return value
-    return None
-
-
-def _optional_float(record: JsonObject, field_name: str, default: float) -> float:
-    value = record.get(field_name)
-    if isinstance(value, int | float):
-        return float(value)
-    return default
-
-
-def _string_list(value: JsonValue | None) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str)]
-
-
-def _json_member_object(record: JsonObject, field_name: str) -> JsonObject:
-    value = record.get(field_name)
-    if isinstance(value, dict):
-        return _json_object(value)
-    return {}
-
-
-def _hash_json(value: JsonObject) -> str:
-    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
-
-
-def _json_compatible_object(value: object) -> JsonObject:
-    parsed = _json_object(value)
-    if parsed:
-        return parsed
-    try:
-        return _JSON_OBJECT_ADAPTER.validate_json(json.dumps(value, default=str))
-    except (TypeError, ValidationError):
-        return {}
-
-
-def _canonical_json(value: JsonObject) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
-
-
-def _urlsafe_b64encode(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).decode().rstrip("=")
-
-
-def _urlsafe_b64decode(value: str) -> bytes:
-    padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode(value + padding)
 
 
 async def _query_recent_facts(
@@ -4529,35 +3479,12 @@ def _graph_fact_summary(fact: JsonObject) -> str:
     return ""
 
 
-def _metadata_from_json(metadata: str) -> dict[str, str]:
-    try:
-        parsed = _JSON_OBJECT_ADAPTER.validate_json(metadata)
-    except ValidationError:
-        return {}
-    return _string_metadata(parsed)
-
-
 def _metadata_fragments(metadata: Mapping[str, JsonValue]) -> list[JsonValue]:
     fragments: list[JsonValue] = []
     for key, value in metadata.items():
         if key not in _FACT_READ_EXCLUDED_FIELDS and isinstance(value, str):
             fragments.append(f'"{key}": {json.dumps(value)}')
     return fragments
-
-
-def _string_metadata(metadata: dict[str, JsonValue]) -> dict[str, str]:
-    return {
-        key: value
-        for key, value in metadata.items()
-        if isinstance(value, str) and value != ""
-    }
-
-
-def _redacted_text(value: str) -> str:
-    redacted = redact_secrets(value)
-    if isinstance(redacted, str):
-        return redacted
-    return value
 
 
 def _long_term_enrichment_enabled(settings: Settings) -> bool:
@@ -4579,26 +3506,6 @@ def _safe_reasoning_context(context: str) -> str:
 def _reasoning_line_exposes_hidden_trace(line: str) -> bool:
     normalized = line.casefold()
     return "thought:" in normalized or "chain_of_thought" in normalized
-
-
-def _redacted_optional_text(value: str | None) -> str | None:
-    if value is None:
-        return None
-    return _redacted_text(value)
-
-
-def _redacted_object(value: JsonObject) -> JsonObject:
-    redacted = redact_secrets(value)
-    if isinstance(redacted, dict):
-        return redacted
-    return {}
-
-
-def _json_object(value: object) -> JsonObject:
-    try:
-        return _JSON_OBJECT_ADAPTER.validate_python(value)
-    except ValidationError:
-        return {}
 
 
 async def _get_reasoning_trace(
@@ -4757,41 +3664,6 @@ def _redacted_reasoning_value(value: JsonValue) -> JsonValue:
     if isinstance(value, list):
         return [_redacted_reasoning_value(item) for item in value]
     return value
-
-
-def _graph_export_response(
-    request: GraphExportRequest,
-    graph: MemoryGraphLike,
-) -> GraphExportResponse:
-    return GraphExportResponse(
-        scope=request.scope,
-        nodes=[_graph_export_node(node) for node in graph.nodes],
-        relationships=[
-            _graph_export_relationship(relationship)
-            for relationship in graph.relationships
-        ],
-        metadata=_redacted_object(_json_object(graph.metadata)),
-    )
-
-
-def _graph_export_node(node: GraphNodeLike) -> GraphExportNode:
-    return GraphExportNode(
-        id=node.id,
-        labels=list(node.labels),
-        properties=_redacted_object(_json_object(node.properties)),
-    )
-
-
-def _graph_export_relationship(
-    relationship: GraphRelationshipLike,
-) -> GraphExportRelationship:
-    return GraphExportRelationship(
-        id=relationship.id,
-        type=relationship.type,
-        from_node=relationship.from_node,
-        to_node=relationship.to_node,
-        properties=_redacted_object(_json_object(relationship.properties)),
-    )
 
 
 # Long-term memory is durable across conversations, so reads never narrow by
