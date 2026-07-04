@@ -34,10 +34,18 @@ from neo4j_agent_memory.schema.models import EntityRef
 from openai import OpenAIError
 from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
 
+from gnosis.bridge_traversal import (
+    BRIDGE_MENTION_CYPHER,
+    BridgeNamer,
+    LiteLLMBridgeNamer,
+    bridge_parameters,
+    parse_bridge_names,
+)
 from gnosis.entity_graph import (
     CREATE_ENTITY_SCOPE_INDEX_CYPHER,
     RelationTriple,
     entity_graph_statements,
+    normalize_entity_name,
 )
 from gnosis.entity_traversal import (
     ENTITY_TRAVERSAL_CYPHER,
@@ -1070,6 +1078,7 @@ class Neo4jAgentMemoryBackend:
         fact_extractor: MemoryUnitExtractor | None = None,
         sufficiency_assessor: SufficiencyAssessor | None = None,
         query_router: QueryRouter | None = None,
+        bridge_namer: BridgeNamer | None = None,
     ) -> None:
         self._app_settings: Settings = settings
         self._settings: MemorySettings = _build_memory_settings(settings)
@@ -1103,6 +1112,11 @@ class Neo4jAgentMemoryBackend:
             )
         )
         self._query_router: QueryRouter = query_router or LiteLLMQueryRouter(
+            model=_routing_model(settings),
+            base_url=settings.litellm_base_url,
+            api_key=settings.litellm_api_key,
+        )
+        self._bridge_namer: BridgeNamer = bridge_namer or LiteLLMBridgeNamer(
             model=_routing_model(settings),
             base_url=settings.litellm_base_url,
             api_key=settings.litellm_api_key,
@@ -1555,7 +1569,19 @@ class Neo4jAgentMemoryBackend:
         )
         if not facts:
             facts = await _query_recent_facts(client, metadata)
-        facts = _fuse_graph_facts(facts, [*graph_facts, *traversal_facts])
+        # The directed bridge hop reads hop-1's dense evidence, so it runs
+        # after the parallel retrieval legs, not among them.
+        bridge_facts = await self._bridge_traversal_facts(
+            client,
+            request,
+            metadata,
+            decision,
+            facts,
+        )
+        facts = _fuse_graph_facts(
+            facts,
+            [*graph_facts, *traversal_facts, *bridge_facts],
+        )
         facts = await self._recall_filtered_facts(request.query, facts)
         facts = self._superseded_facts(facts)
         facts = _cut_with_graph_reserve(facts, request.max_items)
@@ -2246,6 +2272,90 @@ class Neo4jAgentMemoryBackend:
             _LOGGER.info(
                 "entity traversal fused provenance facts",
                 extra={"count": len(candidates), "seeds": len(seeds)},
+            )
+        return candidates
+
+    async def _bridge_traversal_facts(
+        self,
+        client: MemoryClientContext,
+        request: MemoryContextRequest,
+        scope_metadata: Mapping[str, JsonValue],
+        decision: RouteDecision,
+        dense_facts: list[JsonObject],
+    ) -> list[JsonObject]:
+        """Directed bridge-hop candidates for context fusion (T1-directed).
+
+        One LLM call reads the query plus hop-1's dense evidence and names
+        the bridge entities the question needs but never names; a fixed
+        Cypher then fetches the dated extracted facts MENTIONing those
+        entities - hop 2's evidence, unreachable by any ranking of the query
+        text. The bridge facts join the pool tagged graph-derived so they
+        hold the reserved graph slots. Entities the query itself names are
+        dropped from the bridge list (they are hop 1, already dense-covered).
+        A no-op empty list while the effective decision leaves the hop off,
+        the query or evidence is empty, or the namer finds no bridge; any
+        namer or read failure degrades to dense-only with a structured
+        warning - the context request never fails on this leg.
+        """
+        if not decision.bridge_traversal or not request.query or not dense_facts:
+            return []
+        evidence = [_fact_context_line(fact) for fact in dense_facts]
+        try:
+            reply = await self._bridge_namer.name_bridges(request.query, evidence)
+        except (RuntimeError, OSError, OpenAIError) as error:
+            _LOGGER.warning(
+                "bridge namer failed; assembling dense-only context",
+                extra={"error_type": type(error).__name__},
+            )
+            return []
+        query_mentions = set(query_seed_candidates(request.query))
+        bridges = [
+            normalized
+            for name in parse_bridge_names(reply)
+            if (normalized := normalize_entity_name(name))
+            and normalized not in query_mentions
+        ]
+        if not bridges:
+            return []
+        try:
+            rows = await client.query.cypher(
+                BRIDGE_MENTION_CYPHER,
+                bridge_parameters(
+                    tenant_id=request.scope.tenant_id,
+                    user_id=request.scope.user_id,
+                    bridges=bridges,
+                    scope_fragments=_metadata_fragments(scope_metadata),
+                    limit=request.graph_limit,
+                ),
+            )
+        except (
+            RuntimeError,
+            OSError,
+            Neo4jError,
+            BackendCapabilityUnavailable,
+        ) as error:
+            _LOGGER.warning(
+                "bridge traversal read failed; assembling dense-only context",
+                extra={
+                    "error_type": type(error).__name__,
+                    "tenant_id": request.scope.tenant_id,
+                },
+            )
+            return []
+        candidates: list[JsonObject] = []
+        for row in rows:
+            memory = stored_memory_from_row(row)
+            if memory is None:
+                continue
+            fact = _fact_from_memory(memory)
+            if not _fact_matches_scope(fact, scope_metadata):
+                continue
+            fact["graphqa"] = True
+            candidates.append(fact)
+        if candidates:
+            _LOGGER.info(
+                "bridge traversal fused mention facts",
+                extra={"count": len(candidates), "bridges": len(bridges)},
             )
         return candidates
 
