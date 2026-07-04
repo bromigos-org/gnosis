@@ -1440,7 +1440,7 @@ class Neo4jAgentMemoryBackend:
             return unrouted
         try:
             verdict = await self._query_router.classify(query)
-        except (RuntimeError, OSError, OpenAIError) as error:
+        except (RuntimeError, OSError, OpenAIError, ValidationError) as error:
             _LOGGER.warning(
                 "query routing failed; using globally configured flags",
                 extra={"error_type": type(error).__name__},

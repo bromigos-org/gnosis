@@ -78,12 +78,19 @@ Routes:
   likely never contain, fishing for a fact that was probably never said
   (e.g. "What brand of toothpaste does Bob's dentist recommend?").
 - single_hop: everything else - one remembered fact answers it directly.
-Choose the single best route.
+Choose the single best route. Respond with only the route name.
 """.strip()
 
-# The response is one enum field, so a small cap holds the latency budget
-# while leaving room for structured-output framing.
+# The response is one route token, so a small cap holds the latency budget.
 _MAX_COMPLETION_TOKENS: Final[int] = 100
+
+_ROUTES: Final[tuple[QueryRoute, ...]] = (
+    "single_hop",
+    "multi_hop",
+    "temporal",
+    "unanswerable_risk",
+    "aggregative",
+)
 
 
 class RouteVerdict(BaseModel):
@@ -140,19 +147,23 @@ class LiteLLMQueryRouter:
     async def classify(self, query: str) -> RouteVerdict | None:
         start = time.perf_counter()
         async with AsyncOpenAI(api_key=self.api_key, base_url=self.base_url) as client:
-            response = await client.beta.chat.completions.parse(
+            # A plain completion parsed leniently, NOT structured output: the
+            # LiteLLM gpt-5.5 route answers a single-enum-property JSON schema
+            # with the bare enum value ("temporal"), which the strict SDK
+            # parser rejects. gpt-5.x endpoints also reject `temperature` and
+            # `max_tokens`, so this call sends neither and caps via
+            # max_completion_tokens.
+            response = await client.chat.completions.create(
                 messages=_messages(query),
                 model=proxy_model_name(self.model),
-                # gpt-5.x endpoints reject `temperature` and `max_tokens`, so
-                # this call sends neither and caps via max_completion_tokens.
                 max_completion_tokens=_MAX_COMPLETION_TOKENS,
-                response_format=RouteVerdict,
             )
-        verdict = response.choices[0].message.parsed
-        if verdict is None:
+        content = response.choices[0].message.content
+        route = parse_route(content)
+        if route is None:
             _LOGGER.info(
-                "query router returned no content",
-                extra={"model": self.model},
+                "query router returned no recognizable route",
+                extra={"model": self.model, "content": (content or "")[:120]},
             )
             return None
         _LOGGER.info(
@@ -160,10 +171,27 @@ class LiteLLMQueryRouter:
             extra={
                 "duration_ms": round((time.perf_counter() - start) * 1000),
                 "model": self.model,
-                "route": verdict.route,
+                "route": route,
             },
         )
-        return verdict
+        return RouteVerdict(route=route)
+
+
+def parse_route(content: str | None) -> QueryRoute | None:
+    """Extract the chosen route from a model reply, leniently.
+
+    Accepts the bare route token (what the prompt asks for), a quoted or
+    JSON-wrapped variant (``{"route": "temporal"}``), and hyphen/case noise
+    (``Multi-Hop``). Ambiguous replies naming several routes, or replies
+    naming none, return ``None`` so the caller can fall back.
+    """
+    if not content:
+        return None
+    normalized = content.strip().casefold().replace("-", "_")
+    found: list[QueryRoute] = [route for route in _ROUTES if route in normalized]
+    if len(found) != 1:
+        return None
+    return found[0]
 
 
 def _messages(query: str) -> tuple[ChatCompletionMessageParam, ...]:
