@@ -50,7 +50,7 @@ def test_unrouted_decision_mirrors_global_flags() -> None:
         gnosis_graph_traversal_enabled=True,
         gnosis_bridge_traversal_enabled=True,
         gnosis_chain_of_note_enabled=True,
-        gnosis_multi_hop_budget_multiplier=2,
+        gnosis_coverage_budget_multiplier=2,
     )
 
     # When: the unrouted decision is derived.
@@ -195,16 +195,19 @@ def test_routed_multi_hop_honors_the_bridge_traversal_flag() -> None:
     assert RouteDecision.for_route("multi_hop", _settings()).bridge_traversal is False
 
 
-def test_routed_budget_multiplier_applies_only_to_multi_hop() -> None:
-    # Given: an expanded multi-hop item budget configured.
-    settings = _settings(gnosis_multi_hop_budget_multiplier=2)
+def test_routed_budget_multiplier_applies_to_coverage_hungry_routes() -> None:
+    # Given: an expanded coverage item budget configured.
+    settings = _settings(gnosis_coverage_budget_multiplier=2)
 
-    # When/Then: only the multi-hop route reads with the expanded budget;
-    # every other route keeps the request budget, and the default (1) keeps
-    # multi-hop unchanged too.
+    # When/Then: the multi-hop AND aggregative routes read with the expanded
+    # budget (the router classifies cross-session enumerations as
+    # aggregative); every other route keeps the request budget, and the
+    # default (1) keeps everything unchanged.
     assert RouteDecision.for_route("multi_hop", settings).budget_multiplier == 2
+    assert RouteDecision.for_route("aggregative", settings).budget_multiplier == 2
     assert RouteDecision.for_route("temporal", settings).budget_multiplier == 1
     assert RouteDecision.for_route("single_hop", settings).budget_multiplier == 1
+    assert RouteDecision.for_route("unanswerable_risk", settings).budget_multiplier == 1
     assert RouteDecision.for_route("multi_hop", _settings()).budget_multiplier == 1
 
 
