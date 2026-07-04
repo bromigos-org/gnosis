@@ -98,6 +98,17 @@ class Settings(BaseSettings):
     gnosis_rustfs_retention_days: int | None = Field(default=None, ge=1)
     gnosis_recall_filter_enabled: bool = False
     gnosis_recall_filter_candidates: int = Field(default=30, ge=1)
+    # Scope-narrowed dense retrieval. The SDK's search_facts ranks the fact
+    # vector index globally and only the gateway's post-filter enforces scope,
+    # so in a store holding many users (LongMemEval: one user per question
+    # instance, with haystack sessions SHARED between instances) the global
+    # top-k fills with other users' near-identical facts and the requesting
+    # user's candidates get crowded out. When enabled, dense candidates come
+    # from a scope-narrowed vector query instead (over-fetch the index by
+    # gnosis_dense_scope_pool, filter to scope in-query, keep the top
+    # candidate_limit). Off = byte-identical SDK dense path.
+    gnosis_scoped_dense_retrieval_enabled: bool = False
+    gnosis_dense_scope_pool: int = Field(default=4000, ge=100, le=100_000)
     gnosis_hybrid_retrieval_enabled: bool = False
     gnosis_graphqa_fusion_enabled: bool = False
     # The graph-QA planner is an LLM call that commonly takes ~10s on a

@@ -360,6 +360,7 @@ Several features exist, but they are controlled and not silently enabled.
 - Prompt enrichment from entities, preferences, and reasoning is off by default.
 - The LLM recall filter is off by default (`GNOSIS_RECALL_FILTER_ENABLED`).
 - Hybrid lexical+dense retrieval is off by default (`GNOSIS_HYBRID_RETRIEVAL_ENABLED`).
+- Scope-narrowed dense retrieval is off by default (`GNOSIS_SCOPED_DENSE_RETRIEVAL_ENABLED`).
 - Read-time deterministic supersession is off by default (`GNOSIS_READ_SUPERSESSION_ENABLED`).
 - The sufficiency autorater is off by default (`GNOSIS_SUFFICIENCY_CHECK_ENABLED`).
 - The abstention grounding prompt is off by default (`GNOSIS_ABSTENTION_PROMPT_ENABLED`).
@@ -441,6 +442,8 @@ Preview comes before persistence. If extraction work is being evaluated, use `PO
 - `GNOSIS_RECALL_FILTER_ENABLED` runs one `GNOSIS_LLM` call after retrieval ranking to drop query-irrelevant long-term candidates in `/v1/memory/context` and `/v1/memories/search` (default `false`).
 - `GNOSIS_RECALL_FILTER_CANDIDATES` caps how many top-ranked candidates that call screens (default `30`).
 - `GNOSIS_HYBRID_RETRIEVAL_ENABLED` runs a BM25 full-text search over stored fact content beside the vector search and fuses the two rankings with Reciprocal Rank Fusion (k=60) in `/v1/memories/search` and `/v1/memory/context`; any full-text failure degrades to dense-only retrieval (default `false`).
+- `GNOSIS_SCOPED_DENSE_RETRIEVAL_ENABLED` replaces the SDK's global vector ranking with a scope-narrowed vector query (over-fetch the fact index by `GNOSIS_DENSE_SCOPE_POOL` neighbours, filter to tenant/user in-query) in `/v1/memories/search` and `/v1/memory/context`, so other users' near-duplicate facts cannot crowd the requesting user out of the dense candidate pool in multi-user stores; any failure degrades to the global ranking (default `false`).
+- `GNOSIS_DENSE_SCOPE_POOL` caps the scoped dense over-fetch (default `4000`).
 - `GNOSIS_READ_SUPERSESSION_ENABLED` deterministically drops same-slot older facts at read time in `/v1/memory/context` and `/v1/memories/search` (newest wins by `event_date` else `created_at`), keeping only the newest per slot without mutating storage - append-only stays (default `false`).
 - `GNOSIS_SUFFICIENCY_CHECK_ENABLED` adds an optional `sufficiency` block to the `/v1/memory/context` response via one `GNOSIS_SUFFICIENCY_MODEL` call judging whether the assembled context can answer the query; any failure degrades to `assessed: false` and never blocks the response (default `false`).
 - `GNOSIS_SUFFICIENCY_MODEL` is the LiteLLM model for that sufficiency call (default empty, meaning `GNOSIS_LLM`).

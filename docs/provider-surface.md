@@ -138,6 +138,8 @@ These are consequences of the installed SDK and are the closest safe equivalents
 - `GNOSIS_RECALL_FILTER_ENABLED` (default `false`) - post-retrieval LLM recall filter over long-term candidates in `/v1/memories/search` and `/v1/memory/context`.
 - `GNOSIS_RECALL_FILTER_CANDIDATES` (default `30`) - how many top-ranked candidates go to the filter call.
 - `GNOSIS_HYBRID_RETRIEVAL_ENABLED` (default `false`) - BM25 full-text search fused with the vector ranking via RRF (k=60) in `/v1/memories/search` and `/v1/memory/context`.
+- `GNOSIS_SCOPED_DENSE_RETRIEVAL_ENABLED` (default `false`) - dense candidates come from a scope-narrowed vector query (over-fetch `fact_embedding_idx` by `GNOSIS_DENSE_SCOPE_POOL` nearest neighbours, filter to tenant/user in-query, keep the top 100) instead of the SDK's global ranking, so other scopes' near-duplicate facts cannot crowd the requesting scope out of the candidate pool in multi-user stores; embedder or vector-query failures degrade to the SDK ranking with a structured warning.
+- `GNOSIS_DENSE_SCOPE_POOL` (default `4000`) - how many nearest neighbours the scoped dense query over-fetches before scope narrowing.
 - `GNOSIS_READ_SUPERSESSION_ENABLED` (default `false`) - deterministic read-time newest-wins over same-slot facts in `/v1/memories/search` and `/v1/memory/context`; append-only storage is never mutated.
 - `GNOSIS_SUFFICIENCY_CHECK_ENABLED` (default `false`) - adds an additive `sufficiency` block to the `/v1/memory/context` response via one autorater call; failures degrade to `assessed: false`.
 - `GNOSIS_SUFFICIENCY_MODEL` (default empty = `GNOSIS_LLM`) - the LiteLLM model for the sufficiency autorater call.
