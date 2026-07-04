@@ -583,8 +583,10 @@ _ABSTENTION_INSTRUCTION: Final[str] = (
 # thing the memories never mention. The likelihood clause carves the one
 # measured over-abstention cost back out (Run 17: open-domain "would X
 # likely..." questions expect an inference from known traits, and the bare
-# never-guess rule refused them).
-_CHAIN_OF_NOTE_INSTRUCTION: Final[str] = (
+# never-guess rule refused them). The instruction is assembled from the
+# base plus one inference clause so the optional widenings below stay
+# byte-identical to the historic instruction while their flags are off.
+_CHAIN_OF_NOTE_BASE: Final[str] = (
     "Before answering, silently take notes on each memory below: state "
     "whether it is relevant to the question, what it says, who it is about, "
     "and whether it contradicts another memory. Ignore memories that are "
@@ -592,9 +594,47 @@ _CHAIN_OF_NOTE_INSTRUCTION: Final[str] = (
     "memories about a different person than the question asks about. Then "
     "answer using only the relevant memories; if no memory states the "
     "answer, say you don't know - never guess, and never answer yes or no "
-    "about something the memories never mention. Only when the question "
-    "itself asks what is likely or probable, infer the most plausible "
-    "answer from the relevant memories instead of saying you don't know."
+    "about something the memories never mention."
+)
+_CON_LIKELIHOOD_CLAUSE: Final[str] = (
+    " Only when the question itself asks what is likely or probable, infer "
+    "the most plausible answer from the relevant memories instead of saying "
+    "you don't know."
+)
+# Widened inference carve-out (GNOSIS_CON_SPECULATIVE_INFERENCE_ENABLED).
+# LOCOMO Run 18 open-domain miss analysis (2026-07-04): 8 of 12 misses were
+# abstentions on speculative judgment questions phrased WITHOUT the word
+# "likely" ("Would Caroline pursue writing?", "Does John live close to a
+# beach or the mountains?") whose gold answers are themselves hedged
+# inferences. The likelihood clause never fires on them. This clause widens
+# the carve-out to speculative judgments about a person while explicitly
+# keeping the refusal of specific unstated facts, which is what the
+# adversarial category probes.
+_CON_SPECULATIVE_CLAUSE: Final[str] = (
+    " When the question asks what is likely or probable, or asks for a "
+    "speculative judgment about a person - what they would enjoy, prefer, "
+    "or do, what they might be or believe, whether they would be considered "
+    "something - infer the most plausible answer from what the relevant "
+    "memories show about them instead of saying you don't know. Still never "
+    "invent specific facts (names, places, events, dates, numbers) the "
+    "memories never state."
+)
+# Exhaustive-enumeration reading clause (GNOSIS_CON_ENUMERATION_ENABLED),
+# applied only on multi-hop/aggregative routed reads. LOCOMO Run 19 proved
+# the enumeration misses are a READER problem, not retrieval: doubling the
+# item budget raised gold-item coverage 50%->60% and repaired 0 of 27 -
+# even fully-covered questions answered with one salient item ("peach
+# cobbler" when both gold desserts were in context). Run 19 changed the
+# budget; this changes the reading behavior itself.
+_CON_ENUMERATION_CLAUSE: Final[str] = (
+    " When the question asks which items, what things, or otherwise asks "
+    "for a list, enumerate every distinct item the relevant memories "
+    "support, not only the most prominent one. When the question asks how "
+    "many, count the distinct occurrences across the memories and state "
+    "the number."
+)
+_ENUMERATION_CLAUSE_ROUTES: Final[frozenset[str]] = frozenset(
+    {"multi_hop", "aggregative"},
 )
 
 
@@ -1058,7 +1098,7 @@ class Neo4jAgentMemoryBackend:
         if not sections:
             return sections
         if decision.chain_of_note:
-            content = _CHAIN_OF_NOTE_INSTRUCTION
+            content = self._chain_of_note_instruction(decision)
         elif decision.abstention_prompt:
             content = _ABSTENTION_INSTRUCTION
         else:
@@ -1068,6 +1108,31 @@ class Neo4jAgentMemoryBackend:
             content=content,
         )
         return [instruction, *sections]
+
+    def _chain_of_note_instruction(self, decision: RouteDecision) -> str:
+        """Assemble the route's Chain-of-Note instruction from its clauses.
+
+        With both widening flags off this returns the exact Run 18 CoN v3
+        instruction byte-for-byte. GNOSIS_CON_SPECULATIVE_INFERENCE_ENABLED
+        swaps the likelihood carve-out for the wider speculative-judgment
+        carve-out (LOCOMO open-domain misses are "Would X ...?" questions
+        that never say "likely"). GNOSIS_CON_ENUMERATION_ENABLED appends the
+        exhaustive-enumeration clause on multi-hop/aggregative routed reads
+        only (Run 19: enumeration misses are a reader problem - full gold
+        coverage in context still answered with one item).
+        """
+        inference_clause = (
+            _CON_SPECULATIVE_CLAUSE
+            if self._app_settings.gnosis_con_speculative_inference_enabled
+            else _CON_LIKELIHOOD_CLAUSE
+        )
+        enumeration_clause = ""
+        if (
+            self._app_settings.gnosis_con_enumeration_enabled
+            and decision.route in _ENUMERATION_CLAUSE_ROUTES
+        ):
+            enumeration_clause = _CON_ENUMERATION_CLAUSE
+        return f"{_CHAIN_OF_NOTE_BASE}{inference_clause}{enumeration_clause}"
 
     async def _assess_sufficiency(
         self,

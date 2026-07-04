@@ -133,6 +133,15 @@ class Settings(BaseSettings):
     gnosis_sufficiency_model: str = ""
     gnosis_abstention_prompt_enabled: bool = False
     gnosis_chain_of_note_enabled: bool = False
+    # CoN widenings, both default-off (byte-identical Run 18 instruction).
+    # Speculative inference: widen the likelihood carve-out to speculative
+    # judgment questions that never say "likely" (LOCOMO Run 18 open-domain
+    # misses: 8/12 were abstentions on "Would X ...?" phrasings).
+    gnosis_con_speculative_inference_enabled: bool = False
+    # Exhaustive enumeration on multi-hop/aggregative routed reads (LOCOMO
+    # Run 19: enumeration misses persist at full gold coverage - the reader
+    # answers with one salient item; this instructs it to list all/count).
+    gnosis_con_enumeration_enabled: bool = False
     gnosis_fact_verbatim_expansion_enabled: bool = False
     gnosis_fact_verbatim_expansion_max: int = Field(default=5, ge=1)
     gnosis_fact_extraction_enabled: bool = False
