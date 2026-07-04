@@ -1,6 +1,3 @@
-# Official benchmark results
-
-Mirror of the canonical log in [gnosis-membench/RESULTS.md](https://github.com/bromigos-org/gnosis-membench/blob/main/RESULTS.md); the harness repo is the source of truth for new runs.
 
 
 Canonical record of all gnosis memory-quality benchmark runs. Every run uses the
@@ -171,7 +168,73 @@ mem0 66.9 · mem0-graph 68.4 · full-context 72.9 · Letta (blog) 74.0.
 - Answerer route changed between Run 1 and Runs 2-4 (Copilot quota) — the
   judge was held constant, but the context-vs-search comparison within Run 1
   is the cleanest same-route pair.
-- gnosis ingests verbatim (no LLM extraction) in all runs to date; enabling
-  extraction is the next measured experiment.
+- Runs 1-4 ingest verbatim (no LLM extraction); Run 5 onward ingests with
+  edu-v1 fact extraction.
 - Weekly regression runs (subset 2, this same frozen judge) execute in-cluster
   via the homelab `membench` CronJob and upload to RustFS `membench/results/`.
+
+## Research sources behind the measured changes
+
+The changes tested above were not guesses — each traces to specific literature,
+dissected in this repo's research docs: [docs/extraction-design.md](docs/extraction-design.md),
+[docs/frontier-2026.md](docs/frontier-2026.md),
+[docs/gaps-abstention-maintenance.md](docs/gaps-abstention-maintenance.md).
+
+**Sources that directly shaped shipped changes:**
+
+- **EMem** ([arXiv 2511.17208](https://arxiv.org/abs/2511.17208)) — enriched
+  elementary discourse units: self-contained, dated, entity-normalized fact
+  statements. Basis of Run 5's edu-v1 extraction (+11.7 J, temporal +42).
+  Its recall-filter ablation motivated Run 4 — which did NOT reproduce on our
+  stack (a useful negative result: component gains are stack-dependent).
+- **Zep / Graphiti** ([arXiv 2501.13956](https://arxiv.org/abs/2501.13956)) —
+  temporal knowledge-graph design; inspired dating every rendered fact
+  (Run 2) and the event_date/created_at bi-temporal seam in extracted facts.
+  Graphiti's never-hallucinate-dates prompt rules are embedded in edu-v1.
+- **mem0** ([arXiv 2504.19413](https://arxiv.org/abs/2504.19413), ECAI 2025) —
+  calibration evidence that extraction quality dominates graph structure
+  (their graph variant adds only ~1.6 J); their OSS extraction prompts
+  informed edu-v1's guardrails. Also the source of the published comparison
+  table and the headline-J-excluding-adversarial convention.
+- **Mnemis / frontier hybrid-retrieval consensus** (dissected in
+  docs/frontier-2026.md) — BM25+dense with RRF fusion appears in all three
+  strongest 2026 systems; Mnemis's ablation attributes its largest gain to it.
+  Basis of Run 6 (gnosis PR #15).
+
+**Foundational papers (first verified research pass):**
+
+- MemGPT ([arXiv 2310.08560](https://arxiv.org/abs/2310.08560)) — layered
+  memory, LLM-directed memory operations.
+- Generative Agents ([arXiv 2304.03442](https://arxiv.org/abs/2304.03442),
+  UIST 2023) — importance/recency/relevance retrieval scoring, reflection.
+- HippoRAG 2 ([arXiv 2502.14802](https://arxiv.org/abs/2502.14802), ICML
+  2025) — passages-as-graph-nodes + Personalized PageRank; the strongest
+  peer-reviewed hybrid-retrieval evidence; queued behind Run 6.
+- MemoryBank ([arXiv 2305.10250](https://arxiv.org/abs/2305.10250), AAAI
+  2024) — Ebbinghaus decay with recall reinforcement (unproven for QA
+  accuracy; parked).
+
+**Benchmarks:**
+
+- LOCOMO ([arXiv 2402.17753](https://arxiv.org/abs/2402.17753)) — this log's
+  primary benchmark; known ceiling: ~6.4% erroneous gold answers.
+- LongMemEval ([arXiv 2410.10813](https://arxiv.org/abs/2410.10813)) —
+  planned second measure (knowledge-update + abstention categories LOCOMO
+  lacks).
+
+**Open-gap sources (abstention + maintenance, see gaps doc):**
+
+- Sufficient Context ([arXiv 2411.06037](https://arxiv.org/abs/2411.06037)) —
+  explains our adversarial drop (richer context suppresses abstention even
+  when insufficient); sufficiency autorater is the planned fix.
+- AbstentionBench ([arXiv 2506.09038](https://arxiv.org/abs/2506.09038)) —
+  evidence-grounded abstention prompting raises abstention without precision
+  loss.
+- "Don't Ask the LLM to Track Freshness" ([arXiv 2606.01435](https://arxiv.org/abs/2606.01435)) —
+  deterministic read-time newest-wins (78–94.8%) crushes LLM/bi-temporal
+  invalidation (Zep: 7.0%) on FactConsolidation — this REVERSED our original
+  plan to build write-time bi-temporal invalidation, and validates gnosis's
+  append-only + read-time recency design.
+- Selective memory addition ([arXiv 2505.16067](https://arxiv.org/abs/2505.16067)) —
+  add-all degrades accuracy over time (67.5→55.5); store-time selectivity
+  matters for the maintenance roadmap.
