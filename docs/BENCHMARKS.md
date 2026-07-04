@@ -32,20 +32,37 @@ re-run (read-path change measured on context only).
 
 **Current best: Run 5/6, context ~71.2–71.4** — above every published
 system's LOCOMO number (see comparison below), within ~1.5 of the
-full-context ceiling. Per-category breakdown of the two best runs:
+full-context ceiling.
 
-| Category (n) | Run 5 context | Run 5 search | Run 6 context | Run 6 search |
+### Full per-category history — context condition (`/v1/memory/context`)
+
+Every run, so each category's progression is visible (e.g. temporal
+24→30→42→43→84→92, multi-hop's stubborn plateau).
+
+| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) |
+|---|---|---|---|---|---|---|
+| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | **80.5** | 79.5 |
+| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 |
+| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** |
+| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 |
+| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 |
+| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** |
+| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 |
+
+### Full per-category history — search condition (`/v1/memories/search`)
+
+Runs where search was re-run (read-path changes measured on context only
+are omitted).
+
+| Category (n) | Run 1 | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) |
 |---|---|---|---|---|
-| single-hop (200) | **80.5** | 73.5 | 79.5 | 75.5 |
-| multi-hop (74) | 39.2 | 37.8 | 33.8 | 32.4 |
-| temporal (90) | 84.4 | 84.4 | **92.2** | **92.2** |
-| open-domain (21) | 38.1 | 38.1 | 38.1 | 38.1 |
-| adversarial (112) | 67.9 | 71.4 | 71.4 | 73.2 |
-| **overall excl. adversarial (385)** | **71.2** | **67.3** | **71.4** | **69.1** |
-| overall (497) | 70.4 | 68.2 | 71.4 | 70.0 |
-
-Earlier runs' full per-category numbers live in each run's detail
-section below.
+| single-hop (200) | 75.0 | 73.5 | 73.5 | 75.5 |
+| multi-hop (74) | 44.6 | 46.0 | 37.8 | 32.4 |
+| temporal (90) | 48.9 | 43.3 | 84.4 | **92.2** |
+| open-domain (21) | 42.9 | 33.3 | 38.1 | 38.1 |
+| adversarial (112) | 68.8 | 72.3 | 71.4 | 73.2 |
+| **overall excl. adv. (385)** | **61.3** | **59.0** | **67.3** | **69.1** |
+| overall (497) | 63.0 | 62.0 | 68.2 | 70.0 |
 
 Retrieval mechanism stats (context condition unless noted):
 
