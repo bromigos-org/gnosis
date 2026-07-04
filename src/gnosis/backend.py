@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -1460,9 +1461,13 @@ class Neo4jAgentMemoryBackend:
         candidates against the query before the item budget applies.
         """
         metadata = _scope_metadata(request.scope)
-        facts = await self._query_ranked_facts(client, request.query, metadata)
+        facts, graph_facts = await asyncio.gather(
+            self._query_ranked_facts(client, request.query, metadata),
+            self._graphqa_fused_facts(request),
+        )
         if not facts:
             facts = await _query_recent_facts(client, metadata)
+        facts = _fuse_graph_facts(facts, graph_facts)
         facts = await self._recall_filtered_facts(request.query, facts)
         facts = self._superseded_facts(facts)
         facts = facts[: request.max_items]
@@ -1959,6 +1964,59 @@ class Neo4jAgentMemoryBackend:
         kept, dropped = drop_superseded(matches, _memory_freshness)
         _log_supersession(dropped, len(matches), surface="search")
         return kept
+
+    async def _graphqa_fused_facts(
+        self,
+        request: MemoryContextRequest,
+    ) -> list[JsonObject]:
+        """Run the planned graph-QA route as a parallel fusion candidate leg.
+
+        Frontier technique (Mnemis dual-route, frontier-2026 T3): the existing
+        LLM-planned, validated, scope-safe, read-only graph-QA path runs on
+        every context query in parallel with dense long-term retrieval; its
+        derived nodes join the long-term candidate set before ranking is cut so
+        multi-hop traversal facts survive the item budget. A no-op empty list
+        while GNOSIS_GRAPHQA_FUSION_ENABLED is off (byte-identical dense-only
+        output) or with no query. The route is bounded by
+        GNOSIS_GRAPHQA_FUSION_TIMEOUT_SECONDS and any planner/execution failure
+        (LLM, Neo4j, validation rejection, timeout) degrades to dense-only with
+        a structured warning - the context request never fails on the graph leg.
+
+        Distinct from the per-request ``include_graph`` flag, which renders a
+        separate graph section rather than fusing into the ranked facts.
+        """
+        if not self._app_settings.gnosis_graphqa_fusion_enabled or not request.query:
+            return []
+        try:
+            graph = await asyncio.wait_for(
+                self._graph_store.get_context(
+                    GraphContextRequest(
+                        scope=request.scope,
+                        query=request.query,
+                        limit=request.graph_limit,
+                    ),
+                ),
+                timeout=self._app_settings.gnosis_graphqa_fusion_timeout_seconds,
+            )
+        except (
+            TimeoutError,
+            OpenAIError,
+            Neo4jError,
+            OSError,
+            RuntimeError,
+            ValidationError,
+        ) as error:
+            _LOGGER.warning(
+                "graph-QA fusion route failed; assembling dense-only context",
+                extra={
+                    "error_type": type(error).__name__,
+                    "tenant_id": request.scope.tenant_id,
+                    "guild_id": request.scope.guild_id,
+                    "channel_id": request.scope.channel_id,
+                },
+            )
+            return []
+        return _graph_facts_to_candidates(graph.facts)
 
     async def _query_ranked_facts(
         self,
@@ -3911,6 +3969,65 @@ def _fact_markers(facts: list[JsonObject]) -> set[str]:
             if isinstance(value, str) and value != "":
                 markers.add(value)
     return markers
+
+
+def _graph_facts_to_candidates(facts: Sequence[JsonObject]) -> list[JsonObject]:
+    """Adapt graph-QA nodes to long-term fact candidates for fused ranking.
+
+    Each live graph node's summary becomes a verbatim-predicate candidate so
+    ``_fact_context_line`` renders it as a uniform dated line and read-time
+    supersession never claims a slot for it (graph summaries are traversal
+    evidence, not knowledge slots).
+    """
+    candidates: list[JsonObject] = []
+    for fact in facts:
+        summary = fact.get("summary")
+        if not isinstance(summary, str) or not summary or fact.get("deleted") is True:
+            continue
+        identifier = fact.get("id")
+        candidates.append(
+            {
+                "id": identifier if isinstance(identifier, str) else "",
+                "subject": "",
+                "predicate": VERBATIM_MEMORY_PREDICATE,
+                "object": summary,
+                "metadata": {},
+                "graphqa": True,
+            },
+        )
+    return candidates
+
+
+def _fuse_graph_facts(
+    dense: list[JsonObject],
+    graph: list[JsonObject],
+) -> list[JsonObject]:
+    """Union graph-derived candidates into the dense set, dropping duplicates.
+
+    A graph candidate is dropped when it shares a memory id with a dense fact
+    or renders to the same dated line, so a node already surfaced by dense
+    retrieval is never double-added. Dense ranking order is preserved; graph
+    candidates append after it (Mnemis unions the unordered structured route).
+    """
+    if not graph:
+        return dense
+    existing_ids = {
+        identifier
+        for fact in dense
+        if isinstance(identifier := fact.get("id"), str) and identifier
+    }
+    existing_lines = {_fact_context_line(fact) for fact in dense}
+    fused = list(dense)
+    for candidate in graph:
+        identifier = candidate.get("id")
+        if isinstance(identifier, str) and identifier and identifier in existing_ids:
+            continue
+        line = _fact_context_line(candidate)
+        if line in existing_lines:
+            continue
+        existing_lines.add(line)
+        fused.append(candidate)
+    return fused
 
 
 def _dedupe_graph_context(

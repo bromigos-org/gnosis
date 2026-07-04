@@ -99,6 +99,8 @@ class Settings(BaseSettings):
     gnosis_recall_filter_enabled: bool = False
     gnosis_recall_filter_candidates: int = Field(default=30, ge=1)
     gnosis_hybrid_retrieval_enabled: bool = False
+    gnosis_graphqa_fusion_enabled: bool = False
+    gnosis_graphqa_fusion_timeout_seconds: float = Field(default=5.0, gt=0)
     gnosis_read_supersession_enabled: bool = False
     gnosis_sufficiency_check_enabled: bool = False
     gnosis_sufficiency_model: str = ""
