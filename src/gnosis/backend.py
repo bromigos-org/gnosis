@@ -338,6 +338,18 @@ _ABSTENTION_INSTRUCTION: Final[str] = (
     "Answer only from the memories below; if they do not contain the answer, "
     "say you don't know."
 )
+# Chain-of-Note read-then-reason (arXiv 2311.09210; LongMemEval arXiv
+# 2410.10813 measures up to +10 QA points from structured reading on
+# conversational memory). The note step lets the reader reject retrieved
+# similar-but-wrong memories instead of answering from them, and raises
+# rejection of unanswerable questions - reading is the lever, not retrieval.
+_CHAIN_OF_NOTE_INSTRUCTION: Final[str] = (
+    "Before answering, silently take notes on each memory below: state "
+    "whether it is relevant to the question, what it says, and whether it "
+    "contradicts another memory. Ignore memories that are merely similar to "
+    "the question but do not answer it. Then answer using only the relevant "
+    "memories; if none of them contain the answer, say you don't know."
+)
 
 
 class MemoryConfigKwargs(TypedDict, total=False):
@@ -1446,19 +1458,34 @@ class Neo4jAgentMemoryBackend:
         sections: list[MemoryContextSection],
         decision: RouteDecision,
     ) -> list[MemoryContextSection]:
-        """Prepend the near-zero-cost abstention standing instruction line.
+        """Prepend the standing reading instruction as a leading section.
 
-        AbstentionBench (arXiv 2506.09038) shows an explicit grounding
-        instruction restores abstention on unanswerable queries. It is added as
-        a leading section so existing section parsing stays intact; a no-op
-        (byte-identical output) while the effective decision leaves the
-        abstention prompt off or when no memory content was assembled.
+        Two prompt-only reading aids share this seam, both added as a leading
+        section so existing section parsing stays intact and both no-ops
+        (byte-identical output) when off or when no memory content was
+        assembled:
+
+        * GNOSIS_CHAIN_OF_NOTE_ENABLED - Chain-of-Note read-then-reason
+          (arXiv 2311.09210): note each memory's relevance first, then answer
+          from the relevant ones or abstain. Subsumes the abstention line, so
+          it takes precedence when the effective decision also asks for the
+          bare abstention instruction.
+        * the decision's ``abstention_prompt`` - the bare grounding
+          instruction (AbstentionBench, arXiv 2506.09038), globally via
+          GNOSIS_ABSTENTION_PROMPT_ENABLED or routed for unanswerable-risk
+          queries.
         """
-        if not decision.abstention_prompt or not sections:
+        if not sections:
+            return sections
+        if self._app_settings.gnosis_chain_of_note_enabled:
+            content = _CHAIN_OF_NOTE_INSTRUCTION
+        elif decision.abstention_prompt:
+            content = _ABSTENTION_INSTRUCTION
+        else:
             return sections
         instruction = MemoryContextSection(
             source="instructions",
-            content=_ABSTENTION_INSTRUCTION,
+            content=content,
         )
         return [instruction, *sections]
 
