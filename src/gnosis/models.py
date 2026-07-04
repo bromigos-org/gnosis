@@ -939,6 +939,9 @@ class DiagnosticsConfig(ContractModel):
     gnosis_fact_extraction_enabled: bool
     gnosis_fact_extraction_model: str
     gnosis_fact_extraction_context_turns: int
+    gnosis_fact_extraction_mode: Literal["sync", "background"]
+    gnosis_fact_extraction_max_concurrency: int
+    gnosis_fact_extraction_max_pending: int
     gnosis_ocr_enabled: bool
     gnosis_ocr_model: str
     gnosis_ocr_max_image_bytes: int
@@ -953,10 +956,21 @@ class DiagnosticsConfig(ContractModel):
     gnosis_consolidation_schedule_enabled: bool
 
 
+class ExtractionQueueStatus(ContractModel):
+    mode: Literal["sync", "background"]
+    max_concurrency: int
+    max_pending: int
+    pending: int
+    processed: int
+    failed: int
+    dropped: int
+
+
 class DiagnosticsResponse(ContractModel):
     tenant_id: str
     config: DiagnosticsConfig
     backend: BackendReadiness
+    extraction_queue: ExtractionQueueStatus | None = None
 
 
 class SkillRecord(ContractModel):

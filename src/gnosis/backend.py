@@ -34,6 +34,7 @@ from openai import OpenAIError
 from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
 
 from gnosis.event_facts import EventFactPromoter
+from gnosis.extraction_worker import BackgroundExtractionQueue
 from gnosis.fact_extraction import (
     EXTRACTION_VERSION,
     ConversationTurn,
@@ -230,6 +231,10 @@ _RUSTFS_KEY_DETAIL: Final[str] = "RustFS source key is outside service policy."
 _SDK_STATS_UNAVAILABLE_DETAIL: Final[str] = "SDK stats are unavailable."
 _SDK_BUFFER_FLUSH_UNAVAILABLE_DETAIL: Final[str] = "SDK buffer flush is unavailable."
 _SDK_BUFFER_WAIT_UNAVAILABLE_DETAIL: Final[str] = "SDK buffer wait is unavailable."
+# Bounded shutdown drain for background extraction: enough for in-flight
+# extraction LLM calls to finish, short enough not to stall pod rotation.
+_EXTRACTION_DRAIN_TIMEOUT_SECONDS: Final[float] = 10.0
+_NO_EXCLUDED_MEMORY_IDS: Final[frozenset[str]] = frozenset()
 _SDK_GRAPH_UNAVAILABLE_DETAIL: Final[str] = "SDK graph export is unavailable."
 _DEDUP_UNAVAILABLE_DETAIL: Final[str] = "SDK deduplication is unavailable."
 _DEDUP_APPLY_REQUIRED_DETAIL: Final[str] = (
@@ -1047,6 +1052,10 @@ class Neo4jAgentMemoryBackend:
             )
         )
         self._skill_registry: SkillRegistry = skill_registry or InMemorySkillRegistry()
+        self._extraction_queue: BackgroundExtractionQueue = BackgroundExtractionQueue(
+            max_concurrency=settings.gnosis_fact_extraction_max_concurrency,
+            max_pending=settings.gnosis_fact_extraction_max_pending,
+        )
         self._event_fact_promoter: EventFactPromoter = EventFactPromoter()
         self._fulltext_index_ready: bool = False
         self._dedup_candidates: dict[str, DedupCandidateState] = {}
@@ -1062,9 +1071,11 @@ class Neo4jAgentMemoryBackend:
         policy = _message_extraction_policy(request, self._app_settings)
         _require_ingestion_sources_allowed(request, self._app_settings)
         extraction_enabled = self._app_settings.gnosis_fact_extraction_enabled
+        extract_inline = extraction_enabled and not self._background_extraction()
+        source_memory_ids: list[str] = []
         async with self._memory_client() as client:
             context_turns: list[ConversationTurn] = []
-            if extraction_enabled:
+            if extract_inline:
                 context_turns = await self._recent_session_turns(
                     client,
                     request.scope,
@@ -1087,6 +1098,8 @@ class Neo4jAgentMemoryBackend:
             )
             if extraction_enabled:
                 memory = stored_memory_from_sdk(raw_record)
+                source_memory_ids = [memory.memory_id] if memory is not None else []
+            if extract_inline:
                 _ = await self._extracted_unit_results(
                     client,
                     request.scope,
@@ -1098,10 +1111,20 @@ class Neo4jAgentMemoryBackend:
                             content=request.content,
                         ),
                     ],
-                    source_memory_ids=(
-                        [memory.memory_id] if memory is not None else []
-                    ),
+                    source_memory_ids=source_memory_ids,
                 )
+        if extraction_enabled and not extract_inline:
+            self._enqueue_background_extraction(
+                request.scope,
+                caller_metadata={},
+                new_turns=[
+                    ConversationTurn(
+                        speaker=request.role.value,
+                        content=request.content,
+                    ),
+                ],
+                source_memory_ids=source_memory_ids,
+            )
         return MessageWriteResponse(accepted=True)
 
     async def preview_extraction(
@@ -1156,6 +1179,9 @@ class Neo4jAgentMemoryBackend:
         return BufferFlushResponse(flushed=True, status=await self.buffer_status())
 
     async def shutdown(self) -> None:
+        await self._extraction_queue.drain(
+            drain_window_seconds=_EXTRACTION_DRAIN_TIMEOUT_SECONDS,
+        )
         if self._app_settings.gnosis_write_mode != "buffered":
             return
         async with self._memory_client() as client:
@@ -1223,6 +1249,15 @@ class Neo4jAgentMemoryBackend:
                 gnosis_fact_extraction_context_turns=(
                     self._app_settings.gnosis_fact_extraction_context_turns
                 ),
+                gnosis_fact_extraction_mode=(
+                    self._app_settings.gnosis_fact_extraction_mode
+                ),
+                gnosis_fact_extraction_max_concurrency=(
+                    self._app_settings.gnosis_fact_extraction_max_concurrency
+                ),
+                gnosis_fact_extraction_max_pending=(
+                    self._app_settings.gnosis_fact_extraction_max_pending
+                ),
                 gnosis_ocr_enabled=self._app_settings.gnosis_ocr_enabled,
                 gnosis_ocr_model=self._app_settings.gnosis_ocr_model,
                 gnosis_ocr_max_image_bytes=(
@@ -1249,6 +1284,9 @@ class Neo4jAgentMemoryBackend:
                 ),
             ),
             backend=readiness,
+            extraction_queue=self._extraction_queue.status(
+                mode=self._app_settings.gnosis_fact_extraction_mode,
+            ),
         )
 
     async def get_context(self, request: ContextRequest) -> ContextResponse:
@@ -1395,8 +1433,9 @@ class Neo4jAgentMemoryBackend:
             settings=self._app_settings,
         )
         extraction_enabled = self._app_settings.gnosis_fact_extraction_enabled
+        extract_inline = extraction_enabled and not self._background_extraction()
         context_turns: list[ConversationTurn] = []
-        if extraction_enabled:
+        if extract_inline:
             # Fetched before the verbatim writes so the just-added turns
             # cannot leak into their own extraction context.
             context_turns = await self._recent_session_turns(client, request.scope)
@@ -1420,19 +1459,29 @@ class Neo4jAgentMemoryBackend:
                     metadata=metadata,
                 ),
             )
-        if extraction_enabled:
+        new_turns = [
+            ConversationTurn(speaker=message.role, content=message.content)
+            for message in request.messages
+        ]
+        if extract_inline:
             results.extend(
                 await self._extracted_unit_results(
                     client,
                     request.scope,
                     caller_metadata=request.metadata,
                     context_turns=context_turns,
-                    new_turns=[
-                        ConversationTurn(speaker=message.role, content=message.content)
-                        for message in request.messages
-                    ],
+                    new_turns=new_turns,
                     source_memory_ids=[result.memory_id for result in results],
                 ),
+            )
+        elif extraction_enabled:
+            # Background mode: the response carries only the verbatim
+            # results; extraction runs on the queue after the request.
+            self._enqueue_background_extraction(
+                request.scope,
+                caller_metadata=request.metadata,
+                new_turns=new_turns,
+                source_memory_ids=[result.memory_id for result in results],
             )
         return results
 
@@ -1476,14 +1525,20 @@ class Neo4jAgentMemoryBackend:
         self,
         client: MemoryClientContext,
         scope: MemoryScope,
+        *,
+        exclude_memory_ids: frozenset[str] = _NO_EXCLUDED_MEMORY_IDS,
     ) -> list[ConversationTurn]:
         """Read the extraction context window: recent turns of this session.
 
         Returns the last ``GNOSIS_FACT_EXTRACTION_CONTEXT_TURNS`` verbatim
-        ``said_*`` facts for the scope's session in chronological order. Any
-        read failure degrades to an empty context window - extraction still
-        runs, it just resolves references less well - because extraction may
-        never fail an add.
+        ``said_*`` facts for the scope's session in chronological order. In
+        sync mode the window is read before the verbatim writes; in
+        background mode the turns being extracted are already stored when
+        the job runs, so ``exclude_memory_ids`` (their fact ids) filters
+        them out - a pair is never its own context. Any read failure
+        degrades to an empty context window - extraction still runs, it
+        just resolves references less well - because extraction may never
+        fail an add.
         """
         limit = self._app_settings.gnosis_fact_extraction_context_turns
         if limit <= 0:
@@ -1495,7 +1550,9 @@ class Neo4jAgentMemoryBackend:
                     "subject": _user_identifier(scope),
                     "predicate_prefix": TURN_MEMORY_PREDICATE_PREFIX,
                     "scope_fragments": session_read_fragments(scope),
-                    "limit": limit,
+                    # Over-fetch by the excluded rows so exclusion never
+                    # shrinks the effective window.
+                    "limit": limit + len(exclude_memory_ids),
                 },
             )
         except (RuntimeError, OSError, Neo4jError) as error:
@@ -1504,17 +1561,62 @@ class Neo4jAgentMemoryBackend:
                 extra={"error_type": type(error).__name__},
             )
             return []
+        recent = [
+            memory
+            for row in rows
+            if (memory := stored_memory_from_row(row)) is not None
+            and memory.memory_id not in exclude_memory_ids
+            and memory_matches_scope(memory, scope)
+        ]
         turns = [
             ConversationTurn(
                 speaker=memory.predicate.removeprefix(TURN_MEMORY_PREDICATE_PREFIX),
                 content=memory.content,
             )
-            for row in rows
-            if (memory := stored_memory_from_row(row)) is not None
-            and memory_matches_scope(memory, scope)
+            for memory in recent[:limit]
         ]
         turns.reverse()
         return turns
+
+    def _background_extraction(self) -> bool:
+        return self._app_settings.gnosis_fact_extraction_mode == "background"
+
+    def _enqueue_background_extraction(
+        self,
+        scope: MemoryScope,
+        *,
+        caller_metadata: JsonObject,
+        new_turns: list[ConversationTurn],
+        source_memory_ids: list[str],
+    ) -> None:
+        """Queue extraction for turns whose verbatim facts already landed.
+
+        The job opens its own memory client and re-reads the context window
+        at processing time, excluding the just-written verbatim facts. On
+        queue overflow the extraction is dropped with a structured warning -
+        never backpressure for message ingestion.
+        """
+
+        async def job() -> None:
+            async with self._memory_client() as client:
+                context_turns = await self._recent_session_turns(
+                    client,
+                    scope,
+                    exclude_memory_ids=frozenset(source_memory_ids),
+                )
+                _ = await self._extracted_unit_results(
+                    client,
+                    scope,
+                    caller_metadata=caller_metadata,
+                    context_turns=context_turns,
+                    new_turns=new_turns,
+                    source_memory_ids=source_memory_ids,
+                )
+
+        _ = self._extraction_queue.submit(
+            job,
+            source_memory_ids=source_memory_ids,
+        )
 
     async def _extracted_unit_results(  # noqa: PLR0913 - One argument per prompt input.
         self,

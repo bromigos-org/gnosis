@@ -2322,6 +2322,13 @@ class RecordingBackend:
                 gnosis_fact_extraction_context_turns=(
                     settings.gnosis_fact_extraction_context_turns
                 ),
+                gnosis_fact_extraction_mode=settings.gnosis_fact_extraction_mode,
+                gnosis_fact_extraction_max_concurrency=(
+                    settings.gnosis_fact_extraction_max_concurrency
+                ),
+                gnosis_fact_extraction_max_pending=(
+                    settings.gnosis_fact_extraction_max_pending
+                ),
                 gnosis_ocr_enabled=settings.gnosis_ocr_enabled,
                 gnosis_ocr_model=settings.gnosis_ocr_model,
                 gnosis_ocr_max_image_bytes=settings.gnosis_ocr_max_image_bytes,

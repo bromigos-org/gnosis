@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from os import environ
-from typing import Self, cast
+from typing import Literal, Self, cast
 
 import pytest
 
@@ -487,6 +487,152 @@ async def test_add_message_extraction_extends_message_writes() -> None:
 
 
 @pytest.mark.anyio
+async def test_add_memories_background_mode_returns_verbatim_only_then_extracts() -> (
+    None
+):
+    # Given: the extraction flag on in background mode.
+    client = FakeMemoryClient()
+    extractor = RecordingUnitExtractor(
+        extraction=MemoryUnitExtraction(
+            facts=[MemoryUnit(text="Stan adopted a dog", source_turn_ids=[1])],
+        ),
+    )
+    backend = _backend(
+        client,
+        extractor,
+        extraction_enabled=True,
+        extraction_mode="background",
+    )
+
+    # When: a turn is added.
+    response = await backend.add_memories(
+        MemoryAddRequest(
+            scope=_scope(),
+            messages=[MemoryMessage(role="user", content="I adopted a dog")],
+        ),
+    )
+
+    # Then: the response returns immediately with only the verbatim result -
+    # the same shape as with extraction disabled - and no extraction has run.
+    assert [result.event for result in response.results] == ["ADD"]
+    assert response.results[0].content == "I adopted a dog"
+    assert extractor.calls == []
+    assert _graph(client).writes == []
+    verbatim_ids = [str(fact.id) for fact in client.long_term.facts]
+
+    # When: the background queue drains.
+    await backend.shutdown()
+
+    # Then: the extraction ran once and the unit landed with provenance back
+    # to the already-written verbatim facts.
+    assert len(extractor.calls) == 1
+    _, create_params = _graph(client).writes[0]
+    assert create_params is not None
+    assert create_params["object"] == "Stan adopted a dog"
+    stored_metadata = _JSON_OBJECT_ADAPTER.validate_json(
+        cast("str", create_params["metadata"]),
+    )
+    assert stored_metadata["source_memory_ids"] == verbatim_ids
+    diagnostics = backend.diagnostics(await backend.readiness())
+    assert diagnostics.extraction_queue is not None
+    assert diagnostics.extraction_queue.mode == "background"
+    assert diagnostics.extraction_queue.processed == 1
+    assert diagnostics.extraction_queue.pending == 0
+    assert diagnostics.extraction_queue.failed == 0
+    assert diagnostics.extraction_queue.dropped == 0
+
+
+@pytest.mark.anyio
+async def test_background_extraction_excludes_own_turns_from_context() -> None:
+    # Given: background mode with a two-turn context window; by the time the
+    # job runs, the just-added turn is already stored and would come back
+    # first from the context query.
+    client = FakeMemoryClient()
+    extractor = RecordingUnitExtractor(extraction=MemoryUnitExtraction())
+    backend = _backend(
+        client,
+        extractor,
+        extraction_enabled=True,
+        extraction_mode="background",
+        extraction_context_turns=2,
+    )
+    _ = await backend.add_memories(
+        MemoryAddRequest(
+            scope=_scope(),
+            messages=[MemoryMessage(role="user", content="It was great")],
+        ),
+    )
+    new_turn_id = str(client.long_term.facts[0].id)
+    client.query.rows = [
+        _turn_row(new_turn_id, "user", "It was great"),
+        _turn_row(_MEMORY_ID, "assistant", "How was Tokyo?"),
+        _turn_row(_OTHER_MEMORY_ID, "user", "I went to Tokyo"),
+    ]
+
+    # When: the background job runs.
+    await backend.shutdown()
+
+    # Then: the context read over-fetched by the one excluded turn and the
+    # extractor saw the window without the pair being extracted.
+    context_query, context_params = client.query.calls[0]
+    assert "STARTS WITH $predicate_prefix" in context_query
+    assert context_params is not None
+    assert context_params["limit"] == 3
+    assert extractor.calls[0].context_turns == (
+        ConversationTurn(speaker="user", content="I went to Tokyo"),
+        ConversationTurn(speaker="assistant", content="How was Tokyo?"),
+    )
+    assert extractor.calls[0].new_turns == (
+        ConversationTurn(speaker="user", content="It was great"),
+    )
+
+
+@pytest.mark.anyio
+async def test_add_message_background_mode_defers_extraction() -> None:
+    # Given: background mode on the /v1/messages hot path.
+    client = FakeMemoryClient()
+    extractor = RecordingUnitExtractor(
+        extraction=MemoryUnitExtraction(
+            facts=[MemoryUnit(text="Stan adopted a dog", source_turn_ids=[1])],
+        ),
+    )
+    backend = _backend(
+        client,
+        extractor,
+        extraction_enabled=True,
+        extraction_mode="background",
+    )
+
+    # When: a message is written.
+    response = await backend.add_message(
+        MessageWriteRequest(
+            scope=_scope(),
+            role=MessageRole.USER,
+            content="I adopted a dog",
+        ),
+    )
+
+    # Then: the write is acknowledged with no extraction in the request path.
+    assert response.accepted is True
+    assert client.long_term.fact_writes[0].predicate == "said_user"
+    assert extractor.calls == []
+    assert _graph(client).writes == []
+
+    # When: the queue drains on shutdown.
+    await backend.shutdown()
+
+    # Then: the extracted fact appears with provenance to the verbatim turn.
+    _, create_params = _graph(client).writes[0]
+    assert create_params is not None
+    stored_metadata = _JSON_OBJECT_ADAPTER.validate_json(
+        cast("str", create_params["metadata"]),
+    )
+    assert stored_metadata["source_memory_ids"] == [
+        str(client.long_term.facts[0].id),
+    ]
+
+
+@pytest.mark.anyio
 async def test_search_memories_when_results_cross_scopes() -> None:
     # Given: SDK search results from this user, another user, and low score.
     client = FakeMemoryClient()
@@ -793,11 +939,13 @@ def _backend(
     *,
     extraction_enabled: bool = False,
     extraction_context_turns: int = 10,
+    extraction_mode: Literal["sync", "background"] = "sync",
 ) -> Neo4jAgentMemoryBackend:
     return Neo4jAgentMemoryBackend(
         Settings(
             gnosis_fact_extraction_enabled=extraction_enabled,
             gnosis_fact_extraction_context_turns=extraction_context_turns,
+            gnosis_fact_extraction_mode=extraction_mode,
         ),
         memory_client_factory=FakeMemoryClientFactory(client),
         graph_store=FakeGraphStore(),
