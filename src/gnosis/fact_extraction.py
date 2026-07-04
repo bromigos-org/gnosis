@@ -23,7 +23,7 @@ from openai.types.chat import (
     ChatCompletionSystemMessageParam,
     ChatCompletionUserMessageParam,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from gnosis.graph_query_qa import proxy_model_name
 
@@ -316,6 +316,41 @@ class LiteLLMMemoryUnitExtractor:
         return extraction
 
 
+# How many times one add re-samples the extractor when the model emits
+# malformed structured output. The chatgpt-routed gpt-5.5 sporadically appends
+# trailing characters after the JSON document (~2-5% of LongMemEval-sized
+# adds, observed 2026-07-04); a fresh sample almost always parses, so
+# re-sampling preserves the extracted units instead of degrading the add to
+# verbatim-only - and previously the ValidationError escaped the additive
+# guarantee entirely and 500'd the add.
+_EXTRACTION_PARSE_ATTEMPTS: Final[int] = 3
+
+
+async def _extraction_with_reparse(
+    extractor: MemoryUnitExtractor,
+    *,
+    conversation_date: str,
+    context_turns: Sequence[ConversationTurn],
+    new_turns: Sequence[ConversationTurn],
+) -> MemoryUnitExtraction | None:
+    """One extraction, re-sampled on malformed structured output."""
+    for attempt in range(1, _EXTRACTION_PARSE_ATTEMPTS + 1):
+        try:
+            return await extractor.extract_units(
+                conversation_date=conversation_date,
+                context_turns=context_turns,
+                new_turns=new_turns,
+            )
+        except ValidationError:
+            if attempt == _EXTRACTION_PARSE_ATTEMPTS:
+                raise
+            _LOGGER.warning(
+                "fact extraction emitted malformed JSON; re-sampling",
+                extra={"attempt": attempt, "new_turns": len(new_turns)},
+            )
+    return None
+
+
 async def extract_memory_units(
     extractor: MemoryUnitExtractor,
     *,
@@ -333,12 +368,13 @@ async def extract_memory_units(
     if not new_turns:
         return []
     try:
-        extraction = await extractor.extract_units(
+        extraction = await _extraction_with_reparse(
+            extractor,
             conversation_date=conversation_date,
             context_turns=context_turns,
             new_turns=new_turns,
         )
-    except (RuntimeError, OSError, OpenAIError) as error:
+    except (RuntimeError, OSError, OpenAIError, ValidationError) as error:
         _LOGGER.warning(
             "fact extraction failed; keeping verbatim-only add",
             extra={

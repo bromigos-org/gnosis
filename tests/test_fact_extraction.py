@@ -108,6 +108,58 @@ async def test_extract_memory_units_llm_failure_returns_no_units(
 
 
 @pytest.mark.anyio
+async def test_extract_memory_units_resamples_malformed_structured_output(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Given: an extractor whose first sample is malformed JSON (the
+    # chatgpt-routed model sporadically appends trailing characters) and
+    # whose second sample parses.
+    unit = MemoryUnit(text="The user started guitar.", source_turn_ids=[3])
+    extractor = MalformedThenValidExtractor(
+        failures=1,
+        extraction=MemoryUnitExtraction(facts=[unit]),
+    )
+
+    # When: units are extracted.
+    with caplog.at_level(logging.WARNING, logger="gnosis.fact_extraction"):
+        units = await extract_memory_units(
+            extractor,
+            conversation_date="2023-05-07",
+            context_turns=_CONTEXT_TURNS,
+            new_turns=_NEW_TURNS,
+        )
+
+    # Then: the re-sample recovers the units instead of degrading the add,
+    # and the malformed sample is logged.
+    assert units == [unit]
+    assert extractor.calls == 2
+    assert "malformed JSON" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_extract_memory_units_persistent_malformed_output_degrades(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Given: an extractor that emits malformed JSON on every sample.
+    extractor = MalformedThenValidExtractor(failures=99, extraction=None)
+
+    # When: units are extracted.
+    with caplog.at_level(logging.WARNING, logger="gnosis.fact_extraction"):
+        units = await extract_memory_units(
+            extractor,
+            conversation_date="2023-05-07",
+            context_turns=(),
+            new_turns=_NEW_TURNS,
+        )
+
+    # Then: after the attempt budget the add degrades to verbatim-only with a
+    # structured warning - it never raises (previously this 500'd the add).
+    assert units == []
+    assert extractor.calls == 3
+    assert "fact extraction failed" in caplog.text
+
+
+@pytest.mark.anyio
 async def test_extract_memory_units_missing_parse_returns_no_units(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -296,6 +348,29 @@ class RecordingExtractor:
     ) -> MemoryUnitExtraction | None:
         _ = (conversation_date, context_turns, new_turns)
         self.calls += 1
+        return self.extraction
+
+
+@dataclass(slots=True)
+class MalformedThenValidExtractor:
+    """Raises pydantic ValidationError ``failures`` times, then succeeds."""
+
+    failures: int
+    extraction: MemoryUnitExtraction | None
+    calls: int = field(default=0)
+
+    async def extract_units(
+        self,
+        *,
+        conversation_date: str,
+        context_turns: Sequence[ConversationTurn],
+        new_turns: Sequence[ConversationTurn],
+    ) -> MemoryUnitExtraction | None:
+        _ = (conversation_date, context_turns, new_turns)
+        self.calls += 1
+        if self.calls <= self.failures:
+            # A real malformed-payload error, as the SDK's parse raises it.
+            _ = MemoryUnitExtraction.model_validate_json('{"facts": []}]}')
         return self.extraction
 
 
