@@ -619,6 +619,7 @@ class MemorySearchRequest(ContractModel):
     filters: JsonObject | None = None
     limit: int = Field(default=8, ge=1, le=100)
     min_score: float | None = Field(default=None, ge=0, le=1)
+    peers: list[str] = Field(default_factory=list, exclude_if=_is_empty)
 
 
 class MemoryRecord(ContractModel):
@@ -628,10 +629,20 @@ class MemoryRecord(ContractModel):
     metadata: JsonObject = Field(default_factory=dict)
     created_at: str | None = Field(default=None, min_length=1)
     updated_at: str | None = Field(default=None, min_length=1)
+    origin: str | None = Field(default=None, min_length=1, exclude_if=_is_none)
+
+
+class MemoryPeerError(ContractModel):
+    peer: str = Field(min_length=1)
+    error: str = Field(min_length=1)
 
 
 class MemorySearchResponse(ContractModel):
     results: list[MemoryRecord] = Field(default_factory=list)
+    peer_errors: list[MemoryPeerError] = Field(
+        default_factory=list,
+        exclude_if=_is_empty,
+    )
 
 
 class MemoryListRequest(ContractModel):
@@ -667,6 +678,40 @@ class MemoryDeleteRequest(ContractModel):
 class MemoryDeleteResponse(ContractModel):
     memory_id: str = Field(min_length=1)
     event: Literal["DELETE"] = "DELETE"
+
+
+class MemoryPromoteRequest(ContractModel):
+    peer: str = Field(min_length=1)
+    scope: MemoryScope
+    filters: JsonObject | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+    dry_run: bool = True
+
+
+class MemoryPromoteCandidate(ContractModel):
+    memory_id: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    metadata: JsonObject = Field(default_factory=dict)
+
+
+class MemoryPromotedRecord(ContractModel):
+    source_memory_id: str = Field(min_length=1)
+    peer_memory_id: str = Field(min_length=1)
+    event: MemoryAddEvent
+
+
+class MemoryPromoteFailure(ContractModel):
+    source_memory_id: str = Field(min_length=1)
+    error: str = Field(min_length=1)
+
+
+class MemoryPromoteResponse(ContractModel):
+    peer: str = Field(min_length=1)
+    count: int = Field(ge=0)
+    dry_run: bool
+    candidates: list[MemoryPromoteCandidate] = Field(default_factory=list)
+    promoted: list[MemoryPromotedRecord] = Field(default_factory=list)
+    failed: list[MemoryPromoteFailure] = Field(default_factory=list)
 
 
 class GraphContextRequest(ContractModel):

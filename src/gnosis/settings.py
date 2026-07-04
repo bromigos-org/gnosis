@@ -1,12 +1,37 @@
 from os import environ
 from typing import ClassVar, Literal
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+type PeerDirection = Literal["both", "push", "pull"]
+
+_PEER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]*$"
 
 
 def _required_operator_token(name: str) -> str:
     return environ.get(name, "")
+
+
+class PeerConfig(BaseModel):
+    """One remote gnosis deployment this instance may federate with."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1, pattern=_PEER_NAME_PATTERN)
+    base_url: str = Field(min_length=1)
+    direction: PeerDirection = "both"
+    remote_tenant_id: str = Field(min_length=1)
+
+    @property
+    def token_env_var(self) -> str:
+        return f"GNOSIS_PEER_{self.name.upper().replace('-', '_')}_TOKEN"
+
+    def allows_push(self) -> bool:
+        return self.direction in {"both", "push"}
+
+    def allows_pull(self) -> bool:
+        return self.direction in {"both", "pull"}
 
 
 class Settings(BaseSettings):
@@ -78,6 +103,23 @@ class Settings(BaseSettings):
     gnosis_memory_edit_enabled: bool = False
     gnosis_mcp_enabled: bool = False
     gnosis_mcp_agent_id: str = Field(default="mcp-client", min_length=1)
+    gnosis_federation_token: str = ""
+    gnosis_peers: list[PeerConfig] = Field(default_factory=list)
+
+    @field_validator("gnosis_peers")
+    @classmethod
+    def _require_unique_peer_names(
+        cls,
+        peers: list[PeerConfig],
+    ) -> list[PeerConfig]:
+        seen: set[str] = set()
+        for peer in peers:
+            normalized = peer.name.casefold()
+            if normalized in seen:
+                detail = f"duplicate peer name: {peer.name}"
+                raise ValueError(detail)
+            seen.add(normalized)
+        return peers
 
 
 def load_settings() -> Settings:
