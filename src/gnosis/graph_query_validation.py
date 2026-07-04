@@ -15,6 +15,7 @@ _PROCEDURE_REASON: Final[str] = "procedures are not allowed"
 _RAW_SCOPE_REASON: Final[str] = "scope values must use parameters"
 _LIMIT_REASON: Final[str] = "query must use LIMIT $limit"
 _TENANT_SCOPE_REASON: Final[str] = "query must scope tenant_id with $tenant_id"
+_USER_SCOPE_REASON: Final[str] = "query must scope user_id with $user_id"
 _GUILD_SCOPE_REASON: Final[str] = "query must scope guild_id with $guild_id"
 _CHANNEL_SCOPE_REASON: Final[str] = "channel queries must scope channel_id"
 _AGENT_SCOPE_REASON: Final[str] = "query must scope agent_id with $agent_id"
@@ -97,6 +98,8 @@ def _require_alias_scope(cypher: str, request: GraphContextRequest) -> None:
         _require_alias_predicate(cypher, alias, "tenant_id", _TENANT_SCOPE_REASON)
         if label == "GraphNode":
             _require_alias_predicate(cypher, alias, "agent_id", _AGENT_SCOPE_REASON)
+        if label in rules.USER_SCOPED_LABELS:
+            _require_alias_predicate(cypher, alias, "user_id", _USER_SCOPE_REASON)
         if request.scope.guild_id is not None and label in rules.GUILD_SCOPED_LABELS:
             _require_alias_predicate(cypher, alias, "guild_id", _GUILD_SCOPE_REASON)
         if (
@@ -148,7 +151,10 @@ def _parameters(plan: GraphQueryPlan, request: GraphContextRequest) -> CypherPar
 
 
 def _labels(cypher: str) -> frozenset[str]:
-    return frozenset(rules.LABEL_PATTERN.findall(cypher))
+    # Blank relationship brackets first so a relationship type inside ``[...]``
+    # is not extracted as a node label (it is validated as a relationship).
+    node_cypher = rules.RELATIONSHIP_BRACKET_PATTERN.sub(" ", cypher)
+    return frozenset(rules.LABEL_PATTERN.findall(node_cypher))
 
 
 def _relationships(cypher: str) -> frozenset[str]:
