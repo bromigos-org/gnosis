@@ -30,9 +30,21 @@ re-run (read-path change measured on context only).
 | 5 (PR #14) | **fact extraction at ingest** | **71.2** | 67.3 | **kept** (+11.7, temporal 42→84) |
 | 6 (PR #15) | + hybrid BM25 retrieval | 71.4 | 69.1 | wash — temporal +8, multi-hop −5 |
 
+Isolation experiments (each flag ON alone on the Run 5 extraction store,
+not cumulative — they answer "does this feature help?", not "new best"):
+
+| Run | Feature isolated | Context J | Search J | Finding |
+|---|---|---|---|---|
+| 7 (PR #19) | abstention prompt | 69.6 | 68.1 | **adversarial +8.9** but −1.6 excl-adv (over-abstains on answerable); overall-J +0.8. Tunable. |
+| 8 (PR #20) | facts→verbatim expansion | 71.2 | 68.8 | flat headline; **multi-hop +2.7** (only thing to nudge multi-hop up), open-domain −4.8 |
+
 **Current best: Run 5/6, context ~71.2–71.4** — above every published
 system's LOCOMO number (see comparison below), within ~1.5 of the
-full-context ceiling.
+full-context ceiling. Read-path tweaks after extraction are marginal:
+multi-hop (~40) is the remaining ceiling and needs graph *traversal*,
+which requires materializing an entity-relationship graph at extraction
+(no such structure exists in the current store — graph-QA fusion PR #21
+returns empty). That is the next real lever.
 
 ### Full per-category history — context condition (`/v1/memory/context`)
 
