@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     gnosis_recall_filter_enabled: bool = False
     gnosis_recall_filter_candidates: int = Field(default=30, ge=1)
     gnosis_hybrid_retrieval_enabled: bool = False
+    gnosis_read_supersession_enabled: bool = False
+    gnosis_sufficiency_check_enabled: bool = False
+    gnosis_sufficiency_model: str = ""
+    gnosis_abstention_prompt_enabled: bool = False
     gnosis_fact_extraction_enabled: bool = False
     gnosis_fact_extraction_model: str = ""
     gnosis_fact_extraction_context_turns: int = Field(default=10, ge=0)

@@ -31,6 +31,7 @@ from gnosis.models import (
     PreferenceRecord,
 )
 from gnosis.settings import Settings
+from gnosis.sufficiency import SufficiencyVerdict
 
 if TYPE_CHECKING:
     from gnosis.backend import MemoryClientContext
@@ -498,6 +499,362 @@ async def test_fact_context_renders_signal_predicates_with_subject() -> None:
     assert "subject:" not in content
 
 
+def _extracted_fact(  # noqa: PLR0913 - Test builder mirrors the stored fact shape.
+    *,
+    memory_id: str,
+    subject: str,
+    object_value: str,
+    entities: list[str],
+    event_date: str,
+    scope: MemoryScope,
+) -> FactRecord:
+    metadata: JsonObject = dict(_scope_metadata(scope))
+    metadata["entities"] = cast("JsonValue", entities)
+    metadata["event_date"] = event_date
+    metadata["extracted"] = True
+    return FactRecord(
+        id=memory_id,
+        subject=subject,
+        predicate="fact",
+        object=object_value,
+        metadata=metadata,
+    )
+
+
+@dataclass(slots=True)
+class RecordingSufficiencyAssessor:
+    verdict: SufficiencyVerdict | Exception
+    calls: list[tuple[str, str]] = field(default_factory=list)
+
+    async def assess(
+        self,
+        query: str,
+        context: str,
+    ) -> SufficiencyVerdict | None:
+        self.calls.append((query, context))
+        if isinstance(self.verdict, Exception):
+            raise self.verdict
+        return self.verdict
+
+
+@pytest.mark.anyio
+async def test_read_supersession_keeps_only_newest_same_slot_fact() -> None:
+    # Given: two extracted facts in the same slot (same user + first entity),
+    # the newer one carrying a later event_date.
+    scope = _scope()
+    older = _extracted_fact(
+        memory_id="fact-old",
+        subject="user:789",
+        object_value="Maria's dog is Rex",
+        entities=["Maria"],
+        event_date="2024-01-01",
+        scope=scope,
+    )
+    newer = _extracted_fact(
+        memory_id="fact-new",
+        subject="user:789",
+        object_value="Maria's dog is Biscuit",
+        entities=["Maria"],
+        event_date="2024-06-01",
+        scope=scope,
+    )
+    client = RecordingMemoryClient(
+        query=RecordingQuery(),
+        long_term=RecordingLongTermMemory(search_results=[older, newer]),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_read_supersession_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled with supersession enabled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="what is Maria's dog?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: only the newest fact in the slot survives.
+    content = response.sections[0].content
+    assert "Biscuit" in content
+    assert "Rex" not in content
+
+
+@pytest.mark.anyio
+async def test_read_supersession_off_is_byte_identical() -> None:
+    # Given: the same same-slot pair with the flag left at its default.
+    scope = _scope()
+    older = _extracted_fact(
+        memory_id="fact-old",
+        subject="user:789",
+        object_value="Maria's dog is Rex",
+        entities=["Maria"],
+        event_date="2024-01-01",
+        scope=scope,
+    )
+    newer = _extracted_fact(
+        memory_id="fact-new",
+        subject="user:789",
+        object_value="Maria's dog is Biscuit",
+        entities=["Maria"],
+        event_date="2024-06-01",
+        scope=scope,
+    )
+
+    off = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(
+            RecordingMemoryClient(
+                query=RecordingQuery(),
+                long_term=RecordingLongTermMemory(search_results=[older, newer]),
+            ),
+        ),
+        graph_store=RecordingGraphStore(),
+    )
+    request = MemoryContextRequest(
+        scope=scope,
+        query="what is Maria's dog?",
+        include_short_term=False,
+        include_reasoning=False,
+        include_graph=False,
+    )
+
+    # When/Then: both older and newer render when supersession is off.
+    response = await off.get_memory_context(request)
+    content = response.sections[0].content
+    assert "Biscuit" in content
+    assert "Rex" in content
+
+
+@pytest.mark.anyio
+async def test_read_supersession_keeps_distinct_slot_facts() -> None:
+    # Given: two extracted facts about different entities (different slots).
+    scope = _scope()
+    dog = _extracted_fact(
+        memory_id="fact-dog",
+        subject="user:789",
+        object_value="Maria's dog is Biscuit",
+        entities=["Maria"],
+        event_date="2024-06-01",
+        scope=scope,
+    )
+    city = _extracted_fact(
+        memory_id="fact-city",
+        subject="user:789",
+        object_value="Alice lives in Lisbon",
+        entities=["Alice"],
+        event_date="2024-01-01",
+        scope=scope,
+    )
+    client = RecordingMemoryClient(
+        query=RecordingQuery(),
+        long_term=RecordingLongTermMemory(search_results=[dog, city]),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_read_supersession_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled with supersession enabled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="tell me about Maria and Alice",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: independent facts are both kept - never over-superseded.
+    content = response.sections[0].content
+    assert "Biscuit" in content
+    assert "Lisbon" in content
+
+
+@pytest.mark.anyio
+async def test_read_supersession_applies_to_search() -> None:
+    # Given: two same-slot extracted facts returned by fact search.
+    scope = _scope()
+    older = _extracted_fact(
+        memory_id="fact-old",
+        subject="user:789",
+        object_value="Maria's dog is Rex",
+        entities=["Maria"],
+        event_date="2024-01-01",
+        scope=scope,
+    )
+    newer = _extracted_fact(
+        memory_id="fact-new",
+        subject="user:789",
+        object_value="Maria's dog is Biscuit",
+        entities=["Maria"],
+        event_date="2024-06-01",
+        scope=scope,
+    )
+    client = RecordingMemoryClient(
+        query=RecordingQuery(),
+        long_term=RecordingLongTermMemory(search_results=[older, newer]),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_read_supersession_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: search runs with supersession enabled.
+    response = await backend.search_memories(
+        MemorySearchRequest(scope=scope, query="Maria's dog", limit=5),
+    )
+
+    # Then: only the newest fact in the slot is returned.
+    assert [result.memory_id for result in response.results] == ["fact-new"]
+
+
+@pytest.mark.anyio
+async def test_abstention_instruction_prepended_when_enabled() -> None:
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:one",
+                        predicate="said_user",
+                        object_value="the library opens at nine",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_abstention_prompt_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="when does the library open?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    assert response.sections[0].source == "instructions"
+    assert response.sections[0].content == (
+        "Answer only from the memories below; if they do not contain the "
+        "answer, say you don't know."
+    )
+
+
+@pytest.mark.anyio
+async def test_abstention_instruction_absent_when_disabled() -> None:
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:one",
+                        predicate="said_user",
+                        object_value="the library opens at nine",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="when does the library open?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    assert all(section.source != "instructions" for section in response.sections)
+    assert response.sufficiency is None
+
+
+@pytest.mark.anyio
+async def test_sufficiency_block_present_when_enabled() -> None:
+    scope = _scope()
+    client = RecordingMemoryClient(query=RecordingQuery())
+    assessor = RecordingSufficiencyAssessor(
+        verdict=SufficiencyVerdict(sufficient=True, reason="  the answer is present  "),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_sufficiency_check_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+        sufficiency_assessor=assessor,
+    )
+
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="anything?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    assert response.sufficiency is not None
+    assert response.sufficiency.assessed is True
+    assert response.sufficiency.sufficient is True
+    assert response.sufficiency.reason == "the answer is present"
+    assert len(assessor.calls) == 1
+
+
+@pytest.mark.anyio
+async def test_sufficiency_llm_failure_degrades_to_not_assessed() -> None:
+    scope = _scope()
+    client = RecordingMemoryClient(query=RecordingQuery())
+    assessor = RecordingSufficiencyAssessor(verdict=RuntimeError("boom"))
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_sufficiency_check_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+        sufficiency_assessor=assessor,
+    )
+
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="anything?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    assert response.sufficiency is not None
+    assert response.sufficiency.assessed is False
+    assert response.sufficiency.sufficient is False
+    assert response.sufficiency.reason is None
+
+
 @dataclass(frozen=True, slots=True)
 class CypherCall:
     statement: str
@@ -900,7 +1257,11 @@ class RecordingGraphStore:
         return GraphContextResponse(context="")
 
 
-def _settings(*, gnosis_prompt_entities_enabled: bool = False) -> Settings:
+def _settings(
+    *,
+    gnosis_prompt_entities_enabled: bool = False,
+    **overrides: JsonValue,
+) -> Settings:
     settings_values: JsonObject = {
         "gnosis_token": "value",
         "gnosis_tenant_id": "bromigos",
@@ -913,6 +1274,7 @@ def _settings(*, gnosis_prompt_entities_enabled: bool = False) -> Settings:
         "gnosis_embedding": "local-qwen3-embedding-0.6b",
         "gnosis_embedding_dimensions": 1024,
         "gnosis_prompt_entities_enabled": gnosis_prompt_entities_enabled,
+        **overrides,
     }
     return Settings.model_validate(settings_values)
 
