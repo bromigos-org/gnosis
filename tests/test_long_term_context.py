@@ -1,4 +1,6 @@
+import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Self, cast
@@ -11,6 +13,7 @@ from neo4j_agent_memory.memory.reasoning import ReasoningStep as SdkReasoningSte
 from neo4j_agent_memory.memory.reasoning import ReasoningTrace as SdkReasoningTrace
 from neo4j_agent_memory.memory.reasoning import ToolCall, ToolCallStatus, ToolStats
 from neo4j_agent_memory.schema.models import EntityRef
+from openai import OpenAIError
 
 from gnosis.backend import Neo4jAgentMemoryBackend
 from gnosis.models import (
@@ -1233,6 +1236,235 @@ async def test_verbatim_expansion_ignores_non_extracted_facts() -> None:
     assert client.query.cypher_calls == []
 
 
+@pytest.mark.anyio
+async def test_graphqa_fusion_adds_graph_nodes_to_facts_when_enabled() -> None:
+    # Given: dense retrieval finds one fact; the graph route yields another.
+    scope = _scope()
+    dense = _fact_record(
+        subject="user:789",
+        predicate="fact",
+        object_value="Alice works at the city library",
+        metadata=_scope_metadata(scope),
+    )
+    graph_store = FusionGraphStore(
+        facts=[
+            _graph_fact(
+                node_id="graph-node-1",
+                summary="The city library is on Elm Street",
+            ),
+        ],
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_graphqa_fusion_enabled=True),
+        memory_client_factory=MemoryClientFactory(
+            RecordingMemoryClient(
+                query=RecordingQuery(),
+                long_term=RecordingLongTermMemory(search_results=[dense]),
+            ),
+        ),
+        graph_store=graph_store,
+    )
+
+    # When: context is assembled with a query present.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="where does Alice work?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: both the dense fact and the fused graph node render as facts.
+    content = response.sections[0].content
+    assert graph_store.calls == 1
+    assert "Alice works at the city library" in content
+    assert "- The city library is on Elm Street" in content
+
+
+@pytest.mark.anyio
+async def test_graphqa_fusion_dedupes_node_already_in_dense_results() -> None:
+    # Given: the graph route returns a node sharing the dense fact's memory id.
+    scope = _scope()
+    dense = _fact_record(
+        subject="user:789",
+        predicate="fact",
+        object_value="Alice works at the city library",
+        metadata=_scope_metadata(scope),
+    )
+    graph_store = FusionGraphStore(
+        facts=[
+            _graph_fact(
+                node_id="user:789",
+                summary="Alice works at the city library",
+            ),
+        ],
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_graphqa_fusion_enabled=True),
+        memory_client_factory=MemoryClientFactory(
+            RecordingMemoryClient(
+                query=RecordingQuery(),
+                long_term=RecordingLongTermMemory(search_results=[dense]),
+            ),
+        ),
+        graph_store=graph_store,
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="where does Alice work?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the shared node is not double-added.
+    content = response.sections[0].content
+    assert content.count("city library") == 1
+
+
+@pytest.mark.anyio
+async def test_graphqa_fusion_planner_failure_degrades_to_dense_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Given: the graph route raises (planner / execution failure).
+    scope = _scope()
+    dense = _fact_record(
+        subject="user:789",
+        predicate="fact",
+        object_value="Alice works at the city library",
+        metadata=_scope_metadata(scope),
+    )
+    graph_store = FusionGraphStore(error=OpenAIError("planner down"))
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_graphqa_fusion_enabled=True),
+        memory_client_factory=MemoryClientFactory(
+            RecordingMemoryClient(
+                query=RecordingQuery(),
+                long_term=RecordingLongTermMemory(search_results=[dense]),
+            ),
+        ),
+        graph_store=graph_store,
+    )
+
+    # When: context is assembled.
+    with caplog.at_level(logging.WARNING):
+        response = await backend.get_memory_context(
+            MemoryContextRequest(
+                scope=scope,
+                query="where does Alice work?",
+                include_short_term=False,
+                include_reasoning=False,
+                include_graph=False,
+            ),
+        )
+
+    # Then: the dense fact still renders and a structured warning is logged.
+    content = response.sections[0].content
+    assert "Alice works at the city library" in content
+    assert "graph-QA fusion route failed" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_graphqa_fusion_timeout_degrades_to_dense_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Given: the graph route stalls past the fusion timeout budget.
+    scope = _scope()
+    dense = _fact_record(
+        subject="user:789",
+        predicate="fact",
+        object_value="Alice works at the city library",
+        metadata=_scope_metadata(scope),
+    )
+    graph_store = FusionGraphStore(
+        facts=[_graph_fact(node_id="graph-node-1", summary="unreachable")],
+        delay=0.5,
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(
+            gnosis_graphqa_fusion_enabled=True,
+            gnosis_graphqa_fusion_timeout_seconds=0.01,
+        ),
+        memory_client_factory=MemoryClientFactory(
+            RecordingMemoryClient(
+                query=RecordingQuery(),
+                long_term=RecordingLongTermMemory(search_results=[dense]),
+            ),
+        ),
+        graph_store=graph_store,
+    )
+
+    # When: context is assembled.
+    with caplog.at_level(logging.WARNING):
+        response = await backend.get_memory_context(
+            MemoryContextRequest(
+                scope=scope,
+                query="where does Alice work?",
+                include_short_term=False,
+                include_reasoning=False,
+                include_graph=False,
+            ),
+        )
+
+    # Then: dense-only context returns and the slow node never renders.
+    content = response.sections[0].content
+    assert "Alice works at the city library" in content
+    assert "unreachable" not in content
+    assert "graph-QA fusion route failed" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_graphqa_fusion_off_is_byte_identical() -> None:
+    # Given: identical inputs, fusion flag toggled; the graph route has nodes.
+    scope = _scope()
+    dense = _fact_record(
+        subject="user:789",
+        predicate="fact",
+        object_value="Alice works at the city library",
+        metadata=_scope_metadata(scope),
+    )
+    request = MemoryContextRequest(
+        scope=scope,
+        query="where does Alice work?",
+        include_short_term=False,
+        include_reasoning=False,
+        include_graph=False,
+    )
+
+    def build(*, enabled: bool) -> tuple[Neo4jAgentMemoryBackend, FusionGraphStore]:
+        store = FusionGraphStore(
+            facts=[_graph_fact(node_id="graph-node-1", summary="library on Elm")],
+        )
+        backend = Neo4jAgentMemoryBackend(
+            _settings(gnosis_graphqa_fusion_enabled=enabled),
+            memory_client_factory=MemoryClientFactory(
+                RecordingMemoryClient(
+                    query=RecordingQuery(),
+                    long_term=RecordingLongTermMemory(search_results=[dense]),
+                ),
+            ),
+            graph_store=store,
+        )
+        return backend, store
+
+    # When: assembled with the flag off vs on.
+    off_backend, off_store = build(enabled=False)
+    off = await off_backend.get_memory_context(request)
+    on_backend, _ = build(enabled=True)
+    on = await on_backend.get_memory_context(request)
+
+    # Then: the disabled run never calls the graph route and drops its nodes.
+    assert off_store.calls == 0
+    assert "library on Elm" not in off.sections[0].content
+    assert "library on Elm" in on.sections[0].content
+
+
 @dataclass(frozen=True, slots=True)
 class CypherCall:
     statement: str
@@ -1633,6 +1865,57 @@ class RecordingGraphStore:
     async def get_context(self, request: GraphContextRequest) -> GraphContextResponse:
         _ = request
         return GraphContextResponse(context="")
+
+
+@dataclass(slots=True)
+class FusionGraphStore:
+    """Graph store stub whose planned route returns known nodes (or fails)."""
+
+    facts: list[JsonObject] = field(default_factory=list)
+    error: Exception | None = None
+    delay: float = 0.0
+    calls: int = 0
+
+    async def require_available(self) -> None:
+        return None
+
+    async def readiness(self) -> BackendReadiness:
+        return BackendReadiness(graph="ready", schema="ready")
+
+    async def ingest_event(self, event: object) -> EventIngestResult:
+        _ = event
+        return EventIngestResult(
+            event_id="event-placeholder",
+            status=EventIngestStatus.ACCEPTED,
+        )
+
+    async def get_context(self, request: GraphContextRequest) -> GraphContextResponse:
+        _ = request
+        self.calls += 1
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if self.error is not None:
+            raise self.error
+        return GraphContextResponse(
+            context="\n".join(str(fact["summary"]) for fact in self.facts),
+            facts=list(self.facts),
+        )
+
+
+def _graph_fact(
+    *,
+    node_id: str,
+    summary: str,
+    node_type: str = "user",
+    deleted: bool = False,
+) -> JsonObject:
+    return {
+        "id": node_id,
+        "type": node_type,
+        "scope": "channel",
+        "summary": summary,
+        "deleted": deleted,
+    }
 
 
 def _settings(
