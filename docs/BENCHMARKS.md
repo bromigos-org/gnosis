@@ -9,7 +9,8 @@ frozen comparison config unless a deviation is noted. Raw artifacts
 gitignored `results/` tree on the machine that ran them; this file is the
 durable summary.
 
-**Frozen config**: LOCOMO subset 3 (conv-26, conv-30, conv-41), 1,451 turns
+**Frozen config (LOCOMO — regression gate)**: LOCOMO subset 3 (conv-26,
+conv-30, conv-41), 1,451 turns
 ingested, 497 questions; retrieval depth `max_items`/`limit` = 20; answering
 and judging on GPT-5.5 via homelab LiteLLM at judge temperature = provider
 default (gpt-5.5 hard-rejects the `temperature` param — deviation from the
@@ -17,6 +18,18 @@ official protocol, constant across all runs); LOCOMO adversarial rows scored
 by the official substring rule; headline J excludes adversarial (matches the
 mem0 paper's convention). gnosis embeddings: `local-qwen3-embedding-0.6b`
 (1024-dim). Graph QA off (`MEMBENCH_INCLUDE_GRAPH=false`).
+
+**Embedder note (2026-07-04)**: the LongMemEval_S campaign (new primary
+target) switches gnosis to cloud embeddings — `gemini-embedding-001`
+(3072-dim, via the homelab LiteLLM; homelab PR #14 exposed the route).
+Chosen over `text-embedding-3-small`/`-large` because it outranks both on
+MTEB retrieval and the goal is highest scores, not published-system
+comparability; verified live through gnosis's config path (3072-dim Fact
+vectors in Neo4j) before any measured run. The LOCOMO gate above KEEPS
+qwen3 embeddings — its entire 19-run history was measured there, and
+changing the embedder would invalidate the comparison. Answering and
+judging stay on the chatgpt-sub gpt-5.5 route; only `/v1/embeddings`
+traffic hits the paid keys (cents at these volumes).
 
 ## Trajectory (headline: J excl. adversarial, LOCOMO subset 3)
 
@@ -104,12 +117,24 @@ post-Run-15 delta; (2) the largest remaining category gap (multi-hop
 does not flip answers; (3) temporal's 1.1 gap to peak is one
 question. Run 18's 74.8 excl-adv sits above the published
 full-context ceiling (72.9, different judge — directional only).
-Recommended next benchmark move, NOT started: adopt LongMemEval_S
-(500 questions, 5 ability axes including abstention and knowledge
-updates, ~115k-token haystacks) as the primary optimization target,
-keep LOCOMO subset 3 as a frozen regression gate at the Run 18
-config, and re-baseline the noise floor there before believing any
-new lever.
+
+**Status (2026-07-04): LOCOMO subset 3 is FROZEN as the regression
+gate at the Run 18 config** (extraction + entity graph at write;
+adaptive routing + route-aware hardened CoN v3 with the likelihood
+carve-out at read; embeddings `local-qwen3-embedding-0.6b` /
+1024-dim; judge gpt-5.5; `max_items` 20; context condition).
+Reference scores for the gate: excl-adv 74.8 / overall 76.7, with a
+±2.3 J noise band on excl-adv between identical configs. Any future
+gnosis change should re-run this gate and is a regression only if it
+lands below the noise band, judged per-category. The gate keeps the
+qwen3 embedder its whole history was measured with, so its recorded
+scores stay comparable; re-running it requires a re-ingest at that
+embedder (the store is not kept warm). The primary optimization
+target is now LongMemEval_S (500 questions, 5 ability axes including
+abstention and knowledge updates, ~115k-token haystacks), whose
+frozen config switches to cloud embeddings (see the LongMemEval_S
+section); its noise floor must be re-baselined there before
+believing any new lever.
 
 ### Full per-category history — context condition (`/v1/memory/context`)
 
@@ -659,6 +684,66 @@ Retrieval mechanism stats (context condition unless noted):
   effectively identical retrieval. Flag stays merged, default 1 (off);
   Run 18 remains the production config.
 
+## LongMemEval_S — primary optimization target (from 2026-07-04)
+
+**Frozen config (LongMemEval_S)**: 100-instance stratified subset of the
+500-question benchmark ([arXiv 2410.10813](https://arxiv.org/abs/2410.10813)):
+all 30 abstention (`*_abs`) instances plus 70 non-abstention instances
+sampled proportionally per question type (largest-remainder allocation,
+seed 42). Resulting per-type composition (abstention instances also
+carry a question type): 30 multi-session, 25 temporal-reasoning, 17
+knowledge-update, 16 single-session-user, 8 single-session-assistant,
+4 single-session-preference. 49,437 turns across 4,783 haystack
+sessions. The question-id list is
+committed as `data/longmemeval_s_subset100.txt` and the data file is
+regenerated deterministically by `membench/scripts/make_lme_subset100.py`.
+Rationale: extraction-enabled adds on LongMemEval-sized turns cost ~30s
+each, so the full 500 (or 150) is not ingestable in one campaign window;
+abstention is over-sampled deliberately because it is a new axis LOCOMO
+lacks and n=6 proportional would be unmeasurable.
+
+Stack config: Run 18 production flags (extraction + entity graph at
+write; adaptive routing + route-aware hardened CoN v3 with the
+likelihood carve-out at read) **plus two LongMemEval-specific
+deviations**:
+
+- **Embeddings: `gemini-embedding-001` at 3072 dims** (vs the LOCOMO
+  gate's local qwen3/1024) — see the embedder note at the top.
+- **`GNOSIS_SCOPED_DENSE_RETRIEVAL_ENABLED=true`** (gnosis PR #46,
+  pool 10,000): LongMemEval instances share haystack sessions, so the
+  100 instances live as ~100 users in one store whose fact vectors are
+  near-duplicates across users. The SDK's dense path ranks the vector
+  index *globally* and scope-filters afterwards, so with ~100 users'
+  near-duplicate facts in one store the requesting user's facts get
+  crowded out of the global top-k. The flag narrows the
+  vector query to the request scope in-query. This is a correctness
+  requirement for multi-user single-store benchmarking, not an
+  optimization; single-user LOCOMO is unaffected (flag-off path is
+  byte-identical).
+
+Ingest protocol: one gnosis `user_id` per instance
+(`longmemeval_s:<question_id>`), one gnosis session per haystack
+session with the dataset's per-session timestamp as `session_date`,
+turns paired user/assistant with inline date prefixes on.
+Grading: the official LongMemEval judge prompts per question type
+(abstention judged by the official abstention prompt), judge gpt-5.5
+frozen as on LOCOMO. Headline metric: overall accuracy plus the
+per-question-type breakdown (the paper's 5 ability axes report is
+derived from question types).
+
+Smoke run (3 instances, one per protocol-critical type —
+`results/longmemeval_s/smoke3/`): temporal-reasoning and abstention
+passed end-to-end; the knowledge-update instance failed by answering
+with the *superseded* older value — expected at baseline (supersession
+is a known unshipped lever) and confirms the axis measures what it
+claims. The smoke run also flushed out and fixed three pipeline bugs
+(membench PRs #13/#14: add retries + transport-error retries; gnosis
+PR #47: extraction re-samples malformed LLM JSON instead of 500ing).
+
+| Run | Change under test | Overall | Verdict |
+|---|---|---|---|
+| L-0 (baseline) | Run 18 config + gemini embeddings + scoped dense retrieval | *ingesting* | — |
+
 ## Published comparison targets
 
 LOCOMO overall J as published (gpt-4o-mini judge — different judge and
@@ -723,8 +808,8 @@ dissected in this repo's research docs: [docs/extraction-design.md](docs/extract
 - LOCOMO ([arXiv 2402.17753](https://arxiv.org/abs/2402.17753)) — this log's
   primary benchmark; known ceiling: ~6.4% erroneous gold answers.
 - LongMemEval ([arXiv 2410.10813](https://arxiv.org/abs/2410.10813)) —
-  planned second measure (knowledge-update + abstention categories LOCOMO
-  lacks).
+  primary target from 2026-07-04 (knowledge-update + abstention categories
+  LOCOMO lacks); see the LongMemEval_S section.
 
 **Open-gap sources (abstention + maintenance, see gaps doc):**
 
