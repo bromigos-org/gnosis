@@ -106,6 +106,8 @@ class Settings(BaseSettings):
     gnosis_graphqa_fusion_timeout_seconds: float = Field(default=20.0, gt=0)
     gnosis_read_supersession_enabled: bool = False
     gnosis_entity_graph_enabled: bool = False
+    gnosis_adaptive_routing_enabled: bool = False
+    gnosis_routing_model: str = ""
     gnosis_sufficiency_check_enabled: bool = False
     gnosis_sufficiency_model: str = ""
     gnosis_abstention_prompt_enabled: bool = False

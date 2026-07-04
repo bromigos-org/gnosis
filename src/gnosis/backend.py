@@ -193,6 +193,7 @@ from gnosis.models import (
     SkillUsage,
     SufficiencyAssessment,
 )
+from gnosis.query_router import LiteLLMQueryRouter, QueryRouter, RouteDecision
 from gnosis.recall_filter import (
     LiteLLMRecallFilter,
     RecallFilter,
@@ -1051,6 +1052,7 @@ class Neo4jAgentMemoryBackend:
         recall_filter: RecallFilter | None = None,
         fact_extractor: MemoryUnitExtractor | None = None,
         sufficiency_assessor: SufficiencyAssessor | None = None,
+        query_router: QueryRouter | None = None,
     ) -> None:
         self._app_settings: Settings = settings
         self._settings: MemorySettings = _build_memory_settings(settings)
@@ -1082,6 +1084,11 @@ class Neo4jAgentMemoryBackend:
                 base_url=settings.litellm_base_url,
                 api_key=settings.litellm_api_key,
             )
+        )
+        self._query_router: QueryRouter = query_router or LiteLLMQueryRouter(
+            model=_routing_model(settings),
+            base_url=settings.litellm_base_url,
+            api_key=settings.litellm_api_key,
         )
         self._skill_registry: SkillRegistry = skill_registry or InMemorySkillRegistry()
         self._extraction_queue: BackgroundExtractionQueue = BackgroundExtractionQueue(
@@ -1332,6 +1339,7 @@ class Neo4jAgentMemoryBackend:
     ) -> MemoryContextResponse:
         sections: list[MemoryContextSection] = []
         long_term_facts = LongTermFactsContext()
+        decision = await self._route_decision(request.query)
         async with self._memory_client() as client:
             if request.include_short_term:
                 try:
@@ -1350,6 +1358,7 @@ class Neo4jAgentMemoryBackend:
                 long_term_facts = await self._get_long_term_facts_context(
                     request,
                     client,
+                    decision,
                 )
                 _append_context_section(
                     sections,
@@ -1401,22 +1410,51 @@ class Neo4jAgentMemoryBackend:
                 )
 
         sufficiency = await self._assess_sufficiency(request.query, sections)
-        sections = self._with_abstention_instruction(sections)
+        sections = self._with_abstention_instruction(sections, decision)
         return MemoryContextResponse(sections=sections, sufficiency=sufficiency)
+
+    async def _route_decision(self, query: str) -> RouteDecision:
+        """Resolve the effective read-path feature set for one query.
+
+        The globally configured flags while GNOSIS_ADAPTIVE_ROUTING_ENABLED is
+        off or the query is empty (byte-identical unrouted behavior). With the
+        flag on, one cheap structured-output LLM call classifies the query and
+        the route's measured-best feature set replaces the global toggles for
+        this request; any classifier failure degrades to the global flags with
+        a structured warning, so routing can never fail a read.
+        """
+        unrouted = RouteDecision.from_settings(self._app_settings)
+        if not self._app_settings.gnosis_adaptive_routing_enabled or not query:
+            return unrouted
+        try:
+            verdict = await self._query_router.classify(query)
+        except (RuntimeError, OSError, OpenAIError) as error:
+            _LOGGER.warning(
+                "query routing failed; using globally configured flags",
+                extra={"error_type": type(error).__name__},
+            )
+            return unrouted
+        if verdict is None:
+            _LOGGER.warning(
+                "query router returned no verdict; using globally configured flags",
+            )
+            return unrouted
+        return RouteDecision.for_route(verdict.route)
 
     def _with_abstention_instruction(
         self,
         sections: list[MemoryContextSection],
+        decision: RouteDecision,
     ) -> list[MemoryContextSection]:
         """Prepend the near-zero-cost abstention standing instruction line.
 
         AbstentionBench (arXiv 2506.09038) shows an explicit grounding
         instruction restores abstention on unanswerable queries. It is added as
         a leading section so existing section parsing stays intact; a no-op
-        (byte-identical output) while GNOSIS_ABSTENTION_PROMPT_ENABLED is off or
-        when no memory content was assembled.
+        (byte-identical output) while the effective decision leaves the
+        abstention prompt off or when no memory content was assembled.
         """
-        if not self._app_settings.gnosis_abstention_prompt_enabled or not sections:
+        if not decision.abstention_prompt or not sections:
             return sections
         instruction = MemoryContextSection(
             source="instructions",
@@ -1459,6 +1497,7 @@ class Neo4jAgentMemoryBackend:
         self,
         request: MemoryContextRequest,
         client: MemoryClientContext,
+        decision: RouteDecision,
     ) -> "LongTermFactsContext":
         """Render scoped long-term facts with the same read reach as search.
 
@@ -1469,12 +1508,14 @@ class Neo4jAgentMemoryBackend:
         ``max_items`` budget; recency ordering is the fallback when similarity
         search has nothing to rank (no query or no embedder). With
         GNOSIS_RECALL_FILTER_ENABLED on, one LLM call then screens the top
-        candidates against the query before the item budget applies.
+        candidates against the query before the item budget applies. The
+        ``decision`` carries the effective per-request read-path feature set
+        (the global flags unrouted, or the route's measured-best set).
         """
         metadata = _scope_metadata(request.scope)
         facts, graph_facts = await asyncio.gather(
-            self._query_ranked_facts(client, request.query, metadata),
-            self._graphqa_fused_facts(request),
+            self._query_ranked_facts(client, request.query, metadata, decision),
+            self._graphqa_fused_facts(request, decision),
         )
         if not facts:
             facts = await _query_recent_facts(client, metadata)
@@ -1484,7 +1525,7 @@ class Neo4jAgentMemoryBackend:
         facts = facts[: request.max_items]
         if not facts:
             return LongTermFactsContext()
-        expansion = await self._verbatim_expansion(client, facts, metadata)
+        expansion = await self._verbatim_expansion(client, facts, metadata, decision)
         lines = ["### Long-Term Facts"]
         for fact in facts:
             lines.append(_fact_context_line(fact))
@@ -1504,13 +1545,14 @@ class Neo4jAgentMemoryBackend:
         client: MemoryClientContext,
         facts: list[JsonObject],
         scope_metadata: Mapping[str, JsonValue],
+        decision: RouteDecision,
     ) -> dict[str, list[str]]:
         """Map each top extracted fact to its source verbatim turn text(s).
 
         Frontier technique (EverMemOS facts->episodes; True Memory verbatim):
         rank on the compact extracted fact for precision, then surface the
-        linked raw turn(s) for nuance. A no-op empty mapping while
-        GNOSIS_FACT_VERBATIM_EXPANSION_ENABLED is off (byte-identical output).
+        linked raw turn(s) for nuance. A no-op empty mapping while the
+        effective decision leaves expansion off (byte-identical output).
         Only the highest-ranked GNOSIS_FACT_VERBATIM_EXPANSION_MAX extracted
         facts expand; a verbatim turn already present in the ranked facts (or
         already attached to an earlier fact) is never double-rendered; the
@@ -1518,7 +1560,7 @@ class Neo4jAgentMemoryBackend:
         id can never leak a cross-scope turn. Any lookup failure or empty
         source set degrades to the compact fact alone.
         """
-        if not self._app_settings.gnosis_fact_verbatim_expansion_enabled:
+        if not decision.verbatim_expansion:
             return {}
         targets = _verbatim_expansion_targets(
             facts,
@@ -1998,6 +2040,7 @@ class Neo4jAgentMemoryBackend:
         request: MemorySearchRequest,
     ) -> MemorySearchResponse:
         filters = _parsed_memory_filters(request.filters)
+        decision = await self._route_decision(request.query)
         async with self._memory_client() as client:
             raw_records = await client.long_term.search_facts(
                 request.query,
@@ -2008,6 +2051,7 @@ class Neo4jAgentMemoryBackend:
                 request.query,
                 scope_read_fragments(request.scope),
                 stored_memories_from_sdk(raw_records),
+                decision,
             )
         budget = self._search_match_budget(request)
         matches: list[StoredMemory] = []
@@ -2052,6 +2096,7 @@ class Neo4jAgentMemoryBackend:
     async def _graphqa_fused_facts(
         self,
         request: MemoryContextRequest,
+        decision: RouteDecision,
     ) -> list[JsonObject]:
         """Run the planned graph-QA route as a parallel fusion candidate leg.
 
@@ -2060,8 +2105,8 @@ class Neo4jAgentMemoryBackend:
         every context query in parallel with dense long-term retrieval; its
         derived nodes join the long-term candidate set before ranking is cut so
         multi-hop traversal facts survive the item budget. A no-op empty list
-        while GNOSIS_GRAPHQA_FUSION_ENABLED is off (byte-identical dense-only
-        output) or with no query. The route is bounded by
+        while the effective decision leaves fusion off (byte-identical
+        dense-only output) or with no query. The route is bounded by
         GNOSIS_GRAPHQA_FUSION_TIMEOUT_SECONDS and any planner/execution failure
         (LLM, Neo4j, validation rejection, timeout) degrades to dense-only with
         a structured warning - the context request never fails on the graph leg.
@@ -2069,7 +2114,7 @@ class Neo4jAgentMemoryBackend:
         Distinct from the per-request ``include_graph`` flag, which renders a
         separate graph section rather than fusing into the ranked facts.
         """
-        if not self._app_settings.gnosis_graphqa_fusion_enabled or not request.query:
+        if not decision.graphqa_fusion or not request.query:
             return []
         try:
             graph = await asyncio.wait_for(
@@ -2107,12 +2152,13 @@ class Neo4jAgentMemoryBackend:
         client: MemoryClientContext,
         query: str,
         scope_metadata: Mapping[str, JsonValue],
+        decision: RouteDecision,
     ) -> list[JsonObject]:
         """Long-term fact candidates ranked by embedding similarity.
 
         Reuses the /v1/memories/search candidate path (SDK ``search_facts``
-        plus the same hybrid lexical fusion behind
-        GNOSIS_HYBRID_RETRIEVAL_ENABLED) so context and search rank identical
+        plus the same hybrid lexical fusion when the effective decision has
+        hybrid retrieval on) so context and search rank identical
         stored data the same way, then re-checks scope on the deserialized
         records. Nothing ranked (no query, no embedder, no lexical hits)
         tells the caller to fall back to recency ordering.
@@ -2128,6 +2174,7 @@ class Neo4jAgentMemoryBackend:
             query,
             _metadata_fragments(scope_metadata),
             stored_memories_from_sdk(raw_records),
+            decision,
         )
         return [
             fact
@@ -2141,15 +2188,16 @@ class Neo4jAgentMemoryBackend:
         query: str,
         scope_fragments: list[JsonValue],
         dense: list[StoredMemory],
+        decision: RouteDecision,
     ) -> list[StoredMemory]:
         """Fuse the dense ranking with BM25 lexical candidates via RRF.
 
-        A no-op passthrough of the dense ranking while
-        GNOSIS_HYBRID_RETRIEVAL_ENABLED is off (safe default) and whenever the
+        A no-op passthrough of the dense ranking while the effective decision
+        leaves hybrid retrieval off (safe default) and whenever the
         lexical leg has nothing to add, so the dense-only behavior is
-        byte-identical with the flag off.
+        byte-identical with hybrid off.
         """
-        if not self._app_settings.gnosis_hybrid_retrieval_enabled:
+        if not decision.hybrid_retrieval:
             return dense
         lexical = await self._lexical_memory_candidates(
             client,
@@ -3166,6 +3214,10 @@ def _fact_extraction_model(settings: Settings) -> str:
 
 def _sufficiency_model(settings: Settings) -> str:
     return settings.gnosis_sufficiency_model or settings.gnosis_llm
+
+
+def _routing_model(settings: Settings) -> str:
+    return settings.gnosis_routing_model or settings.gnosis_llm
 
 
 def _conversation_date(caller_metadata: JsonObject) -> str:
