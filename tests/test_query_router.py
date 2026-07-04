@@ -50,6 +50,7 @@ def test_unrouted_decision_mirrors_global_flags() -> None:
         gnosis_graph_traversal_enabled=True,
         gnosis_bridge_traversal_enabled=True,
         gnosis_chain_of_note_enabled=True,
+        gnosis_multi_hop_budget_multiplier=2,
     )
 
     # When: the unrouted decision is derived.
@@ -65,6 +66,7 @@ def test_unrouted_decision_mirrors_global_flags() -> None:
         graph_traversal=True,
         bridge_traversal=True,
         chain_of_note=True,
+        budget_multiplier=2,
     )
 
 
@@ -79,6 +81,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
         graph_traversal=False,
         bridge_traversal=False,
         chain_of_note=False,
+        budget_multiplier=1,
     )
 
 
@@ -97,6 +100,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 graph_traversal=False,
                 bridge_traversal=False,
                 chain_of_note=False,
+                budget_multiplier=1,
             ),
         ),
         # multi-hop gets the graph traversal route plus verbatim expansion
@@ -113,6 +117,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 graph_traversal=False,
                 bridge_traversal=False,
                 chain_of_note=False,
+                budget_multiplier=1,
             ),
         ),
         # the abstention prompt is quarantined to unanswerable-risk queries
@@ -128,6 +133,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 graph_traversal=False,
                 bridge_traversal=False,
                 chain_of_note=False,
+                budget_multiplier=1,
             ),
         ),
         # single-hop peaked on the plain dense extraction store (Run 5).
@@ -142,6 +148,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 graph_traversal=False,
                 bridge_traversal=False,
                 chain_of_note=False,
+                budget_multiplier=1,
             ),
         ),
         # no measured winner for aggregative/open-domain yet: plain dense.
@@ -156,6 +163,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 graph_traversal=False,
                 bridge_traversal=False,
                 chain_of_note=False,
+                budget_multiplier=1,
             ),
         ),
     ],
@@ -185,6 +193,19 @@ def test_routed_multi_hop_honors_the_bridge_traversal_flag() -> None:
     assert RouteDecision.for_route("temporal", settings).bridge_traversal is False
     assert RouteDecision.for_route("single_hop", settings).bridge_traversal is False
     assert RouteDecision.for_route("multi_hop", _settings()).bridge_traversal is False
+
+
+def test_routed_budget_multiplier_applies_only_to_multi_hop() -> None:
+    # Given: an expanded multi-hop item budget configured.
+    settings = _settings(gnosis_multi_hop_budget_multiplier=2)
+
+    # When/Then: only the multi-hop route reads with the expanded budget;
+    # every other route keeps the request budget, and the default (1) keeps
+    # multi-hop unchanged too.
+    assert RouteDecision.for_route("multi_hop", settings).budget_multiplier == 2
+    assert RouteDecision.for_route("temporal", settings).budget_multiplier == 1
+    assert RouteDecision.for_route("single_hop", settings).budget_multiplier == 1
+    assert RouteDecision.for_route("multi_hop", _settings()).budget_multiplier == 1
 
 
 def test_routed_chain_of_note_skips_the_temporal_route() -> None:

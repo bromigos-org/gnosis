@@ -108,6 +108,13 @@ class Settings(BaseSettings):
     gnosis_entity_graph_enabled: bool = False
     gnosis_graph_traversal_enabled: bool = False
     gnosis_bridge_traversal_enabled: bool = False
+    # Item-budget multiplier for multi-hop-routed context reads. LOCOMO miss
+    # analysis (Run 18, 2026-07-04): 27 of 41 multi-hop misses are cross-
+    # session enumerations where the answer's facts rank below the request
+    # budget cut - a retrieval *coverage* gap, not a traversal gap. 1 = off
+    # (byte-identical); with adaptive routing on, only multi-hop-classified
+    # queries read with the expanded budget.
+    gnosis_multi_hop_budget_multiplier: int = Field(default=1, ge=1, le=5)
     gnosis_adaptive_routing_enabled: bool = False
     gnosis_routing_model: str = ""
     gnosis_sufficiency_check_enabled: bool = False
