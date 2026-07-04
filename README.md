@@ -1,8 +1,28 @@
 # gnosis
 
-`gnosis` is the Bromigos policy gateway in front of Neo4j Agent Memory. It exposes a scoped HTTP API, enforces tenant and operator boundaries, applies redaction and rollout policy, and keeps other services away from direct Neo4j, Bolt, or SDK access.
+`gnosis` is a self-hosted memory platform for AI agents: a policy gateway in front of a Neo4j knowledge graph that gives every agent scoped, auditable, benchmarked long-term memory over one HTTP API.
 
-This repo is not a thin SDK wrapper. It is the memory control plane for Bromigos workloads.
+- **Multi-client**: serves a Discord bot (PC-Principal), NousResearch hermes-agent instances (via the [hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis) plugin), and any MCP client — one memory, many agents.
+- **Measured, not vibes**: quality is tracked on the LOCOMO agent-memory benchmark with the official judging protocol — see [Benchmarks](#benchmarks) below.
+- **Federated**: sovereign gnosis instances share memory only through explicit, consent-tagged promotion and origin-tagged federated queries.
+- **Policy-first**: tenant/scope enforcement, redaction, review-first operator workflows, and safe-by-default feature flags sit in front of every backend access. Clients never touch Neo4j, Bolt, or the SDK directly.
+
+## Benchmarks
+
+Memory quality is measured against **LOCOMO** (the standard long-horizon agent-memory benchmark) through gnosis's real HTTP API, judged by GPT-5.5 with the official protocol. Three read-path fixes on 2026-07-03 moved the assembled-context condition **+22.1 points in one day** (J score, excluding adversarial; higher is better):
+
+| Category | baseline | + cross-session & dates | + relevance ranking | raw-search reference |
+|---|---|---|---|---|
+| single-hop | 55.0 | 57.0 | **76.5** | 75.0 |
+| multi-hop | 10.8 | 14.9 | 40.5 | 44.6 |
+| temporal | 24.4 | 30.0 | 42.2 | 48.9 |
+| open-domain | 19.1 | 28.6 | 38.1 | 42.9 |
+| adversarial (abstention) | 74.1 | 67.9 | 67.9 | 68.8 |
+| **overall** | **37.4** | **41.0** | **59.5** | 61.3 |
+
+For context, published LOCOMO overall-J numbers (gpt-4o-mini judge — different judge and backbone, so directional only): OpenAI memory 52.9 · LangMem 58.1 · Zep 66.0 · mem0 66.9 · full-context 72.9. Two things worth noting: gnosis reaches these numbers while ingesting **verbatim with zero LLM extraction calls** (extraction is off by default — it is the next measured lever), and its adversarial/abstention score means it does not invent memories it doesn't have.
+
+Full per-run tables, configs, mechanism stats, and honest deviations: [docs/BENCHMARKS.md](docs/BENCHMARKS.md). The harness ([gnosis-membench](https://github.com/bromigos-org/gnosis-membench)) re-scores every release weekly in-cluster against a frozen judge, so these numbers cannot silently regress.
 
 ## What it does
 
@@ -394,10 +414,6 @@ Preview comes before persistence. If extraction work is being evaluated, use `PO
 - `GNOSIS_PEERS` is the JSON federation peer registry (default `[]`, meaning no outbound federation).
 - `GNOSIS_PEER_<NAME>_TOKEN` is the outbound bearer token for the named peer (the remote instance's `GNOSIS_FEDERATION_TOKEN`).
 - `GNOSIS_FEDERATION_TOKEN` is the inbound federation token class (default empty, meaning inbound federation is disabled).
-
-## Memory quality benchmarking
-
-Memory quality is measured, not assumed. The [gnosis-membench](https://github.com/bromigos-org/gnosis-membench) harness runs LOCOMO (and LongMemEval) against this service's real HTTP API with the official judging protocols; all official results live in its [RESULTS.md](https://github.com/bromigos-org/gnosis-membench/blob/main/RESULTS.md). Trajectory to date (LOCOMO subset 3, J excluding adversarial, 2026-07-03): context condition **37.4 → 41.0 → 59.5** across three same-day fixes, against a raw-search reference of 61.3. A weekly in-cluster CronJob re-scores `gnosis:latest` on a frozen subset and uploads results to RustFS.
 
 ## Local development
 
