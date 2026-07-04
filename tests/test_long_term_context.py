@@ -775,6 +775,122 @@ async def test_abstention_instruction_prepended_when_enabled() -> None:
 
 
 @pytest.mark.anyio
+async def test_chain_of_note_instruction_prepended_when_enabled() -> None:
+    # Given: Chain-of-Note on and one stored memory to read.
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:one",
+                        predicate="said_user",
+                        object_value="the library opens at nine",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_chain_of_note_enabled=True),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="when does the library open?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the note-taking instruction leads and the memory still renders.
+    assert response.sections[0].source == "instructions"
+    assert "take notes on each memory" in response.sections[0].content
+    assert "say you don't know" in response.sections[0].content
+    assert "the library opens at nine" in response.sections[1].content
+
+
+@pytest.mark.anyio
+async def test_chain_of_note_takes_precedence_over_abstention_prompt() -> None:
+    # Given: both prompt-only reading aids enabled at once.
+    scope = _scope()
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:bromigos:message:one",
+                        predicate="said_user",
+                        object_value="the library opens at nine",
+                        metadata=_scope_metadata(scope),
+                        created_at="2026-06-28T00:00:00Z",
+                    ),
+                },
+            ],
+        ),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(
+            gnosis_chain_of_note_enabled=True,
+            gnosis_abstention_prompt_enabled=True,
+        ),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="when does the library open?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: exactly one leading instruction renders - the Chain-of-Note one
+    # (it subsumes the bare abstention line).
+    instructions = [s for s in response.sections if s.source == "instructions"]
+    assert len(instructions) == 1
+    assert "take notes on each memory" in instructions[0].content
+
+
+@pytest.mark.anyio
+async def test_chain_of_note_absent_when_no_memory_content() -> None:
+    # Given: Chain-of-Note on but nothing retrieved for the query.
+    scope = _scope()
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_chain_of_note_enabled=True),
+        memory_client_factory=MemoryClientFactory(
+            RecordingMemoryClient(query=RecordingQuery()),
+        ),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is assembled with an empty store.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="when does the library open?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: no instruction-only response is fabricated.
+    assert all(section.source != "instructions" for section in response.sections)
+
+
+@pytest.mark.anyio
 async def test_abstention_instruction_absent_when_disabled() -> None:
     scope = _scope()
     client = RecordingMemoryClient(
