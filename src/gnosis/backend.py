@@ -1470,11 +1470,14 @@ class Neo4jAgentMemoryBackend:
         (byte-identical output) when off or when no memory content was
         assembled:
 
-        * GNOSIS_CHAIN_OF_NOTE_ENABLED - Chain-of-Note read-then-reason
+        * the decision's ``chain_of_note`` - Chain-of-Note read-then-reason
           (arXiv 2311.09210): note each memory's relevance first, then answer
           from the relevant ones or abstain. Subsumes the abstention line, so
           it takes precedence when the effective decision also asks for the
-          bare abstention instruction.
+          bare abstention instruction. Carried on the route decision because
+          it is route-aware: stacked globally with routing it cost temporal
+          8.9 points (Run 14 - the note step parrots hybrid's relative-dated
+          raw turns), so routed requests skip it on the temporal route.
         * the decision's ``abstention_prompt`` - the bare grounding
           instruction (AbstentionBench, arXiv 2506.09038), globally via
           GNOSIS_ABSTENTION_PROMPT_ENABLED or routed for unanswerable-risk
@@ -1482,7 +1485,7 @@ class Neo4jAgentMemoryBackend:
         """
         if not sections:
             return sections
-        if self._app_settings.gnosis_chain_of_note_enabled:
+        if decision.chain_of_note:
             content = _CHAIN_OF_NOTE_INSTRUCTION
         elif decision.abstention_prompt:
             content = _ABSTENTION_INSTRUCTION

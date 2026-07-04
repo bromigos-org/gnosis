@@ -48,6 +48,7 @@ def test_unrouted_decision_mirrors_global_flags() -> None:
         gnosis_fact_verbatim_expansion_enabled=True,
         gnosis_abstention_prompt_enabled=True,
         gnosis_graph_traversal_enabled=True,
+        gnosis_chain_of_note_enabled=True,
     )
 
     # When: the unrouted decision is derived.
@@ -61,6 +62,7 @@ def test_unrouted_decision_mirrors_global_flags() -> None:
         verbatim_expansion=True,
         abstention_prompt=True,
         graph_traversal=True,
+        chain_of_note=True,
     )
 
 
@@ -73,6 +75,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
         verbatim_expansion=False,
         abstention_prompt=False,
         graph_traversal=False,
+        chain_of_note=False,
     )
 
 
@@ -89,6 +92,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 verbatim_expansion=False,
                 abstention_prompt=False,
                 graph_traversal=False,
+                chain_of_note=False,
             ),
         ),
         # multi-hop gets the graph traversal route plus verbatim expansion
@@ -103,6 +107,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 verbatim_expansion=True,
                 abstention_prompt=False,
                 graph_traversal=False,
+                chain_of_note=False,
             ),
         ),
         # the abstention prompt is quarantined to unanswerable-risk queries
@@ -116,6 +121,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 verbatim_expansion=False,
                 abstention_prompt=True,
                 graph_traversal=False,
+                chain_of_note=False,
             ),
         ),
         # single-hop peaked on the plain dense extraction store (Run 5).
@@ -128,6 +134,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 verbatim_expansion=False,
                 abstention_prompt=False,
                 graph_traversal=False,
+                chain_of_note=False,
             ),
         ),
         # no measured winner for aggregative/open-domain yet: plain dense.
@@ -140,6 +147,7 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 verbatim_expansion=False,
                 abstention_prompt=False,
                 graph_traversal=False,
+                chain_of_note=False,
             ),
         ),
     ],
@@ -157,6 +165,23 @@ def test_routed_multi_hop_honors_the_traversal_flag() -> None:
     assert RouteDecision.for_route("multi_hop", settings).graph_traversal is True
     assert RouteDecision.for_route("temporal", settings).graph_traversal is False
     assert RouteDecision.for_route("single_hop", settings).graph_traversal is False
+
+
+def test_routed_chain_of_note_skips_the_temporal_route() -> None:
+    # Given: Chain-of-Note enabled globally alongside adaptive routing.
+    settings = _settings(gnosis_chain_of_note_enabled=True)
+
+    # When/Then: every route reads with Chain-of-Note EXCEPT temporal, whose
+    # hybrid retrieval surfaces relative-dated raw turns the note step
+    # faithfully parrots (Run 14: temporal 92.2 -> 83.3 when stacked).
+    assert RouteDecision.for_route("temporal", settings).chain_of_note is False
+    assert RouteDecision.for_route("single_hop", settings).chain_of_note is True
+    assert RouteDecision.for_route("multi_hop", settings).chain_of_note is True
+    assert RouteDecision.for_route("unanswerable_risk", settings).chain_of_note is True
+    assert RouteDecision.for_route("aggregative", settings).chain_of_note is True
+
+    # And: with the flag off, no route reads with it.
+    assert RouteDecision.for_route("single_hop", _settings()).chain_of_note is False
 
 
 @pytest.mark.parametrize(
