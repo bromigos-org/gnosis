@@ -936,6 +936,9 @@ class DiagnosticsConfig(ContractModel):
     gnosis_extraction_max_concurrency: int
     gnosis_extraction_chunk_size: int
     gnosis_extraction_chunk_overlap: int
+    gnosis_fact_extraction_enabled: bool
+    gnosis_fact_extraction_model: str
+    gnosis_fact_extraction_context_turns: int
     gnosis_ocr_enabled: bool
     gnosis_ocr_model: str
     gnosis_ocr_max_image_bytes: int

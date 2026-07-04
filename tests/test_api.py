@@ -593,6 +593,9 @@ def test_diagnostics_returns_safe_readiness_details() -> None:
             "gnosis_extraction_max_concurrency": 1,
             "gnosis_extraction_chunk_size": 4000,
             "gnosis_extraction_chunk_overlap": 200,
+            "gnosis_fact_extraction_enabled": False,
+            "gnosis_fact_extraction_model": "",
+            "gnosis_fact_extraction_context_turns": 10,
             "gnosis_ocr_enabled": False,
             "gnosis_ocr_model": "",
             "gnosis_ocr_max_image_bytes": 0,
@@ -3509,6 +3512,13 @@ class RecordingBackend:
                 gnosis_extraction_chunk_size=settings.gnosis_extraction_chunk_size,
                 gnosis_extraction_chunk_overlap=(
                     settings.gnosis_extraction_chunk_overlap
+                ),
+                gnosis_fact_extraction_enabled=(
+                    settings.gnosis_fact_extraction_enabled
+                ),
+                gnosis_fact_extraction_model=settings.gnosis_fact_extraction_model,
+                gnosis_fact_extraction_context_turns=(
+                    settings.gnosis_fact_extraction_context_turns
                 ),
                 gnosis_ocr_enabled=settings.gnosis_ocr_enabled,
                 gnosis_ocr_model=settings.gnosis_ocr_model,

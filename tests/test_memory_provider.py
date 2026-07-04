@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from os import environ
@@ -16,8 +17,10 @@ _ = environ.setdefault("NEO4J_PASSWORD", "inert-password")
 _ = environ.setdefault("LITELLM_BASE_URL", "http://litellm.local/v1")
 _ = environ.setdefault("LITELLM_API_KEY", "inert-litellm-key")
 
+import httpx  # noqa: E402
 from neo4j_agent_memory import MemorySettings  # noqa: E402
 from neo4j_agent_memory.memory.long_term import Fact  # noqa: E402
+from openai import APIConnectionError  # noqa: E402
 from pydantic import TypeAdapter  # noqa: E402
 
 from gnosis.backend import (  # noqa: E402
@@ -27,6 +30,12 @@ from gnosis.backend import (  # noqa: E402
     MemoryClientContext,
     MemoryNotFoundError,
     Neo4jAgentMemoryBackend,
+)
+from gnosis.fact_extraction import (  # noqa: E402
+    ConversationTurn,
+    MemoryUnit,
+    MemoryUnitExtraction,
+    MemoryUnitExtractor,
 )
 from gnosis.models import (  # noqa: E402
     BackendReadiness,
@@ -45,6 +54,8 @@ from gnosis.models import (  # noqa: E402
     MemorySearchRequest,
     MemoryUpdateRequest,
     MemoryVisibility,
+    MessageRole,
+    MessageWriteRequest,
 )
 from gnosis.settings import Settings  # noqa: E402
 
@@ -154,6 +165,325 @@ async def test_add_memories_when_mode_is_invalid(
     # When / Then: the backend rejects the request.
     with pytest.raises(BackendRequestError):
         _ = await backend.add_memories(request)
+
+
+@pytest.mark.anyio
+async def test_add_memories_extraction_writes_units_alongside_verbatim() -> None:
+    # Given: a turn-pair add with the extraction flag on and an extractor
+    # producing one dated and one undated memory unit.
+    client = FakeMemoryClient()
+    extractor = RecordingUnitExtractor(
+        extraction=MemoryUnitExtraction(
+            facts=[
+                MemoryUnit(
+                    text="Cartman ate cheesy poofs on 7 May 2023",
+                    source_turn_ids=[1],
+                    entities=["Cartman"],
+                    event_date="2023-05-07",
+                ),
+                MemoryUnit(
+                    text="Cartman prefers cheesy poofs over vegetables",
+                    source_turn_ids=[1, 2],
+                    entities=["Cartman"],
+                    event_date=None,
+                ),
+            ],
+        ),
+    )
+    backend = _backend(client, extractor, extraction_enabled=True)
+    request = MemoryAddRequest(
+        scope=_scope(),
+        messages=[
+            MemoryMessage(role="user", content="I ate cheesy poofs today"),
+            MemoryMessage(role="assistant", content="Better than vegetables?"),
+        ],
+        metadata={"session_date": "2023-05-07", "topic": "snacks"},
+    )
+
+    # When: the memories are added.
+    response = await backend.add_memories(request)
+
+    # Then: the verbatim turn facts are still written through the SDK path.
+    assert [write.predicate for write in client.long_term.fact_writes] == [
+        "said_user",
+        "said_assistant",
+    ]
+    verbatim_ids = [str(fact.id) for fact in client.long_term.facts]
+
+    # Then: the extractor saw the session date and the new turns as speakers.
+    assert extractor.calls == [
+        ExtractionCall(
+            conversation_date="2023-05-07",
+            context_turns=(),
+            new_turns=(
+                ConversationTurn(speaker="user", content="I ate cheesy poofs today"),
+                ConversationTurn(
+                    speaker="assistant",
+                    content="Better than vegetables?",
+                ),
+            ),
+        ),
+    ]
+
+    # Then: each unit lands as a Fact via a direct dedup-bypassing CREATE
+    # with the `fact` predicate, the scope subject, and its own embedding.
+    writes = _graph(client).writes
+    assert len(writes) == 2
+    create_query, create_params = writes[0]
+    assert "CREATE (f:Fact" in create_query
+    assert create_params is not None
+    assert create_params["predicate"] == "fact"
+    assert create_params["subject"] == (
+        "bromigos:discord:private_user:pc-principal:789"
+    )
+    assert create_params["object"] == "Cartman ate cheesy poofs on 7 May 2023"
+    assert create_params["embedding"] == [0.1, 0.2]
+    stored_metadata = _JSON_OBJECT_ADAPTER.validate_json(
+        cast("str", create_params["metadata"]),
+    )
+    assert stored_metadata["extracted"] is True
+    assert stored_metadata["extraction_version"] == "edu-v1"
+    assert stored_metadata["extraction_model"] == "openai/gemma4"
+    assert stored_metadata["event_date"] == "2023-05-07"
+    assert stored_metadata["entities"] == ["Cartman"]
+    assert stored_metadata["source_memory_ids"] == verbatim_ids
+    assert stored_metadata["source_turn_ids"] == [1]
+    assert stored_metadata["tenant_id"] == "bromigos"
+    assert stored_metadata["user_id"] == "789"
+    assert stored_metadata["session_id"] == "guild:123:channel:456"
+    assert stored_metadata["topic"] == "snacks"
+    assert stored_metadata["session_date"] == "2023-05-07"
+
+    # Then: the response appends the extracted units after the verbatim
+    # results, with real memory ids, ADD events, and public metadata only.
+    assert [result.event for result in response.results] == ["ADD"] * 4
+    assert [result.memory_id for result in response.results[:2]] == verbatim_ids
+    extracted_result = response.results[2]
+    assert extracted_result.memory_id == create_params["memory_id"]
+    assert extracted_result.content == "Cartman ate cheesy poofs on 7 May 2023"
+    assert extracted_result.metadata["extracted"] is True
+    assert extracted_result.metadata["event_date"] == "2023-05-07"
+    assert "tenant_id" not in extracted_result.metadata
+    assert response.results[3].content == (
+        "Cartman prefers cheesy poofs over vegetables"
+    )
+
+
+@pytest.mark.anyio
+async def test_add_memories_extraction_never_fabricates_event_date() -> None:
+    # Given: an extracted unit for an ongoing state with no resolvable date.
+    client = FakeMemoryClient()
+    extractor = RecordingUnitExtractor(
+        extraction=MemoryUnitExtraction(
+            facts=[
+                MemoryUnit(
+                    text="Cartman prefers cheesy poofs",
+                    source_turn_ids=[1],
+                    entities=["Cartman"],
+                    event_date=None,
+                ),
+            ],
+        ),
+    )
+    backend = _backend(client, extractor, extraction_enabled=True)
+
+    # When: the turn is added.
+    response = await backend.add_memories(
+        MemoryAddRequest(
+            scope=_scope(),
+            messages=[MemoryMessage(role="user", content="I love cheesy poofs")],
+        ),
+    )
+
+    # Then: the stored and returned metadata omit event_date entirely.
+    _, create_params = _graph(client).writes[0]
+    assert create_params is not None
+    stored_metadata = _JSON_OBJECT_ADAPTER.validate_json(
+        cast("str", create_params["metadata"]),
+    )
+    assert "event_date" not in stored_metadata
+    assert "event_date" not in response.results[1].metadata
+
+
+@pytest.mark.anyio
+async def test_add_memories_extraction_flag_off_keeps_todays_bytes() -> None:
+    # Given: the default settings posture (extraction off) and an extractor
+    # double that would produce a unit if it were ever consulted.
+    client = FakeMemoryClient()
+    extractor = RecordingUnitExtractor(
+        extraction=MemoryUnitExtraction(
+            facts=[MemoryUnit(text="never written", source_turn_ids=[1])],
+        ),
+    )
+    backend = _backend(client, extractor)
+
+    # When: a turn-pair is added.
+    response = await backend.add_memories(
+        MemoryAddRequest(
+            scope=_scope(),
+            messages=[
+                MemoryMessage(role="user", content="I love cheesy poofs"),
+                MemoryMessage(role="assistant", content="Noted, cheesy poofs it is"),
+            ],
+            metadata={"topic": "snacks"},
+        ),
+    )
+
+    # Then: no extraction call, no context read, no extra graph write, and
+    # the response is byte-identical to the pre-extraction contract.
+    assert extractor.calls == []
+    assert client.query.calls == []
+    assert _graph(client).writes == []
+    verbatim_ids = [str(fact.id) for fact in client.long_term.facts]
+    assert response.model_dump_json() == (
+        '{"results":['
+        f'{{"memory_id":"{verbatim_ids[0]}","content":"I love cheesy poofs",'
+        '"event":"ADD","metadata":{"topic":"snacks"}},'
+        f'{{"memory_id":"{verbatim_ids[1]}","content":"Noted, cheesy poofs it is",'
+        '"event":"ADD","metadata":{"topic":"snacks"}}'
+        "]}"
+    )
+
+
+@pytest.mark.anyio
+async def test_add_memories_extraction_llm_failure_degrades_to_verbatim(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Given: the extraction flag on and an extractor failing at the transport.
+    client = FakeMemoryClient()
+    backend = _backend(client, FailingUnitExtractor(), extraction_enabled=True)
+
+    # When: a turn-pair is added.
+    with caplog.at_level("WARNING", logger="gnosis.fact_extraction"):
+        response = await backend.add_memories(
+            MemoryAddRequest(
+                scope=_scope(),
+                messages=[
+                    MemoryMessage(role="user", content="I love cheesy poofs"),
+                    MemoryMessage(
+                        role="assistant",
+                        content="Noted, cheesy poofs it is",
+                    ),
+                ],
+            ),
+        )
+
+    # Then: the add succeeds exactly as a verbatim-only ingest and the
+    # failure leaves a structured warning.
+    assert [result.event for result in response.results] == ["ADD", "ADD"]
+    assert [write.predicate for write in client.long_term.fact_writes] == [
+        "said_user",
+        "said_assistant",
+    ]
+    assert _graph(client).writes == []
+    assert "fact extraction failed" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_add_memories_extraction_context_respects_configured_turns() -> None:
+    # Given: stored session turns (newest first, as the query returns them)
+    # and a two-turn context window.
+    client = FakeMemoryClient()
+    client.query.rows = [
+        _turn_row(_MEMORY_ID, "assistant", "How was Tokyo?"),
+        _turn_row(_OTHER_MEMORY_ID, "user", "I went to Tokyo"),
+    ]
+    extractor = RecordingUnitExtractor(extraction=MemoryUnitExtraction())
+    backend = _backend(
+        client,
+        extractor,
+        extraction_enabled=True,
+        extraction_context_turns=2,
+    )
+
+    # When: the next turn is added.
+    _ = await backend.add_memories(
+        MemoryAddRequest(
+            scope=_scope(),
+            messages=[MemoryMessage(role="user", content="It was great")],
+        ),
+    )
+
+    # Then: the context read is session-scoped and limited to the configured
+    # window, fetched before the new turns were written.
+    context_query, context_params = client.query.calls[0]
+    assert "STARTS WITH $predicate_prefix" in context_query
+    assert context_params is not None
+    assert context_params["limit"] == 2
+    assert context_params["predicate_prefix"] == "said_"
+    assert context_params["scope_fragments"] == [
+        '"tenant_id": "bromigos"',
+        '"user_id": "789"',
+        '"session_id": "guild:123:channel:456"',
+    ]
+
+    # Then: the extractor received the window in chronological order with
+    # speakers recovered from the said_* predicates.
+    assert extractor.calls[0].context_turns == (
+        ConversationTurn(speaker="user", content="I went to Tokyo"),
+        ConversationTurn(speaker="assistant", content="How was Tokyo?"),
+    )
+    assert extractor.calls[0].new_turns == (
+        ConversationTurn(speaker="user", content="It was great"),
+    )
+
+
+@pytest.mark.anyio
+async def test_add_memories_verbatim_content_mode_never_extracts() -> None:
+    # Given: the extraction flag on and a verbatim infer=false add.
+    client = FakeMemoryClient()
+    extractor = RecordingUnitExtractor(extraction=MemoryUnitExtraction())
+    backend = _backend(client, extractor, extraction_enabled=True)
+
+    # When: the verbatim memory is added.
+    response = await backend.add_memories(
+        MemoryAddRequest(scope=_scope(), content="plain note", infer=False),
+    )
+
+    # Then: no extraction runs on non-inferring adds.
+    assert extractor.calls == []
+    assert _graph(client).writes == []
+    assert len(response.results) == 1
+
+
+@pytest.mark.anyio
+async def test_add_message_extraction_extends_message_writes() -> None:
+    # Given: the extraction flag on for the /v1/messages ingestion path.
+    client = FakeMemoryClient()
+    extractor = RecordingUnitExtractor(
+        extraction=MemoryUnitExtraction(
+            facts=[
+                MemoryUnit(text="Stan adopted a dog", source_turn_ids=[1]),
+            ],
+        ),
+    )
+    backend = _backend(client, extractor, extraction_enabled=True)
+
+    # When: a message is written.
+    response = await backend.add_message(
+        MessageWriteRequest(
+            scope=_scope(),
+            role=MessageRole.USER,
+            content="I adopted a dog",
+        ),
+    )
+
+    # Then: the verbatim said_user fact still lands and the extracted unit is
+    # written with provenance back to it; the write dates against ingest time.
+    assert response.accepted is True
+    assert client.long_term.fact_writes[0].predicate == "said_user"
+    _, create_params = _graph(client).writes[0]
+    assert create_params is not None
+    assert create_params["predicate"] == "fact"
+    stored_metadata = _JSON_OBJECT_ADAPTER.validate_json(
+        cast("str", create_params["metadata"]),
+    )
+    assert stored_metadata["source_memory_ids"] == [
+        str(client.long_term.facts[0].id),
+    ]
+    assert extractor.calls[0].conversation_date == (
+        datetime.now(UTC).date().isoformat()
+    )
 
 
 @pytest.mark.anyio
@@ -457,11 +787,21 @@ def _graph(client: "FakeMemoryClient") -> "FakeGraphWriter":
     return graph
 
 
-def _backend(client: "FakeMemoryClient") -> Neo4jAgentMemoryBackend:
+def _backend(
+    client: "FakeMemoryClient",
+    fact_extractor: MemoryUnitExtractor | None = None,
+    *,
+    extraction_enabled: bool = False,
+    extraction_context_turns: int = 10,
+) -> Neo4jAgentMemoryBackend:
     return Neo4jAgentMemoryBackend(
-        Settings(),
+        Settings(
+            gnosis_fact_extraction_enabled=extraction_enabled,
+            gnosis_fact_extraction_context_turns=extraction_context_turns,
+        ),
         memory_client_factory=FakeMemoryClientFactory(client),
         graph_store=FakeGraphStore(),
+        fact_extractor=fact_extractor,
     )
 
 
@@ -517,6 +857,60 @@ def _memory_row(
         "created_at": created_at,
         "updated_at": None,
     }
+
+
+def _turn_row(memory_id: str, role: str, content: str) -> JsonObject:
+    return {
+        "id": memory_id,
+        "subject": "bromigos:discord:private_user:pc-principal:789",
+        "predicate": f"said_{role}",
+        "object": content,
+        "metadata": json.dumps(_scope_metadata()),
+        "created_at": "2026-06-27T00:00:00+00:00",
+        "updated_at": None,
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionCall:
+    conversation_date: str
+    context_turns: tuple[ConversationTurn, ...]
+    new_turns: tuple[ConversationTurn, ...]
+
+
+@dataclass(slots=True)
+class RecordingUnitExtractor:
+    extraction: MemoryUnitExtraction | None = None
+    calls: list[ExtractionCall] = field(default_factory=list)
+
+    async def extract_units(
+        self,
+        *,
+        conversation_date: str,
+        context_turns: Sequence[ConversationTurn],
+        new_turns: Sequence[ConversationTurn],
+    ) -> MemoryUnitExtraction | None:
+        self.calls.append(
+            ExtractionCall(
+                conversation_date=conversation_date,
+                context_turns=tuple(context_turns),
+                new_turns=tuple(new_turns),
+            ),
+        )
+        return self.extraction
+
+
+@dataclass(frozen=True, slots=True)
+class FailingUnitExtractor:
+    async def extract_units(
+        self,
+        *,
+        conversation_date: str,
+        context_turns: Sequence[ConversationTurn],
+        new_turns: Sequence[ConversationTurn],
+    ) -> MemoryUnitExtraction | None:
+        _ = (conversation_date, context_turns, new_turns)
+        raise APIConnectionError(request=httpx.Request("POST", "http://litellm.local"))
 
 
 @dataclass(frozen=True, slots=True)
