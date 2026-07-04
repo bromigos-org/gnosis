@@ -17,8 +17,9 @@ from typing import (
     cast,
     runtime_checkable,
 )
-from uuid import UUID
+from uuid import UUID, uuid4
 
+from neo4j.exceptions import Neo4jError
 from neo4j_agent_memory import MemoryClient, MemoryConfig, MemorySettings, Neo4jConfig
 from neo4j_agent_memory.llm.adapters.litellm import (
     LiteLLMEmbeddingProvider,
@@ -29,9 +30,18 @@ from neo4j_agent_memory.memory.reasoning import ReasoningStep as SdkReasoningSte
 from neo4j_agent_memory.memory.reasoning import ReasoningTrace as SdkReasoningTrace
 from neo4j_agent_memory.memory.reasoning import ToolCall, ToolCallStatus, ToolStats
 from neo4j_agent_memory.schema.models import EntityRef
+from openai import OpenAIError
 from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
 
 from gnosis.event_facts import EventFactPromoter
+from gnosis.fact_extraction import (
+    EXTRACTION_VERSION,
+    ConversationTurn,
+    LiteLLMMemoryUnitExtractor,
+    MemoryUnit,
+    MemoryUnitExtractor,
+    extract_memory_units,
+)
 from gnosis.graph_probe import StructuredGraphStore, direct_neo4j_driver_factory
 from gnosis.graph_query_qa import LiteLLMGraphQueryPlanner
 from gnosis.graph_store import DirectNeo4jGraphStore, Neo4jGraphExecutor
@@ -43,9 +53,12 @@ from gnosis.memory_filters import (
     parse_filters,
 )
 from gnosis.memory_provider import (
+    CREATE_MEMORY_CYPHER,
     DELETE_MEMORY_CYPHER,
+    EXTRACTED_FACT_PREDICATE,
     LOOKUP_LATEST_MEMORY_CYPHER,
     LOOKUP_MEMORY_CYPHER,
+    RECENT_TURN_MEMORIES_CYPHER,
     TURN_MEMORY_PREDICATE_PREFIX,
     UPDATE_MEMORY_CYPHER,
     VERBATIM_MEMORY_PREDICATE,
@@ -59,6 +72,7 @@ from gnosis.memory_provider import (
     merged_memory_metadata,
     public_memory_metadata,
     scope_read_fragments,
+    session_read_fragments,
     stored_memories_from_sdk,
     stored_memory_from_row,
     stored_memory_from_sdk,
@@ -999,13 +1013,14 @@ def build_direct_graph_store(settings: Settings) -> DirectNeo4jGraphStore:
 
 
 class Neo4jAgentMemoryBackend:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - One injection seam per LLM collaborator.
         self,
         settings: Settings,
         memory_client_factory: MemoryClientFactory | None = None,
         graph_store: StructuredGraphStore | None = None,
         skill_registry: SkillRegistry | None = None,
         recall_filter: RecallFilter | None = None,
+        fact_extractor: MemoryUnitExtractor | None = None,
     ) -> None:
         self._app_settings: Settings = settings
         self._settings: MemorySettings = _build_memory_settings(settings)
@@ -1017,6 +1032,14 @@ class Neo4jAgentMemoryBackend:
             model=settings.gnosis_llm,
             base_url=settings.litellm_base_url,
             api_key=settings.litellm_api_key,
+        )
+        self._fact_extractor: MemoryUnitExtractor = (
+            fact_extractor
+            or LiteLLMMemoryUnitExtractor(
+                model=_fact_extraction_model(settings),
+                base_url=settings.litellm_base_url,
+                api_key=settings.litellm_api_key,
+            )
         )
         self._skill_registry: SkillRegistry = skill_registry or InMemorySkillRegistry()
         self._event_fact_promoter: EventFactPromoter = EventFactPromoter()
@@ -1032,7 +1055,14 @@ class Neo4jAgentMemoryBackend:
         metadata = _scope_metadata(request.scope)
         policy = _message_extraction_policy(request, self._app_settings)
         _require_ingestion_sources_allowed(request, self._app_settings)
+        extraction_enabled = self._app_settings.gnosis_fact_extraction_enabled
         async with self._memory_client() as client:
+            context_turns: list[ConversationTurn] = []
+            if extraction_enabled:
+                context_turns = await self._recent_session_turns(
+                    client,
+                    request.scope,
+                )
             _ = await client.short_term.add_message(
                 session_id=_session_id(request.scope),
                 role=request.role.value,
@@ -1042,13 +1072,30 @@ class Neo4jAgentMemoryBackend:
                 extract_entities=policy.extract_entities,
                 extract_relations=policy.extract_relations,
             )
-            _ = await client.long_term.add_fact(
+            raw_record = await client.long_term.add_fact(
                 subject=_user_identifier(request.scope),
                 predicate=f"said_{request.role.value}",
                 obj=request.content,
                 metadata=_scope_json_metadata(request.scope),
                 generate_embedding=True,
             )
+            if extraction_enabled:
+                memory = stored_memory_from_sdk(raw_record)
+                _ = await self._extracted_unit_results(
+                    client,
+                    request.scope,
+                    caller_metadata={},
+                    context_turns=context_turns,
+                    new_turns=[
+                        ConversationTurn(
+                            speaker=request.role.value,
+                            content=request.content,
+                        ),
+                    ],
+                    source_memory_ids=(
+                        [memory.memory_id] if memory is not None else []
+                    ),
+                )
         return MessageWriteResponse(accepted=True)
 
     async def preview_extraction(
@@ -1160,6 +1207,15 @@ class Neo4jAgentMemoryBackend:
                 ),
                 gnosis_extraction_chunk_overlap=(
                     self._app_settings.gnosis_extraction_chunk_overlap
+                ),
+                gnosis_fact_extraction_enabled=(
+                    self._app_settings.gnosis_fact_extraction_enabled
+                ),
+                gnosis_fact_extraction_model=(
+                    self._app_settings.gnosis_fact_extraction_model
+                ),
+                gnosis_fact_extraction_context_turns=(
+                    self._app_settings.gnosis_fact_extraction_context_turns
                 ),
                 gnosis_ocr_enabled=self._app_settings.gnosis_ocr_enabled,
                 gnosis_ocr_model=self._app_settings.gnosis_ocr_model,
@@ -1332,6 +1388,12 @@ class Neo4jAgentMemoryBackend:
             extract_relations=None,
             settings=self._app_settings,
         )
+        extraction_enabled = self._app_settings.gnosis_fact_extraction_enabled
+        context_turns: list[ConversationTurn] = []
+        if extraction_enabled:
+            # Fetched before the verbatim writes so the just-added turns
+            # cannot leak into their own extraction context.
+            context_turns = await self._recent_session_turns(client, request.scope)
         results: list[MemoryAddResult] = []
         for message in request.messages:
             _ = await client.short_term.add_message(
@@ -1350,6 +1412,20 @@ class Neo4jAgentMemoryBackend:
                     predicate=f"{TURN_MEMORY_PREDICATE_PREFIX}{message.role}",
                     content=message.content,
                     metadata=metadata,
+                ),
+            )
+        if extraction_enabled:
+            results.extend(
+                await self._extracted_unit_results(
+                    client,
+                    request.scope,
+                    caller_metadata=request.metadata,
+                    context_turns=context_turns,
+                    new_turns=[
+                        ConversationTurn(speaker=message.role, content=message.content)
+                        for message in request.messages
+                    ],
+                    source_memory_ids=[result.memory_id for result in results],
                 ),
             )
         return results
@@ -1388,6 +1464,155 @@ class Neo4jAgentMemoryBackend:
             content=_redacted_text(memory.content),
             event=event,
             metadata=public_memory_metadata(memory),
+        )
+
+    async def _recent_session_turns(
+        self,
+        client: MemoryClientContext,
+        scope: MemoryScope,
+    ) -> list[ConversationTurn]:
+        """Read the extraction context window: recent turns of this session.
+
+        Returns the last ``GNOSIS_FACT_EXTRACTION_CONTEXT_TURNS`` verbatim
+        ``said_*`` facts for the scope's session in chronological order. Any
+        read failure degrades to an empty context window - extraction still
+        runs, it just resolves references less well - because extraction may
+        never fail an add.
+        """
+        limit = self._app_settings.gnosis_fact_extraction_context_turns
+        if limit <= 0:
+            return []
+        try:
+            rows = await client.query.cypher(
+                RECENT_TURN_MEMORIES_CYPHER,
+                {
+                    "subject": _user_identifier(scope),
+                    "predicate_prefix": TURN_MEMORY_PREDICATE_PREFIX,
+                    "scope_fragments": session_read_fragments(scope),
+                    "limit": limit,
+                },
+            )
+        except (RuntimeError, OSError, Neo4jError) as error:
+            _LOGGER.warning(
+                "fact extraction context read failed; extracting without context",
+                extra={"error_type": type(error).__name__},
+            )
+            return []
+        turns = [
+            ConversationTurn(
+                speaker=memory.predicate.removeprefix(TURN_MEMORY_PREDICATE_PREFIX),
+                content=memory.content,
+            )
+            for row in rows
+            if (memory := stored_memory_from_row(row)) is not None
+            and memory_matches_scope(memory, scope)
+        ]
+        turns.reverse()
+        return turns
+
+    async def _extracted_unit_results(  # noqa: PLR0913 - One argument per prompt input.
+        self,
+        client: MemoryClientContext,
+        scope: MemoryScope,
+        *,
+        caller_metadata: JsonObject,
+        context_turns: list[ConversationTurn],
+        new_turns: list[ConversationTurn],
+        source_memory_ids: list[str],
+    ) -> list[MemoryAddResult]:
+        """Extract memory units from the new turns and write them as facts.
+
+        Strictly additive: extraction and per-unit write failures log a
+        structured warning and leave the verbatim add untouched.
+        """
+        units = await extract_memory_units(
+            self._fact_extractor,
+            conversation_date=_conversation_date(caller_metadata),
+            context_turns=context_turns,
+            new_turns=new_turns,
+        )
+        results: list[MemoryAddResult] = []
+        for unit in units:
+            try:
+                results.append(
+                    await self._add_extracted_fact(
+                        client,
+                        scope,
+                        unit=unit,
+                        caller_metadata=caller_metadata,
+                        source_memory_ids=source_memory_ids,
+                    ),
+                )
+            except (
+                RuntimeError,
+                OSError,
+                Neo4jError,
+                OpenAIError,
+                ValidationError,
+                BackendCapabilityUnavailable,
+            ) as error:
+                _LOGGER.warning(
+                    "extracted fact write failed; keeping verbatim add",
+                    extra={"error_type": type(error).__name__},
+                )
+        return results
+
+    async def _add_extracted_fact(
+        self,
+        client: MemoryClientContext,
+        scope: MemoryScope,
+        *,
+        unit: MemoryUnit,
+        caller_metadata: JsonObject,
+        source_memory_ids: list[str],
+    ) -> MemoryAddResult:
+        """Write one extracted unit as an ordinary long-term ``Fact`` node.
+
+        The write is a direct parameterized CREATE so it bypasses the SDK's
+        write-time dedup, which can silently swallow a near-duplicate add
+        into an existing fact - unacceptable for distinct dated events.
+        """
+        extraction_metadata: JsonObject = {
+            "extracted": True,
+            "extraction_version": EXTRACTION_VERSION,
+            "extraction_model": _fact_extraction_model(self._app_settings),
+            "entities": list(unit.entities),
+            "source_turn_ids": list(unit.source_turn_ids),
+        }
+        if unit.event_date is not None:
+            extraction_metadata["event_date"] = unit.event_date
+        metadata = _write_metadata(scope, caller_metadata | extraction_metadata, None)
+        # Provenance ids are gateway-generated fact UUIDs, added after
+        # redaction because the opaque-value secret pattern matches UUIDs.
+        metadata["source_memory_ids"] = list(source_memory_ids)
+        memory_id = str(uuid4())
+        content = _redacted_text(unit.text)
+        embedding = await _memory_embedding(client, content)
+        _ = await _graph_write_query(client).execute_write(
+            CREATE_MEMORY_CYPHER,
+            {
+                "memory_id": memory_id,
+                "subject": _user_identifier(scope),
+                "predicate": EXTRACTED_FACT_PREDICATE,
+                "object": content,
+                "embedding": embedding,
+                "metadata": json.dumps(metadata),
+            },
+        )
+        stored = StoredMemory(
+            memory_id=memory_id,
+            subject=_user_identifier(scope),
+            predicate=EXTRACTED_FACT_PREDICATE,
+            content=content,
+            metadata=metadata,
+            created_at=None,
+            updated_at=None,
+        )
+        return MemoryAddResult(
+            memory_id=memory_id,
+            content=content,
+            event="ADD",
+            metadata=public_memory_metadata(stored),
         )
 
     async def search_memories(
@@ -2359,6 +2584,22 @@ def _extraction_policy(
         extract_entities=entities_enabled,
         extract_relations=relations_enabled,
     )
+
+
+def _fact_extraction_model(settings: Settings) -> str:
+    return settings.gnosis_fact_extraction_model or settings.gnosis_llm
+
+
+def _conversation_date(caller_metadata: JsonObject) -> str:
+    """Resolve the prompt's conversation date for relative-date resolution.
+
+    Callers that replay historical sessions (membench) supply
+    ``metadata.session_date``; live ingestion falls back to the ingest date.
+    """
+    session_date = caller_metadata.get("session_date")
+    if isinstance(session_date, str) and session_date:
+        return session_date
+    return datetime.now(UTC).date().isoformat()
 
 
 def _require_ingestion_sources_allowed(

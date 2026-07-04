@@ -482,6 +482,13 @@ class RecordingBackend:
                 gnosis_extraction_chunk_overlap=(
                     settings.gnosis_extraction_chunk_overlap
                 ),
+                gnosis_fact_extraction_enabled=(
+                    settings.gnosis_fact_extraction_enabled
+                ),
+                gnosis_fact_extraction_model=settings.gnosis_fact_extraction_model,
+                gnosis_fact_extraction_context_turns=(
+                    settings.gnosis_fact_extraction_context_turns
+                ),
                 gnosis_ocr_enabled=settings.gnosis_ocr_enabled,
                 gnosis_ocr_model=settings.gnosis_ocr_model,
                 gnosis_ocr_max_image_bytes=settings.gnosis_ocr_max_image_bytes,

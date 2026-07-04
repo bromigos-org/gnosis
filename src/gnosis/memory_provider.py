@@ -44,6 +44,7 @@ _PRIVATE_METADATA_KEYS: Final[frozenset[str]] = _SCOPE_METADATA_KEYS | {
 
 VERBATIM_MEMORY_PREDICATE: Final[str] = "memory"
 TURN_MEMORY_PREDICATE_PREFIX: Final[str] = "said_"
+EXTRACTED_FACT_PREDICATE: Final[str] = "fact"
 
 MEMORY_RETURN_CYPHER: Final[str] = """
 RETURN f.id AS id,
@@ -71,6 +72,38 @@ WHERE f.subject = $subject
 {MEMORY_RETURN_CYPHER}
 ORDER BY f.created_at DESC
 LIMIT 1
+"""
+
+# Recent verbatim turn facts for one session, newest first. The extraction
+# context window reads these because they are exactly the turns the add path
+# writes, with the speaker role recoverable from the ``said_*`` predicate.
+RECENT_TURN_MEMORIES_CYPHER: Final[str] = f"""
+MATCH (f:Fact)
+WHERE f.subject = $subject
+  AND f.predicate STARTS WITH $predicate_prefix
+  AND f.metadata IS NOT NULL
+  AND all(fragment IN $scope_fragments WHERE f.metadata CONTAINS fragment)
+{MEMORY_RETURN_CYPHER}
+ORDER BY f.created_at DESC, f.id DESC
+LIMIT $limit
+"""
+
+# Extracted-fact writes create the node directly instead of going through the
+# SDK's add_fact, because add_fact's write-time dedup can silently swallow a
+# near-duplicate into an existing fact - for extracted units two same-day
+# duplicates are harmless, but a swallowed distinct dated event is a lost
+# answer. The property shape mirrors the SDK's CREATE_FACT query.
+CREATE_MEMORY_CYPHER: Final[str] = """
+CREATE (f:Fact {
+    id: $memory_id,
+    subject: $subject,
+    predicate: $predicate,
+    object: $object,
+    confidence: 1.0,
+    embedding: $embedding,
+    created_at: datetime(),
+    metadata: $metadata
+})
 """
 
 UPDATE_MEMORY_CYPHER: Final[str] = """
@@ -116,6 +149,13 @@ def scope_read_fragments(scope: MemoryScope) -> list[JsonValue]:
     return [
         _metadata_json_fragment("tenant_id", scope.tenant_id),
         _metadata_json_fragment("user_id", scope.user_id),
+    ]
+
+
+def session_read_fragments(scope: MemoryScope) -> list[JsonValue]:
+    return [
+        *scope_read_fragments(scope),
+        _metadata_json_fragment("session_id", scope.session_id),
     ]
 
 
