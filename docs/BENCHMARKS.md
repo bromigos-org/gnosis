@@ -60,6 +60,7 @@ Read-path changes on the Run 10 entity-graph store:
 | 16 (PR #39) | + directed bridge-entity traversal (T1-directed) | 72.5 | — | **rejected as measured — fires too rarely to matter.** The mechanism works (one textbook repair: "Which city have both Jean and John visited?" → Rome via the bridge fetch) but retrieval changed on only 35/497 questions; every category net-flips within noise (multi-hop 43.2→41.9, adversarial −1.8). LOCOMO's multi-hop misses are mostly cross-session enumerations, not bridge chains. |
 | 17 (PR #40) | hardened CoN (attribution + never-guess clauses) | 72.2 | — | **adversarial 83.0 = BEST EVER (+4.4, 5 repairs / 0 regressions), overall 74.7 = new best**, multi-hop 44.6 ties best. Cost: the never-guess rule over-abstains on open-domain "would X likely..." inference questions (42.9→28.6, 3 abstention regressions on n=21). Carve-out measured next. |
 | 18 (PR #41) | + likelihood carve-out in the never-guess rule | **74.8** | — | **NEW BEST on both headlines: excl-adv 74.8, overall 76.7.** The carve-out recovered open-domain 28.6→42.9 (3/3 abstention regressions repaired) AND single-hop 78.5→82.0 (best ever, 8 repairs / 1 regression) while adversarial held 83.0 with zero flips. Every category at or within noise of its historic peak — the production config. |
+| 19 (PR #43+#44) | 2x coverage item budget on multi-hop/aggregative routes | 72.5 | — | **rejected — retrieval coverage improved, answers did not.** Gold-item presence on the 27-question enumeration cohort rose 50%→60% yet **0/27 repaired**: even fully-covered questions still answer with a subset. The residual failure is the reader/judge (exact multi-item list golds), not retrieval. Also quantified the noise floor: 20 flips on 437 byte-identical-retrieval questions (±2.3 J between identical configs). |
 
 **Current best: Run 18 — excl-adv 74.8 AND overall 76.7, both new
 bests, with every category at or within noise of its historic peak
@@ -82,10 +83,33 @@ of the never-guess rule — recovering open-domain AND unlocking
 single-hop's 82.0 peak while adversarial held. The reading instruction
 is now the highest-leverage seam in the system: three consecutive
 prompt-only changes moved the totals more than any retrieval change
-since extraction. Remaining known gaps: temporal 91.1 vs the 92.2
-peak (1 question), and multi-hop's enumeration misses, which need
-retrieval *coverage* (larger item budget or per-entity fan-out on the
-multi-hop route), not deeper traversal.
+since extraction. Run 19 then closed the last known retrieval lever:
+doubling the item budget on the enumeration-bearing routes raised
+gold-item coverage 50%→60% and repaired **zero** of the 27 target
+questions — multi-hop's residual gap is exact-list grading of
+ambiguous enumerations, not retrieval. Run 19 also quantified the
+benchmark's noise floor: 20 correctness flips across 437 questions
+with byte-identical retrieval (±2.3 J excl-adv between effectively
+identical configs), larger than any remaining candidate lever.
+**LOCOMO subset 3 is measured out for this system** — see the
+saturation note below.
+
+### Saturation note (2026-07-04, after Run 19)
+
+Three independent measurements say the benchmark, not the memory
+system, is now the binding constraint: (1) the pure noise floor
+between identical configs is ±2.3 J excl-adv, wider than every
+post-Run-15 delta; (2) the largest remaining category gap (multi-hop
+~44) is capped by exact-list grading — full gold coverage in context
+does not flip answers; (3) temporal's 1.1 gap to peak is one
+question. Run 18's 74.8 excl-adv sits above the published
+full-context ceiling (72.9, different judge — directional only).
+Recommended next benchmark move, NOT started: adopt LongMemEval_S
+(500 questions, 5 ability axes including abstention and knowledge
+updates, ~115k-token haystacks) as the primary optimization target,
+keep LOCOMO subset 3 as a frozen regression gate at the Run 18
+config, and re-baseline the noise floor there before believing any
+new lever.
 
 ### Full per-category history — context condition (`/v1/memory/context`)
 
@@ -101,17 +125,18 @@ read flags off; 12: graph traversal alone; 13: Chain-of-Note alone;
 Chain-of-Note, skipped on the temporal route; 16: Run 15 config plus
 directed bridge-entity traversal on the multi-hop route; 17: Run 15
 config with the hardened Chain-of-Note instruction; 18: Run 17 plus
-the likelihood carve-out clause).
+the likelihood carve-out clause; 19: Run 18 plus a 2x item budget on
+the multi-hop and aggregative routes).
 
-| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) | Run 9 stacked | Run 10 graph (#29) | Run 11 routed (#30) | Run 12 traversal (#35) | Run 13 CoN (#31) | Run 14 routed+CoN | Run 15 route-aware (#37) | Run 16 bridge (#39) | Run 17 hardened (#40) | Run 18 likelihood (#41) |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | 80.5 | 79.5 | 78.5 | 80.0 | 75.5 | 79.0 | 81.0 | 79.5 | 79.5 | 80.0 | 79.5 | 79.5 | 78.5 | **82.0** |
-| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 | 37.8 | 41.9 | 28.4 | 39.2 | **44.6** | 36.5 | 43.2 | 43.2 | 43.2 | 41.9 | **44.6** | **44.6** |
-| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** | 85.6 | 84.4 | 47.8 | 85.6 | **92.2** | 85.6 | 85.6 | 83.3 | 91.1 | 90.0 | 91.1 | 91.1 |
-| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 | 28.6 | 33.3 | 38.1 | **42.9** | 38.1 | **42.9** | **42.9** | 38.1 | **42.9** | 38.1 | 28.6 | **42.9** |
-| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 | 76.8 | 68.8 | 64.3 | 67.9 | 62.5 | 64.3 | 79.5 | 75.9 | 78.6 | 76.8 | **83.0** | **83.0** |
-| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** | **69.6** | **71.2** | **57.9** | **70.9** | **74.3** | **70.7** | **72.0** | **71.4** | **73.2** | **72.5** | **72.2** | **74.8** |
-| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 | 71.2 | 70.7 | 59.4 | 70.2 | 71.6 | 69.2 | 73.6 | 72.4 | 74.5 | 73.4 | 74.7 | **76.7** |
+| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) | Run 9 stacked | Run 10 graph (#29) | Run 11 routed (#30) | Run 12 traversal (#35) | Run 13 CoN (#31) | Run 14 routed+CoN | Run 15 route-aware (#37) | Run 16 bridge (#39) | Run 17 hardened (#40) | Run 18 likelihood (#41) | Run 19 coverage (#43+#44) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | 80.5 | 79.5 | 78.5 | 80.0 | 75.5 | 79.0 | 81.0 | 79.5 | 79.5 | 80.0 | 79.5 | 79.5 | 78.5 | **82.0** | 78.5 |
+| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 | 37.8 | 41.9 | 28.4 | 39.2 | **44.6** | 36.5 | 43.2 | 43.2 | 43.2 | 41.9 | **44.6** | **44.6** | 43.2 |
+| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** | 85.6 | 84.4 | 47.8 | 85.6 | **92.2** | 85.6 | 85.6 | 83.3 | 91.1 | 90.0 | 91.1 | 91.1 | 90.0 |
+| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 | 28.6 | 33.3 | 38.1 | **42.9** | 38.1 | **42.9** | **42.9** | 38.1 | **42.9** | 38.1 | 28.6 | **42.9** | **42.9** |
+| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 | 76.8 | 68.8 | 64.3 | 67.9 | 62.5 | 64.3 | 79.5 | 75.9 | 78.6 | 76.8 | **83.0** | **83.0** | **83.0** |
+| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** | **69.6** | **71.2** | **57.9** | **70.9** | **74.3** | **70.7** | **72.0** | **71.4** | **73.2** | **72.5** | **72.2** | **74.8** | **72.5** |
+| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 | 71.2 | 70.7 | 59.4 | 70.2 | 71.6 | 69.2 | 73.6 | 72.4 | 74.5 | 73.4 | 74.7 | **76.7** | 74.9 |
 
 ### Full per-category history — search condition (`/v1/memories/search`)
 
@@ -150,6 +175,7 @@ Retrieval mechanism stats (context condition unless noted):
 | Run 16 bridge traversal context | 4,681 | 23.1% |
 | Run 17 hardened CoN context | 4,809 | 25.6% |
 | Run 18 likelihood carve-out context | 4,932 | 24.7% |
+| Run 19 coverage budget context | 5,191 | 24.1% |
 
 ## Run details
 
@@ -596,6 +622,42 @@ Retrieval mechanism stats (context condition unless noted):
   91.1 (1.1 under the Run 6/11 peak), open-domain 42.9 (ties peak),
   adversarial 83.0 (peak). Flags: extraction + entity graph at write;
   adaptive routing + route-aware hardened Chain-of-Note at read.
+
+### Run 19 — `results/locomo/routing-coverage-budget-20260704/` (coverage item budget, gnosis PR #43+#44)
+
+- Run 18 config plus `GNOSIS_COVERAGE_BUDGET_MULTIPLIER=2`: the
+  request's `max_items` fact cut doubles (20→40) on multi-hop- and
+  aggregative-routed reads. Built from the Run 18 miss analysis (27 of
+  41 multi-hop-category misses are cross-session enumerations whose
+  facts rank in the 100-deep dense pool but below the cut). A live
+  router probe redirected the design mid-flight: the classifier files
+  LOCOMO's enumerations under *aggregative*, not multi_hop, so the
+  multiplier covers both routes (PR #44). Smoke-verified the mechanism
+  before launch: "What desserts has Maria made?" rendered 40 facts
+  including BOTH gold desserts, where Run 18's 20 facts held one.
+  Context only.
+- **Scores: 72.5 excl-adv / 74.9 overall — below Run 18 (74.8/76.7).
+  Rejected.** multi-hop 43.2, single-hop 78.5, temporal 90.0,
+  open-domain 42.9, adversarial 83.0.
+- Per-question verification, the decisive part: retrieval changed on
+  60/497 questions and gold-item presence on the 27-question
+  enumeration cohort rose **50%→60%** (fully-covered questions 6→7) —
+  the coverage mechanism *worked* — yet **0 of 27 were repaired**.
+  Even fully-covered questions still answer with a subset (the
+  desserts question had both items in context and still answered
+  "peach cobbler"). The residual enumeration failure is the
+  reader/judge seam: LOCOMO's list golds demand the exact multi-item
+  enumeration, and a reader over 40 facts picks a defensible different
+  subset. Meanwhile the runs' 437 byte-identical-retrieval questions
+  flipped 20 times anyway (6 up / 14 down — router + reader sampling
+  noise), which fully accounts for the headline drop.
+- **Two conclusions.** (1) Multi-hop's remaining ~55 J gap is NOT a
+  retrieval problem — retrieval now covers 60% of gold items and
+  answers don't move; the category is capped by exact-list grading of
+  genuinely ambiguous enumerations. (2) The noise floor is now the
+  dominant term between configs: ±2.3 J excl-adv between two runs of
+  effectively identical retrieval. Flag stays merged, default 1 (off);
+  Run 18 remains the production config.
 
 ## Published comparison targets
 
