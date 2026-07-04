@@ -96,6 +96,8 @@ class Settings(BaseSettings):
     gnosis_rustfs_prefix: str = ""
     gnosis_rustfs_endpoint: str = ""
     gnosis_rustfs_retention_days: int | None = Field(default=None, ge=1)
+    gnosis_recall_filter_enabled: bool = False
+    gnosis_recall_filter_candidates: int = Field(default=30, ge=1)
     gnosis_prompt_entities_enabled: bool = False
     gnosis_prompt_preferences_enabled: bool = False
     gnosis_prompt_reasoning_enabled: bool = False

@@ -164,6 +164,11 @@ from gnosis.models import (
     SkillProposal,
     SkillUsage,
 )
+from gnosis.recall_filter import (
+    LiteLLMRecallFilter,
+    RecallFilter,
+    keep_relevant_candidates,
+)
 from gnosis.redaction import redact_secrets
 from gnosis.settings import Settings
 from gnosis.skill_registry import InMemorySkillRegistry, SkillRegistry
@@ -435,6 +440,15 @@ class ExtractionPreviewBackend(Protocol):
         self,
         request: ExtractionPreviewRequest,
     ) -> ExtractionPreviewResponse: ...
+
+
+@runtime_checkable
+class RecallFilteringBackend(Protocol):
+    async def filter_recalled_memories(
+        self,
+        query: str,
+        records: Sequence[MemoryRecord],
+    ) -> list[MemoryRecord]: ...
 
 
 class MemoryClientFactory(Protocol):
@@ -991,12 +1005,18 @@ class Neo4jAgentMemoryBackend:
         memory_client_factory: MemoryClientFactory | None = None,
         graph_store: StructuredGraphStore | None = None,
         skill_registry: SkillRegistry | None = None,
+        recall_filter: RecallFilter | None = None,
     ) -> None:
         self._app_settings: Settings = settings
         self._settings: MemorySettings = _build_memory_settings(settings)
         self._memory_client_factory: MemoryClientFactory | None = memory_client_factory
         self._graph_store: StructuredGraphStore = (
             graph_store or build_direct_graph_store(settings)
+        )
+        self._recall_filter: RecallFilter = recall_filter or LiteLLMRecallFilter(
+            model=settings.gnosis_llm,
+            base_url=settings.litellm_base_url,
+            api_key=settings.litellm_api_key,
         )
         self._skill_registry: SkillRegistry = skill_registry or InMemorySkillRegistry()
         self._event_fact_promoter: EventFactPromoter = EventFactPromoter()
@@ -1261,12 +1281,15 @@ class Neo4jAgentMemoryBackend:
         query, candidates come from the same embedding-similarity search that
         /v1/memories/search uses so relevance decides which facts fit the
         ``max_items`` budget; recency ordering is the fallback when similarity
-        search has nothing to rank (no query or no embedder).
+        search has nothing to rank (no query or no embedder). With
+        GNOSIS_RECALL_FILTER_ENABLED on, one LLM call then screens the top
+        candidates against the query before the item budget applies.
         """
         metadata = _scope_metadata(request.scope)
         facts = await _query_ranked_facts(client, request.query, metadata)
         if not facts:
             facts = await _query_recent_facts(client, metadata)
+        facts = await self._recall_filtered_facts(request.query, facts)
         facts = facts[: request.max_items]
         if not facts:
             return LongTermFactsContext()
@@ -1377,7 +1400,8 @@ class Neo4jAgentMemoryBackend:
                 request.query,
                 limit=_MEMORY_SEARCH_CANDIDATE_LIMIT,
             )
-        results: list[MemoryRecord] = []
+        budget = self._search_match_budget(request)
+        matches: list[StoredMemory] = []
         for memory in stored_memories_from_sdk(raw_records):
             if not memory_matches_scope(memory, request.scope):
                 continue
@@ -1385,10 +1409,86 @@ class Neo4jAgentMemoryBackend:
                 continue
             if not _meets_min_score(memory, request.min_score):
                 continue
-            results.append(memory_record(memory, include_score=True))
-            if len(results) == request.limit:
+            matches.append(memory)
+            if len(matches) == budget:
                 break
-        return MemorySearchResponse(results=results)
+        matches = await self._recall_filtered_matches(request, matches)
+        return MemorySearchResponse(
+            results=[
+                memory_record(memory, include_score=True)
+                for memory in matches[: request.limit]
+            ],
+        )
+
+    async def filter_recalled_memories(
+        self,
+        query: str,
+        records: Sequence[MemoryRecord],
+    ) -> list[MemoryRecord]:
+        """Screen already-scoped memory records with the recall filter.
+
+        The federated search route uses this over the merged local+remote
+        result set; the filter only removes or keeps records, so the
+        shareable-only scope of remote results is untouched. A no-op while
+        GNOSIS_RECALL_FILTER_ENABLED is off.
+        """
+        if not self._app_settings.gnosis_recall_filter_enabled or not query:
+            return list(records)
+        return await keep_relevant_candidates(
+            self._recall_filter,
+            query=query,
+            items=records,
+            render=_memory_record_line,
+            max_candidates=self._app_settings.gnosis_recall_filter_candidates,
+        )
+
+    async def _recall_filtered_facts(
+        self,
+        query: str,
+        facts: list[JsonObject],
+    ) -> list[JsonObject]:
+        """Screen ranked long-term fact candidates for context assembly."""
+        if not self._app_settings.gnosis_recall_filter_enabled or not query:
+            return facts
+        return await keep_relevant_candidates(
+            self._recall_filter,
+            query=query,
+            items=facts,
+            render=_fact_context_line,
+            max_candidates=self._app_settings.gnosis_recall_filter_candidates,
+        )
+
+    def _search_recall_filter_active(self, request: MemorySearchRequest) -> bool:
+        """Whether this search call runs the recall filter in the backend.
+
+        Federated searches (``peers`` named) are filtered once over the
+        merged local+remote result set by the route instead, keeping the
+        budget at one LLM call per request.
+        """
+        return self._app_settings.gnosis_recall_filter_enabled and not request.peers
+
+    def _search_match_budget(self, request: MemorySearchRequest) -> int:
+        if not self._search_recall_filter_active(request):
+            return request.limit
+        return max(
+            request.limit,
+            self._app_settings.gnosis_recall_filter_candidates,
+        )
+
+    async def _recall_filtered_matches(
+        self,
+        request: MemorySearchRequest,
+        matches: list[StoredMemory],
+    ) -> list[StoredMemory]:
+        if not self._search_recall_filter_active(request):
+            return matches
+        return await keep_relevant_candidates(
+            self._recall_filter,
+            query=request.query,
+            items=matches,
+            render=_stored_memory_line,
+            max_candidates=self._app_settings.gnosis_recall_filter_candidates,
+        )
 
     async def list_memories(self, request: MemoryListRequest) -> MemoryListResponse:
         filters = _parsed_memory_filters(request.filters)
@@ -2982,6 +3082,23 @@ def _fact_context_line(fact: JsonObject) -> str:
     if fact_date:
         return f"- [{_redacted_text(fact_date)}] {content}"
     return f"- {content}"
+
+
+def _stored_memory_line(memory: StoredMemory) -> str:
+    """Render one search candidate for the recall filter prompt."""
+    return _fact_context_line(_fact_from_memory(memory))
+
+
+def _memory_record_line(record: MemoryRecord) -> str:
+    """Render one already-public memory record for the recall filter prompt."""
+    metadata = _string_metadata(record.metadata)
+    record_date = next(
+        (metadata[key] for key in _FACT_DATE_METADATA_KEYS if metadata.get(key)),
+        (record.created_at or "")[:10],
+    )
+    if record_date:
+        return f"- [{record_date}] {record.content}"
+    return f"- {record.content}"
 
 
 def _fact_matches_scope(

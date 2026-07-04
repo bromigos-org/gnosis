@@ -157,7 +157,7 @@ These rules decide who sees which memories and in what order. They are enforced 
 
 - **Memory is user-centric within a deployment.** Long-term reads are keyed by `tenant_id` + `user_id`. Two agents on the same gnosis asking about the same user see the same memories. `agent_id` and caller metadata (for example the gateway channel) are write-side tags: they are stored on every record for audit and filtered views, but they do not partition recall, and they are redacted out of prompt-facing content. Agents that must not share memory (different business entities, e.g. nolgia) run against their own gnosis deployment with their own tenant and storage.
 - **Recall is cross-session.** `session_id` is write provenance only. It is stored on every record and never used as a read filter, so an agent recalls what it learned in earlier sessions. (Context assembly was session-pinned until 2026-07-03; that was a bug, not the contract.)
-- **Long-term facts are relevance-ranked and date-anchored.** When a query is present, context assembly ranks facts by embedding similarity over the same candidate pool `/v1/memories/search` uses, then renders each fact as a compact dated line (`- [7 May 2023] ...`), preferring a `session_date`/`date` from stored metadata and falling back to `created_at`. Without a query or embedder it falls back to recency ordering.
+- **Long-term facts are relevance-ranked and date-anchored.** When a query is present, context assembly ranks facts by embedding similarity over the same candidate pool `/v1/memories/search` uses, then renders each fact as a compact dated line (`- [7 May 2023] ...`), preferring a `session_date`/`date` from stored metadata and falling back to `created_at`. Without a query or embedder it falls back to recency ordering. With `GNOSIS_RECALL_FILTER_ENABLED` on, one `GNOSIS_LLM` call then screens the top `GNOSIS_RECALL_FILTER_CANDIDATES` candidates against the query and keeps only those that could help answer it (EMem-style, arXiv 2511.17208); the filter can only remove candidates, never add them, and any failure or empty selection degrades to the unfiltered ranking.
 - **Default ingestion is verbatim, not distilled.** With the extraction flags off (the default), conversation adds store each turn as a dated `said_user`/`said_assistant` fact plus its embedding — no LLM runs at ingest. Gnosis behaves as a dated retrieval store until `GNOSIS_EXTRACT_*` features are enabled; treat extraction quality as the main headroom for recall quality.
 - **Visibility, space, guild, and channel boundaries** still isolate as before; user-centric sharing only applies within a matching scope.
 
@@ -359,6 +359,7 @@ Several features exist, but they are controlled and not silently enabled.
 - OCR is off by default.
 - RustFS source references are off by default.
 - Prompt enrichment from entities, preferences, and reasoning is off by default.
+- The LLM recall filter is off by default (`GNOSIS_RECALL_FILTER_ENABLED`).
 - Consolidation scheduling is off by default.
 - Buffered writes exist, but the default write mode is `sync`.
 - Memory update and delete are off by default (`GNOSIS_MEMORY_EDIT_ENABLED`).
@@ -425,6 +426,8 @@ Preview comes before persistence. If extraction work is being evaluated, use `PO
 - `GNOSIS_PROMPT_ENTITIES_ENABLED`
 - `GNOSIS_PROMPT_PREFERENCES_ENABLED`
 - `GNOSIS_PROMPT_REASONING_ENABLED`
+- `GNOSIS_RECALL_FILTER_ENABLED` runs one `GNOSIS_LLM` call after retrieval ranking to drop query-irrelevant long-term candidates in `/v1/memory/context` and `/v1/memories/search` (default `false`).
+- `GNOSIS_RECALL_FILTER_CANDIDATES` caps how many top-ranked candidates that call screens (default `30`).
 - `GNOSIS_CONSOLIDATION_SCHEDULE_ENABLED`
 - `GNOSIS_MEMORY_EDIT_ENABLED` gates `PATCH`/`DELETE /v1/memories/{memory_id}` and the MCP `delete_memory` tool (default `false`).
 - `GNOSIS_MCP_ENABLED` mounts the streamable-HTTP MCP server at `/mcp` (default `false`).

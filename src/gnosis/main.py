@@ -14,6 +14,7 @@ from gnosis.backend import (
     MemoryBackend,
     MemoryNotFoundError,
     Neo4jAgentMemoryBackend,
+    RecallFilteringBackend,
 )
 from gnosis.federation import (
     FederationGateway,
@@ -363,10 +364,13 @@ def _register_memory_provider_routes(  # noqa: C901, PLR0915 - route grouping is
         if not request.peers:
             return local
         remote, peer_errors = await federation.search_peers(request)
-        return MemorySearchResponse(
-            results=merged_search_results(local.results, remote, request.limit),
-            peer_errors=peer_errors,
-        )
+        results = merged_search_results(local.results, remote, request.limit)
+        if isinstance(memory, RecallFilteringBackend):
+            # Federated searches run the recall filter here, once over the
+            # merged result set; remote results are already shareable-only
+            # and the filter can only remove or keep records.
+            results = await memory.filter_recalled_memories(request.query, results)
+        return MemorySearchResponse(results=results, peer_errors=peer_errors)
 
     @app.post("/v1/memories/list")
     async def list_memories(
