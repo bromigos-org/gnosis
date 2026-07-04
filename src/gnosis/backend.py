@@ -183,6 +183,7 @@ from gnosis.models import (
     SkillListResponse,
     SkillProposal,
     SkillUsage,
+    SufficiencyAssessment,
 )
 from gnosis.recall_filter import (
     LiteLLMRecallFilter,
@@ -192,6 +193,12 @@ from gnosis.recall_filter import (
 from gnosis.redaction import redact_secrets
 from gnosis.settings import Settings
 from gnosis.skill_registry import InMemorySkillRegistry, SkillRegistry
+from gnosis.sufficiency import (
+    LiteLLMSufficiencyAssessor,
+    SufficiencyAssessor,
+    bounded_reason,
+)
+from gnosis.supersession import FactFreshness, drop_superseded, slot_key
 
 _JSON_OBJECT_ADAPTER: Final[TypeAdapter[JsonObject]] = TypeAdapter(JsonObject)
 _ENTITY_RECORD_ADAPTER: Final[TypeAdapter[EntityRecord]] = TypeAdapter(EntityRecord)
@@ -318,6 +325,10 @@ _SCOPE_METADATA_KEYS: Final[frozenset[str]] = frozenset(
     },
 )
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
+_ABSTENTION_INSTRUCTION: Final[str] = (
+    "Answer only from the memories below; if they do not contain the answer, "
+    "say you don't know."
+)
 
 
 class MemoryConfigKwargs(TypedDict, total=False):
@@ -1031,6 +1042,7 @@ class Neo4jAgentMemoryBackend:
         skill_registry: SkillRegistry | None = None,
         recall_filter: RecallFilter | None = None,
         fact_extractor: MemoryUnitExtractor | None = None,
+        sufficiency_assessor: SufficiencyAssessor | None = None,
     ) -> None:
         self._app_settings: Settings = settings
         self._settings: MemorySettings = _build_memory_settings(settings)
@@ -1047,6 +1059,14 @@ class Neo4jAgentMemoryBackend:
             fact_extractor
             or LiteLLMMemoryUnitExtractor(
                 model=_fact_extraction_model(settings),
+                base_url=settings.litellm_base_url,
+                api_key=settings.litellm_api_key,
+            )
+        )
+        self._sufficiency_assessor: SufficiencyAssessor = (
+            sufficiency_assessor
+            or LiteLLMSufficiencyAssessor(
+                model=_sufficiency_model(settings),
                 base_url=settings.litellm_base_url,
                 api_key=settings.litellm_api_key,
             )
@@ -1367,7 +1387,60 @@ class Neo4jAgentMemoryBackend:
                     ),
                 )
 
-        return MemoryContextResponse(sections=sections)
+        sufficiency = await self._assess_sufficiency(request.query, sections)
+        sections = self._with_abstention_instruction(sections)
+        return MemoryContextResponse(sections=sections, sufficiency=sufficiency)
+
+    def _with_abstention_instruction(
+        self,
+        sections: list[MemoryContextSection],
+    ) -> list[MemoryContextSection]:
+        """Prepend the near-zero-cost abstention standing instruction line.
+
+        AbstentionBench (arXiv 2506.09038) shows an explicit grounding
+        instruction restores abstention on unanswerable queries. It is added as
+        a leading section so existing section parsing stays intact; a no-op
+        (byte-identical output) while GNOSIS_ABSTENTION_PROMPT_ENABLED is off or
+        when no memory content was assembled.
+        """
+        if not self._app_settings.gnosis_abstention_prompt_enabled or not sections:
+            return sections
+        instruction = MemoryContextSection(
+            source="instructions",
+            content=_ABSTENTION_INSTRUCTION,
+        )
+        return [instruction, *sections]
+
+    async def _assess_sufficiency(
+        self,
+        query: str,
+        sections: list[MemoryContextSection],
+    ) -> SufficiencyAssessment | None:
+        """Judge whether the assembled context can answer the query.
+
+        One structured-output LLM call behind GNOSIS_SUFFICIENCY_CHECK_ENABLED;
+        absent (``None``) while the flag is off or the query is empty. Any
+        failure degrades to ``assessed=False`` so the check never blocks the
+        context response.
+        """
+        if not self._app_settings.gnosis_sufficiency_check_enabled or not query:
+            return None
+        context = "\n\n".join(section.content for section in sections)
+        try:
+            verdict = await self._sufficiency_assessor.assess(query, context)
+        except (RuntimeError, OSError, OpenAIError) as error:
+            _LOGGER.warning(
+                "sufficiency check failed; reporting not assessed",
+                extra={"error_type": type(error).__name__},
+            )
+            return SufficiencyAssessment(assessed=False)
+        if verdict is None:
+            return SufficiencyAssessment(assessed=False)
+        return SufficiencyAssessment(
+            assessed=True,
+            sufficient=verdict.sufficient,
+            reason=bounded_reason(verdict.reason),
+        )
 
     async def _get_long_term_facts_context(
         self,
@@ -1390,6 +1463,7 @@ class Neo4jAgentMemoryBackend:
         if not facts:
             facts = await _query_recent_facts(client, metadata)
         facts = await self._recall_filtered_facts(request.query, facts)
+        facts = self._superseded_facts(facts)
         facts = facts[: request.max_items]
         if not facts:
             return LongTermFactsContext()
@@ -1752,12 +1826,32 @@ class Neo4jAgentMemoryBackend:
             if len(matches) == budget:
                 break
         matches = await self._recall_filtered_matches(request, matches)
+        matches = self._superseded_matches(matches)
         return MemorySearchResponse(
             results=[
                 memory_record(memory, include_score=True)
                 for memory in matches[: request.limit]
             ],
         )
+
+    def _superseded_facts(self, facts: list[JsonObject]) -> list[JsonObject]:
+        """Drop same-slot older facts from the ranked context candidates."""
+        if not self._app_settings.gnosis_read_supersession_enabled:
+            return facts
+        kept, dropped = drop_superseded(facts, _fact_freshness)
+        _log_supersession(dropped, len(facts), surface="context")
+        return kept
+
+    def _superseded_matches(
+        self,
+        matches: list[StoredMemory],
+    ) -> list[StoredMemory]:
+        """Drop same-slot older facts from the ranked search matches."""
+        if not self._app_settings.gnosis_read_supersession_enabled:
+            return matches
+        kept, dropped = drop_superseded(matches, _memory_freshness)
+        _log_supersession(dropped, len(matches), surface="search")
+        return kept
 
     async def _query_ranked_facts(
         self,
@@ -2821,6 +2915,10 @@ def _fact_extraction_model(settings: Settings) -> str:
     return settings.gnosis_fact_extraction_model or settings.gnosis_llm
 
 
+def _sufficiency_model(settings: Settings) -> str:
+    return settings.gnosis_sufficiency_model or settings.gnosis_llm
+
+
 def _conversation_date(caller_metadata: JsonObject) -> str:
     """Resolve the prompt's conversation date for relative-date resolution.
 
@@ -3507,6 +3605,67 @@ def _fact_from_memory(memory: StoredMemory) -> JsonObject:
         "metadata": dict(memory.metadata),
         "created_at": memory.created_at,
     }
+
+
+def _fact_freshness(fact: JsonObject) -> FactFreshness:
+    metadata = _fact_raw_metadata(fact)
+    created_at = fact.get("created_at")
+    return FactFreshness(
+        slot_key=slot_key(
+            str(fact.get("subject", "")),
+            str(fact.get("predicate", "")),
+            _metadata_entities(metadata),
+        ),
+        event_date=_metadata_event_date(metadata),
+        created_at=created_at if isinstance(created_at, str) and created_at else None,
+    )
+
+
+def _memory_freshness(memory: StoredMemory) -> FactFreshness:
+    return FactFreshness(
+        slot_key=slot_key(
+            memory.subject,
+            memory.predicate,
+            _metadata_entities(memory.metadata),
+        ),
+        event_date=_metadata_event_date(memory.metadata),
+        created_at=memory.created_at,
+    )
+
+
+def _fact_raw_metadata(fact: JsonObject) -> JsonObject:
+    metadata = fact.get("metadata")
+    if isinstance(metadata, dict):
+        return metadata
+    if isinstance(metadata, str):
+        try:
+            return _JSON_OBJECT_ADAPTER.validate_json(metadata)
+        except ValidationError:
+            return {}
+    return {}
+
+
+def _metadata_entities(metadata: Mapping[str, JsonValue]) -> list[str]:
+    entities = metadata.get("entities")
+    if not isinstance(entities, list):
+        return []
+    return [entity for entity in entities if isinstance(entity, str)]
+
+
+def _metadata_event_date(metadata: Mapping[str, JsonValue]) -> str | None:
+    event_date = metadata.get("event_date")
+    if isinstance(event_date, str) and event_date:
+        return event_date
+    return None
+
+
+def _log_supersession(dropped: int, candidates: int, *, surface: str) -> None:
+    if dropped == 0:
+        return
+    _LOGGER.info(
+        "read-time supersession dropped superseded facts",
+        extra={"surface": surface, "dropped": dropped, "candidates": candidates},
+    )
 
 
 def _fact_context_line(fact: JsonObject) -> str:

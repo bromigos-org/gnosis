@@ -217,8 +217,18 @@ class MemoryContextRequest(ContractModel):
     graph_limit: int = Field(default=8, ge=1, le=100)
 
 
+class SufficiencyAssessment(ContractModel):
+    assessed: bool
+    sufficient: bool = False
+    reason: str | None = Field(default=None, min_length=1, exclude_if=_is_none)
+
+
 class MemoryContextResponse(ContractModel):
     sections: list[MemoryContextSection] = Field(default_factory=list)
+    sufficiency: SufficiencyAssessment | None = Field(
+        default=None,
+        exclude_if=_is_none,
+    )
 
 
 class MemoryProvenance(ContractModel):
