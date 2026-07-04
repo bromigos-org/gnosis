@@ -39,6 +39,11 @@ from gnosis.entity_graph import (
     RelationTriple,
     entity_graph_statements,
 )
+from gnosis.entity_traversal import (
+    ENTITY_TRAVERSAL_CYPHER,
+    query_seed_candidates,
+    traversal_parameters,
+)
 from gnosis.event_facts import EventFactPromoter
 from gnosis.extraction_worker import BackgroundExtractionQueue
 from gnosis.fact_extraction import (
@@ -1451,7 +1456,7 @@ class Neo4jAgentMemoryBackend:
                 "query router returned no verdict; using globally configured flags",
             )
             return unrouted
-        return RouteDecision.for_route(verdict.route)
+        return RouteDecision.for_route(verdict.route, self._app_settings)
 
     def _with_abstention_instruction(
         self,
@@ -1540,13 +1545,14 @@ class Neo4jAgentMemoryBackend:
         (the global flags unrouted, or the route's measured-best set).
         """
         metadata = _scope_metadata(request.scope)
-        facts, graph_facts = await asyncio.gather(
+        facts, graph_facts, traversal_facts = await asyncio.gather(
             self._query_ranked_facts(client, request.query, metadata, decision),
             self._graphqa_fused_facts(request, decision),
+            self._traversal_facts(client, request, metadata, decision),
         )
         if not facts:
             facts = await _query_recent_facts(client, metadata)
-        facts = _fuse_graph_facts(facts, graph_facts)
+        facts = _fuse_graph_facts(facts, [*graph_facts, *traversal_facts])
         facts = await self._recall_filtered_facts(request.query, facts)
         facts = self._superseded_facts(facts)
         facts = _cut_with_graph_reserve(facts, request.max_items)
@@ -2173,6 +2179,72 @@ class Neo4jAgentMemoryBackend:
             )
             return []
         return _graph_facts_to_candidates(graph.facts)
+
+    async def _traversal_facts(
+        self,
+        client: MemoryClientContext,
+        request: MemoryContextRequest,
+        scope_metadata: Mapping[str, JsonValue],
+        decision: RouteDecision,
+    ) -> list[JsonObject]:
+        """Entity-anchored graph traversal candidates for context fusion (T1).
+
+        Pins the query's entity mentions as ``:Entity`` seed nodes, expands
+        1-2 ``RELATES`` hops to reach bridge entities the query never names,
+        and follows edge provenance back to the dated extracted facts - all
+        in one fixed parameterized Cypher read, zero extra LLM calls. The
+        provenance facts join the candidate pool tagged as graph-derived so
+        they hold the reserved graph slots of the item budget. A no-op empty
+        list while the effective decision leaves traversal off or the query
+        pins nothing; any read failure degrades to dense-only with a
+        structured warning - the context request never fails on this leg.
+        """
+        if not decision.graph_traversal or not request.query:
+            return []
+        seeds = query_seed_candidates(request.query)
+        if not seeds:
+            return []
+        try:
+            rows = await client.query.cypher(
+                ENTITY_TRAVERSAL_CYPHER,
+                traversal_parameters(
+                    tenant_id=request.scope.tenant_id,
+                    user_id=request.scope.user_id,
+                    seeds=seeds,
+                    scope_fragments=_metadata_fragments(scope_metadata),
+                    limit=request.graph_limit,
+                ),
+            )
+        except (
+            RuntimeError,
+            OSError,
+            Neo4jError,
+            BackendCapabilityUnavailable,
+        ) as error:
+            _LOGGER.warning(
+                "entity traversal failed; assembling dense-only context",
+                extra={
+                    "error_type": type(error).__name__,
+                    "tenant_id": request.scope.tenant_id,
+                },
+            )
+            return []
+        candidates: list[JsonObject] = []
+        for row in rows:
+            memory = stored_memory_from_row(row)
+            if memory is None:
+                continue
+            fact = _fact_from_memory(memory)
+            if not _fact_matches_scope(fact, scope_metadata):
+                continue
+            fact["graphqa"] = True
+            candidates.append(fact)
+        if candidates:
+            _LOGGER.info(
+                "entity traversal fused provenance facts",
+                extra={"count": len(candidates), "seeds": len(seeds)},
+            )
+        return candidates
 
     async def _query_ranked_facts(
         self,
