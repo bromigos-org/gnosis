@@ -172,6 +172,29 @@ ORDER BY score DESC
 LIMIT $candidate_limit
 """
 
+# The SDK's fact vector index (neo4j-agent-memory owns its creation).
+FACT_EMBEDDING_VECTOR_INDEX: Final[str] = "fact_embedding_idx"
+
+# Scope-narrowed dense candidates, behind GNOSIS_SCOPED_DENSE_RETRIEVAL_ENABLED.
+# The SDK's search_facts ranks the vector index globally, so in a store with
+# many users the requesting user's facts get crowded out of the global top-k
+# by other users' near-identical facts. Over-fetch the index ($vector_pool
+# nearest neighbours), narrow to scope in-query, keep the best
+# $candidate_limit. The gateway still re-checks scope on the deserialized
+# records afterwards, like every other provider read.
+SCOPED_DENSE_MEMORY_SEARCH_CYPHER: Final[str] = f"""
+CALL db.index.vector.queryNodes(
+  '{FACT_EMBEDDING_VECTOR_INDEX}', $vector_pool, $embedding)
+YIELD node AS f, score
+WHERE f.metadata IS NOT NULL
+  AND all(fragment IN $scope_fragments WHERE f.metadata CONTAINS fragment)
+WITH f, score
+ORDER BY score DESC
+LIMIT $candidate_limit
+{MEMORY_RETURN_CYPHER},
+       score AS score
+"""
+
 
 def list_memories_cypher(narrowing_fragment: str) -> str:
     return f"""
@@ -296,6 +319,22 @@ def stored_memories_from_sdk(records: object) -> list[StoredMemory]:
 
 def stored_memory_from_row(row: JsonObject) -> StoredMemory | None:
     return _stored_memory(row)
+
+
+def scored_stored_memory_from_row(row: JsonObject) -> StoredMemory | None:
+    """A dense-candidate row: the vector score becomes ``similarity``.
+
+    Mirrors the SDK's search_facts contract, which surfaces the vector score
+    in ``metadata["similarity"]``, so downstream scoring and the response
+    ``score`` field behave identically on both dense paths.
+    """
+    memory = _stored_memory(row)
+    if memory is None:
+        return None
+    score = row.get("score")
+    if isinstance(score, bool) or not isinstance(score, int | float):
+        return memory
+    return replace(memory, metadata={**memory.metadata, "similarity": float(score)})
 
 
 def memory_matches_scope(memory: StoredMemory, scope: MemoryScope) -> bool:

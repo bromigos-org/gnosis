@@ -83,6 +83,7 @@ from gnosis.memory_provider import (
     LOOKUP_MEMORIES_BY_IDS_CYPHER,
     LOOKUP_MEMORY_CYPHER,
     RECENT_TURN_MEMORIES_CYPHER,
+    SCOPED_DENSE_MEMORY_SEARCH_CYPHER,
     TURN_MEMORY_PREDICATE_PREFIX,
     UPDATE_MEMORY_CYPHER,
     VERBATIM_MEMORY_PREDICATE,
@@ -99,6 +100,7 @@ from gnosis.memory_provider import (
     public_memory_metadata,
     sanitize_lucene_query,
     scope_read_fragments,
+    scored_stored_memory_from_row,
     session_read_fragments,
     stored_memories_from_sdk,
     stored_memory_from_row,
@@ -266,6 +268,7 @@ _EXTRACTION_DRAIN_TIMEOUT_SECONDS: Final[float] = 10.0
 _NO_EXCLUDED_MEMORY_IDS: Final[frozenset[str]] = frozenset()
 _SDK_GRAPH_UNAVAILABLE_DETAIL: Final[str] = "SDK graph export is unavailable."
 _DEDUP_UNAVAILABLE_DETAIL: Final[str] = "SDK deduplication is unavailable."
+_QUERY_EMBEDDER_UNAVAILABLE_DETAIL: Final[str] = "SDK query embedder is unavailable."
 _DEDUP_APPLY_REQUIRED_DETAIL: Final[str] = (
     "Deduplication apply requests require apply=true."
 )
@@ -2119,15 +2122,16 @@ class Neo4jAgentMemoryBackend:
         filters = _parsed_memory_filters(request.filters)
         decision = await self._route_decision(request.query)
         async with self._memory_client() as client:
-            raw_records = await client.long_term.search_facts(
+            dense = await self._dense_memory_candidates(
+                client,
                 request.query,
-                limit=_MEMORY_SEARCH_CANDIDATE_LIMIT,
+                scope_read_fragments(request.scope),
             )
             candidates = await self._hybrid_memory_candidates(
                 client,
                 request.query,
                 scope_read_fragments(request.scope),
-                stored_memories_from_sdk(raw_records),
+                dense,
                 decision,
             )
         budget = self._search_match_budget(request)
@@ -2392,15 +2396,16 @@ class Neo4jAgentMemoryBackend:
         """
         if not query:
             return []
-        raw_records = await client.long_term.search_facts(
+        dense = await self._dense_memory_candidates(
+            client,
             query,
-            limit=_MEMORY_SEARCH_CANDIDATE_LIMIT,
+            _metadata_fragments(scope_metadata),
         )
         candidates = await self._hybrid_memory_candidates(
             client,
             query,
             _metadata_fragments(scope_metadata),
-            stored_memories_from_sdk(raw_records),
+            dense,
             decision,
         )
         return [
@@ -2408,6 +2413,66 @@ class Neo4jAgentMemoryBackend:
             for memory in candidates
             if _fact_matches_scope(fact := _fact_from_memory(memory), scope_metadata)
         ]
+
+    async def _dense_memory_candidates(
+        self,
+        client: MemoryClientContext,
+        query: str,
+        scope_fragments: list[JsonValue],
+    ) -> list[StoredMemory]:
+        """Embedding-similarity candidates for one scope, best score first.
+
+        With GNOSIS_SCOPED_DENSE_RETRIEVAL_ENABLED off (default) this is the
+        SDK's global search_facts ranking, byte-identical to the historical
+        contract. On, the candidates come from a scope-narrowed vector query
+        instead, so other scopes' facts can never crowd this scope out of the
+        candidate pool (multi-user stores with near-duplicate content). Any
+        failure on the scoped path - no embedder, embedding call failure, or
+        the vector query itself - degrades to the SDK ranking with a warning
+        rather than failing the read.
+        """
+        if not self._app_settings.gnosis_scoped_dense_retrieval_enabled:
+            return await self._sdk_dense_candidates(client, query)
+        try:
+            embedding = _required_query_embedding(
+                await _memory_embedding(client, query),
+            )
+            rows = await client.query.cypher(
+                SCOPED_DENSE_MEMORY_SEARCH_CYPHER,
+                {
+                    "embedding": embedding,
+                    "vector_pool": self._app_settings.gnosis_dense_scope_pool,
+                    "scope_fragments": scope_fragments,
+                    "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
+                },
+            )
+        except (
+            RuntimeError,
+            OSError,
+            Neo4jError,
+            BackendCapabilityUnavailable,
+        ) as error:
+            _LOGGER.warning(
+                "scoped dense search failed; degrading to global dense retrieval",
+                extra={"error_type": type(error).__name__},
+            )
+            return await self._sdk_dense_candidates(client, query)
+        return [
+            memory
+            for row in rows
+            if (memory := scored_stored_memory_from_row(row)) is not None
+        ]
+
+    @staticmethod
+    async def _sdk_dense_candidates(
+        client: MemoryClientContext,
+        query: str,
+    ) -> list[StoredMemory]:
+        raw_records = await client.long_term.search_facts(
+            query,
+            limit=_MEMORY_SEARCH_CANDIDATE_LIMIT,
+        )
+        return stored_memories_from_sdk(raw_records)
 
     async def _hybrid_memory_candidates(
         self,
@@ -3301,6 +3366,14 @@ def _graph_write_query(client: MemoryClientContext) -> GraphWriteQuery:
     if graph is not None and callable(execute_write):
         return cast("GraphWriteQuery", graph)
     raise BackendCapabilityUnavailable(_MEMORY_WRITE_UNAVAILABLE_DETAIL)
+
+
+def _required_query_embedding(
+    embedding: list[JsonValue] | None,
+) -> list[JsonValue]:
+    if embedding is None:
+        raise BackendCapabilityUnavailable(_QUERY_EMBEDDER_UNAVAILABLE_DETAIL)
+    return embedding
 
 
 async def _memory_embedding(
