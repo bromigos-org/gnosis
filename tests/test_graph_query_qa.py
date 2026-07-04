@@ -211,7 +211,7 @@ class _StructuredOutputViolatingPlanner:
         del request
         # The planner LLM returns prose + fenced JSON instead of the structured
         # contract; `.parse()` raises pydantic ValidationError.
-        GraphQueryPlan.model_validate_json("I don't have direct Neo4j access")
+        _ = GraphQueryPlan.model_validate_json("I don't have direct Neo4j access")
         return None
 
 
