@@ -395,6 +395,10 @@ Preview comes before persistence. If extraction work is being evaluated, use `PO
 - `GNOSIS_PEER_<NAME>_TOKEN` is the outbound bearer token for the named peer (the remote instance's `GNOSIS_FEDERATION_TOKEN`).
 - `GNOSIS_FEDERATION_TOKEN` is the inbound federation token class (default empty, meaning inbound federation is disabled).
 
+## Memory quality benchmarking
+
+Memory quality is measured, not assumed. The [gnosis-membench](https://github.com/bromigos-org/gnosis-membench) harness runs LOCOMO (and LongMemEval) against this service's real HTTP API with the official judging protocols; all official results live in its [RESULTS.md](https://github.com/bromigos-org/gnosis-membench/blob/main/RESULTS.md). Trajectory to date (LOCOMO subset 3, J excluding adversarial, 2026-07-03): context condition **37.4 → 41.0 → 59.5** across three same-day fixes, against a raw-search reference of 61.3. A weekly in-cluster CronJob re-scores `gnosis:latest` on a frozen subset and uploads results to RustFS.
+
 ## Local development
 
 ```bash
