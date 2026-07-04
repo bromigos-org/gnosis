@@ -359,7 +359,10 @@ _ABSTENTION_INSTRUCTION: Final[str] = (
 # The attribution and yes/no clauses target the two residual adversarial
 # failure patterns measured in Run 15 (2026-07-04, 24 misses): answering
 # with a *different person's* similar fact, and answering yes/no about a
-# thing the memories never mention.
+# thing the memories never mention. The likelihood clause carves the one
+# measured over-abstention cost back out (Run 17: open-domain "would X
+# likely..." questions expect an inference from known traits, and the bare
+# never-guess rule refused them).
 _CHAIN_OF_NOTE_INSTRUCTION: Final[str] = (
     "Before answering, silently take notes on each memory below: state "
     "whether it is relevant to the question, what it says, who it is about, "
@@ -368,7 +371,9 @@ _CHAIN_OF_NOTE_INSTRUCTION: Final[str] = (
     "memories about a different person than the question asks about. Then "
     "answer using only the relevant memories; if no memory states the "
     "answer, say you don't know - never guess, and never answer yes or no "
-    "about something the memories never mention."
+    "about something the memories never mention. Only when the question "
+    "itself asks what is likely or probable, infer the most plausible "
+    "answer from the relevant memories instead of saying you don't know."
 )
 
 
