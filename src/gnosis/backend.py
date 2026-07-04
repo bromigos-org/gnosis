@@ -11,12 +11,10 @@ from uuid import UUID, uuid4
 from neo4j.exceptions import Neo4jError
 from neo4j_agent_memory import MemoryClient, MemorySettings
 from neo4j_agent_memory.llm.adapters.litellm import LiteLLMEmbeddingProvider
-from neo4j_agent_memory.memory.reasoning import ReasoningStep as SdkReasoningStep
-from neo4j_agent_memory.memory.reasoning import ReasoningTrace as SdkReasoningTrace
-from neo4j_agent_memory.memory.reasoning import ToolCall, ToolCallStatus, ToolStats
+from neo4j_agent_memory.memory.reasoning import ToolCallStatus
 from neo4j_agent_memory.schema.models import EntityRef
 from openai import OpenAIError
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from gnosis.backend_protocols import (
     BackendCapabilityUnavailable,
@@ -32,6 +30,69 @@ from gnosis.bridge_traversal import (
     LiteLLMBridgeNamer,
     bridge_parameters,
     parse_bridge_names,
+)
+from gnosis.context_assembly import (
+    MEMORY_SEARCH_CANDIDATE_LIMIT as _MEMORY_SEARCH_CANDIDATE_LIMIT,
+)
+from gnosis.context_assembly import (
+    append_context_section as _append_context_section,
+)
+from gnosis.context_assembly import (
+    cut_with_graph_reserve as _cut_with_graph_reserve,
+)
+from gnosis.context_assembly import (
+    dedupe_graph_context as _dedupe_graph_context,
+)
+from gnosis.context_assembly import (
+    fact_context_line as _fact_context_line,
+)
+from gnosis.context_assembly import (
+    fact_freshness as _fact_freshness,
+)
+from gnosis.context_assembly import (
+    fact_from_memory as _fact_from_memory,
+)
+from gnosis.context_assembly import (
+    fact_markers as _fact_markers,
+)
+from gnosis.context_assembly import (
+    fact_matches_scope as _fact_matches_scope,
+)
+from gnosis.context_assembly import (
+    fuse_graph_facts as _fuse_graph_facts,
+)
+from gnosis.context_assembly import (
+    graph_facts_to_candidates as _graph_facts_to_candidates,
+)
+from gnosis.context_assembly import (
+    legacy_context_request as _legacy_context_request,
+)
+from gnosis.context_assembly import (
+    legacy_context_response as _legacy_context_response,
+)
+from gnosis.context_assembly import (
+    log_supersession as _log_supersession,
+)
+from gnosis.context_assembly import (
+    long_term_enrichment_enabled as _long_term_enrichment_enabled,
+)
+from gnosis.context_assembly import (
+    memory_freshness as _memory_freshness,
+)
+from gnosis.context_assembly import (
+    memory_record_line as _memory_record_line,
+)
+from gnosis.context_assembly import (
+    metadata_fragments as _metadata_fragments,
+)
+from gnosis.context_assembly import (
+    query_recent_facts as _query_recent_facts,
+)
+from gnosis.context_assembly import (
+    stored_memory_line as _stored_memory_line,
+)
+from gnosis.context_assembly import (
+    verbatim_expansion_targets as _verbatim_expansion_targets,
 )
 from gnosis.dedup_consolidation import (
     CONSOLIDATION_APPLY_REQUIRED_DETAIL as _CONSOLIDATION_APPLY_REQUIRED_DETAIL,
@@ -56,9 +117,6 @@ from gnosis.dedup_consolidation import (
 )
 from gnosis.dedup_consolidation import (
     DEDUP_UNAVAILABLE_DETAIL as _DEDUP_UNAVAILABLE_DETAIL,
-)
-from gnosis.dedup_consolidation import (
-    UNSAFE_CONSOLIDATION_REPORT_KEYS as _UNSAFE_CONSOLIDATION_REPORT_KEYS,
 )
 from gnosis.dedup_consolidation import (
     ConsolidationCapableMemoryClient,
@@ -138,14 +196,56 @@ from gnosis.fact_extraction import (
 from gnosis.graph_probe import StructuredGraphStore, direct_neo4j_driver_factory
 from gnosis.graph_query_qa import LiteLLMGraphQueryPlanner
 from gnosis.graph_store import DirectNeo4jGraphStore, Neo4jGraphExecutor
+from gnosis.ingestion_policy import (
+    ExtractionPolicy,
+)
+from gnosis.ingestion_policy import (
+    conversation_date as _conversation_date,
+)
+from gnosis.ingestion_policy import (
+    extraction_policy as _extraction_policy,
+)
+from gnosis.ingestion_policy import (
+    fact_extraction_model as _fact_extraction_model,
+)
+from gnosis.ingestion_policy import (
+    message_extraction_policy as _message_extraction_policy,
+)
+from gnosis.ingestion_policy import (
+    preview_candidates as _preview_candidates,
+)
+from gnosis.ingestion_policy import (
+    preview_document_count as _preview_document_count,
+)
+from gnosis.ingestion_policy import (
+    preview_extraction_policy as _preview_extraction_policy,
+)
+from gnosis.ingestion_policy import (
+    preview_source_ids as _preview_source_ids,
+)
+from gnosis.ingestion_policy import (
+    require_ingestion_sources_allowed as _require_ingestion_sources_allowed,
+)
+from gnosis.ingestion_policy import (
+    require_memory_add_mode as _require_memory_add_mode,
+)
+from gnosis.ingestion_policy import (
+    require_preview_enabled as _require_preview_enabled,
+)
+from gnosis.ingestion_policy import (
+    require_preview_sources_allowed as _require_preview_sources_allowed,
+)
+from gnosis.ingestion_policy import (
+    routing_model as _routing_model,
+)
+from gnosis.ingestion_policy import (
+    sufficiency_model as _sufficiency_model,
+)
 from gnosis.json_redaction import (
     hash_json as _hash_json,
 )
 from gnosis.json_redaction import (
     json_object as _json_object,
-)
-from gnosis.json_redaction import (
-    metadata_from_json as _metadata_from_json,
 )
 from gnosis.json_redaction import (
     redacted_object as _redacted_object,
@@ -155,9 +255,6 @@ from gnosis.json_redaction import (
 )
 from gnosis.json_redaction import (
     redacted_text as _redacted_text,
-)
-from gnosis.json_redaction import (
-    string_metadata as _string_metadata,
 )
 from gnosis.memory_filters import (
     FilterValidationError,
@@ -225,7 +322,6 @@ from gnosis.models import (
     EntitySearchResponse,
     EntityWriteRequest,
     EventIngestResult,
-    ExtractionCandidate,
     ExtractionPreviewMetrics,
     ExtractionPreviewProvenance,
     ExtractionPreviewRequest,
@@ -267,14 +363,12 @@ from gnosis.models import (
     ReasoningContextResponse,
     ReasoningSimilarTracesRequest,
     ReasoningSimilarTracesResponse,
-    ReasoningStepRecord,
     ReasoningStepRequest,
     ReasoningStepResponse,
     ReasoningStepSearchRequest,
     ReasoningStepSearchResponse,
     ReasoningToolCallRequest,
     ReasoningToolCallResponse,
-    ReasoningToolStatsRecord,
     ReasoningToolStatsRequest,
     ReasoningToolStatsResponse,
     ReasoningTraceCompleteRequest,
@@ -285,8 +379,6 @@ from gnosis.models import (
     ReasoningTraceListResponse,
     ReasoningTraceStartRequest,
     ReasoningTraceStartResponse,
-    ReasoningTraceSummary,
-    RustFSSourceReference,
     SdkStatsRequest,
     SdkStatsResponse,
     SkillListRequest,
@@ -296,12 +388,72 @@ from gnosis.models import (
     SufficiencyAssessment,
 )
 from gnosis.query_router import LiteLLMQueryRouter, QueryRouter, RouteDecision
+from gnosis.reasoning_support import (
+    REASONING_READ_UNAVAILABLE_DETAIL as _REASONING_READ_UNAVAILABLE_DETAIL,
+)
+from gnosis.reasoning_support import (
+    get_reasoning_trace as _get_reasoning_trace,
+)
+from gnosis.reasoning_support import (
+    reasoning_step_matches_scope as _reasoning_step_matches_scope,
+)
+from gnosis.reasoning_support import (
+    reasoning_step_record as _reasoning_step_record,
+)
+from gnosis.reasoning_support import (
+    reasoning_trace_matches_scope as _reasoning_trace_matches_scope,
+)
+from gnosis.reasoning_support import (
+    reasoning_trace_summary as _reasoning_trace_summary,
+)
+from gnosis.reasoning_support import (
+    safe_reasoning_context as _safe_reasoning_context,
+)
+from gnosis.reasoning_support import (
+    scoped_reasoning_traces as _scoped_reasoning_traces,
+)
 from gnosis.recall_filter import (
     LiteLLMRecallFilter,
     RecallFilter,
     keep_relevant_candidates,
 )
 from gnosis.redaction import redact_secrets
+from gnosis.scope_policy import (
+    memory_edit_audit as _memory_edit_audit,
+)
+from gnosis.scope_policy import (
+    reasoning_write_metadata as _reasoning_write_metadata,
+)
+from gnosis.scope_policy import (
+    record_matches_filters as _record_matches_filters,
+)
+from gnosis.scope_policy import (
+    redacted_entity as _redacted_entity,
+)
+from gnosis.scope_policy import (
+    redacted_fact as _redacted_fact,
+)
+from gnosis.scope_policy import (
+    redacted_preference as _redacted_preference,
+)
+from gnosis.scope_policy import (
+    scope_json_metadata as _scope_json_metadata,
+)
+from gnosis.scope_policy import (
+    scope_metadata as _scope_metadata,
+)
+from gnosis.scope_policy import (
+    scoped_filters as _scoped_filters,
+)
+from gnosis.scope_policy import (
+    session_id as _session_id,
+)
+from gnosis.scope_policy import (
+    user_identifier as _user_identifier,
+)
+from gnosis.scope_policy import (
+    write_metadata as _write_metadata,
+)
 from gnosis.sdk_client import (
     BufferErrorCapableMemoryClient,
     BufferFlushCapableMemoryClient,
@@ -345,7 +497,7 @@ from gnosis.sufficiency import (
     SufficiencyAssessor,
     bounded_reason,
 )
-from gnosis.supersession import FactFreshness, drop_superseded, slot_key
+from gnosis.supersession import drop_superseded
 
 __all__ = [
     "BackendCapabilityUnavailable",
@@ -403,26 +555,6 @@ _PREFERENCE_RECORD_ADAPTER: Final[TypeAdapter[PreferenceRecord]] = TypeAdapter(
 _PREFERENCE_RECORDS_ADAPTER: Final[TypeAdapter[list[PreferenceRecord]]] = TypeAdapter(
     list[PreferenceRecord]
 )
-_PREVIEW_WRITE_DETAIL: Final[str] = (
-    "Use /v1/memory/extraction/preview for dry-run previews."
-)
-_RELATION_ENTITY_DETAIL: Final[str] = "Relation extraction requires entity extraction."
-_RAW_TEXT_PREVIEW_DETAIL: Final[str] = (
-    "Raw text extraction is available only through preview."
-)
-_OCR_PREVIEW_ONLY_DETAIL: Final[str] = (
-    "OCR extraction is available only through preview."
-)
-_PREVIEW_DISABLED_DETAIL: Final[str] = (
-    "Extraction preview is disabled by service policy."
-)
-_OCR_DISABLED_DETAIL: Final[str] = "OCR preview is disabled by service policy."
-_OCR_SIZE_DETAIL: Final[str] = "OCR image exceeds service policy size limit."
-_RUSTFS_DISABLED_DETAIL: Final[str] = (
-    "RustFS source references are disabled by service policy."
-)
-_RUSTFS_BUCKET_DETAIL: Final[str] = "RustFS source bucket is outside service policy."
-_RUSTFS_KEY_DETAIL: Final[str] = "RustFS source key is outside service policy."
 _SDK_STATS_UNAVAILABLE_DETAIL: Final[str] = "SDK stats are unavailable."
 _SDK_BUFFER_FLUSH_UNAVAILABLE_DETAIL: Final[str] = "SDK buffer flush is unavailable."
 _SDK_BUFFER_WAIT_UNAVAILABLE_DETAIL: Final[str] = "SDK buffer wait is unavailable."
@@ -432,44 +564,9 @@ _EXTRACTION_DRAIN_TIMEOUT_SECONDS: Final[float] = 10.0
 _NO_EXCLUDED_MEMORY_IDS: Final[frozenset[str]] = frozenset()
 _SDK_GRAPH_UNAVAILABLE_DETAIL: Final[str] = "SDK graph export is unavailable."
 _QUERY_EMBEDDER_UNAVAILABLE_DETAIL: Final[str] = "SDK query embedder is unavailable."
-_REASONING_READ_UNAVAILABLE_DETAIL: Final[str] = "SDK reasoning read is unavailable."
-_MEMORY_MODE_DETAIL: Final[str] = (
-    "Provide messages with infer=true or content with infer=false."
-)
-_MEMORY_MESSAGES_INFER_DETAIL: Final[str] = "messages require infer=true."
-_MEMORY_CONTENT_INFER_DETAIL: Final[str] = "content requires infer=false."
 _MEMORY_UPDATE_FIELDS_DETAIL: Final[str] = "Memory updates require content or metadata."
 _MEMORY_ID_UNAVAILABLE_DETAIL: Final[str] = "SDK did not expose a stable memory id."
 _MEMORY_LIST_SCAN_LIMIT: Final[int] = 2000
-_MEMORY_SEARCH_CANDIDATE_LIMIT: Final[int] = 100
-_UNSAFE_REASONING_KEYS: Final[frozenset[str]] = _UNSAFE_CONSOLIDATION_REPORT_KEYS | {
-    "task_embedding",
-    "tool_calls",
-}
-_REDACT_REASONING_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "api_key",
-        "apikey",
-        "auth",
-        "client_secret",
-        "password",
-        "passwd",
-        "private_key",
-        "refresh_token",
-    },
-)
-_SCOPE_METADATA_KEYS: Final[frozenset[str]] = frozenset(
-    {
-        "tenant_id",
-        "space_id",
-        "agent_id",
-        "session_id",
-        "user_id",
-        "visibility",
-        "guild_id",
-        "channel_id",
-    },
-)
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 _ABSTENTION_INSTRUCTION: Final[str] = (
     "Answer only from the memories below; if they do not contain the answer, "
@@ -499,12 +596,6 @@ _CHAIN_OF_NOTE_INSTRUCTION: Final[str] = (
     "itself asks what is likely or probable, infer the most plausible "
     "answer from the relevant memories instead of saying you don't know."
 )
-
-
-@dataclass(frozen=True, slots=True)
-class ExtractionPolicy:
-    extract_entities: bool
-    extract_relations: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -2735,17 +2826,6 @@ class Neo4jAgentMemoryBackend:
         return _memory_client_context(MemoryClient(self._settings))
 
 
-def _require_memory_add_mode(request: MemoryAddRequest) -> None:
-    has_messages = bool(request.messages)
-    has_content = request.content is not None
-    if has_messages == has_content:
-        raise BackendRequestError(_MEMORY_MODE_DETAIL)
-    if has_messages and not request.infer:
-        raise BackendRequestError(_MEMORY_MESSAGES_INFER_DETAIL)
-    if has_content and request.infer:
-        raise BackendRequestError(_MEMORY_CONTENT_INFER_DETAIL)
-
-
 def _parsed_memory_filters(filters: JsonObject | None) -> MemoryFilter | None:
     if filters is None:
         return None
@@ -2817,906 +2897,7 @@ def _updated_memory_content(rows: list[JsonObject], fallback: str) -> str:
     return _redacted_text(fallback)
 
 
-def _memory_edit_audit(memory_id: str, scope: MemoryScope) -> dict[str, str]:
-    return {
-        "memory_id": memory_id,
-        "tenant_id": scope.tenant_id,
-        "agent_id": scope.agent_id,
-        "user_id": scope.user_id,
-    }
-
-
 def _buffer_readiness_status(write_errors: int) -> Literal["ready", "degraded"]:
     if write_errors == 0:
         return "ready"
     return "degraded"
-
-
-def _message_extraction_policy(
-    request: MessageWriteRequest,
-    settings: Settings,
-) -> ExtractionPolicy:
-    if request.preview_extraction:
-        raise BackendRequestError(_PREVIEW_WRITE_DETAIL)
-    return _extraction_policy(
-        extract_entities=request.extract_entities,
-        extract_relations=request.extract_relations,
-        settings=settings,
-    )
-
-
-def _preview_extraction_policy(
-    request: ExtractionPreviewRequest,
-    settings: Settings,
-) -> ExtractionPolicy:
-    return _extraction_policy(
-        extract_entities=request.extract_entities,
-        extract_relations=request.extract_relations,
-        settings=settings,
-    )
-
-
-def _extraction_policy(
-    *,
-    extract_entities: bool | None,
-    extract_relations: bool | None,
-    settings: Settings,
-) -> ExtractionPolicy:
-    if extract_relations is True and extract_entities is not True:
-        raise BackendRequestError(_RELATION_ENTITY_DETAIL)
-    entities_enabled = (
-        extract_entities is True and settings.gnosis_extract_entities_enabled
-    )
-    relations_enabled = (
-        extract_relations is True
-        and entities_enabled
-        and settings.gnosis_extract_relations_enabled
-    )
-    return ExtractionPolicy(
-        extract_entities=entities_enabled,
-        extract_relations=relations_enabled,
-    )
-
-
-def _fact_extraction_model(settings: Settings) -> str:
-    return settings.gnosis_fact_extraction_model or settings.gnosis_llm
-
-
-def _sufficiency_model(settings: Settings) -> str:
-    return settings.gnosis_sufficiency_model or settings.gnosis_llm
-
-
-def _routing_model(settings: Settings) -> str:
-    return settings.gnosis_routing_model or settings.gnosis_llm
-
-
-def _conversation_date(caller_metadata: JsonObject) -> str:
-    """Resolve the prompt's conversation date for relative-date resolution.
-
-    Callers that replay historical sessions (membench) supply
-    ``metadata.session_date``; live ingestion falls back to the ingest date.
-    """
-    session_date = caller_metadata.get("session_date")
-    if isinstance(session_date, str) and session_date:
-        return session_date
-    return datetime.now(UTC).date().isoformat()
-
-
-def _require_ingestion_sources_allowed(
-    request: MessageWriteRequest,
-    settings: Settings,
-) -> None:
-    if request.raw_text_documents:
-        raise BackendRequestError(_RAW_TEXT_PREVIEW_DETAIL)
-    if request.ocr_image_references:
-        raise BackendRequestError(_OCR_PREVIEW_ONLY_DETAIL)
-    _require_rustfs_references_allowed(request.rustfs_source_references, settings)
-
-
-def _require_preview_enabled(settings: Settings) -> None:
-    if not settings.gnosis_extraction_preview_enabled:
-        raise BackendRequestError(_PREVIEW_DISABLED_DETAIL)
-
-
-def _require_preview_sources_allowed(
-    request: ExtractionPreviewRequest,
-    settings: Settings,
-) -> None:
-    if request.ocr_image_references and not settings.gnosis_ocr_enabled:
-        raise BackendRequestError(_OCR_DISABLED_DETAIL)
-    for image in request.ocr_image_references:
-        if image.size_bytes > settings.gnosis_ocr_max_image_bytes:
-            raise BackendRequestError(_OCR_SIZE_DETAIL)
-        if image.rustfs is not None:
-            _require_rustfs_references_allowed([image.rustfs], settings)
-    _require_rustfs_references_allowed(request.rustfs_source_references, settings)
-
-
-def _require_rustfs_references_allowed(
-    references: list[RustFSSourceReference],
-    settings: Settings,
-) -> None:
-    if not references:
-        return
-    if not settings.gnosis_rustfs_enabled:
-        raise BackendRequestError(_RUSTFS_DISABLED_DETAIL)
-    for reference in references:
-        if (
-            settings.gnosis_rustfs_bucket
-            and reference.bucket != settings.gnosis_rustfs_bucket
-        ):
-            raise BackendRequestError(_RUSTFS_BUCKET_DETAIL)
-        if settings.gnosis_rustfs_prefix and not reference.object_key.startswith(
-            settings.gnosis_rustfs_prefix,
-        ):
-            raise BackendRequestError(_RUSTFS_KEY_DETAIL)
-
-
-def _preview_document_count(request: ExtractionPreviewRequest) -> int:
-    count = len(request.raw_text_documents)
-    if request.content is not None:
-        count += 1
-    return count
-
-
-def _preview_source_ids(request: ExtractionPreviewRequest) -> list[str]:
-    source_ids: list[str] = []
-    if request.content is not None:
-        source_ids.append("message.content")
-    source_ids.extend(document.source_id for document in request.raw_text_documents)
-    source_ids.extend(image.source_id for image in request.ocr_image_references)
-    source_ids.extend(
-        f"rustfs://{reference.bucket}/{reference.object_key}"
-        for reference in request.rustfs_source_references
-    )
-    return source_ids
-
-
-def _preview_candidates(
-    request: ExtractionPreviewRequest,
-    settings: Settings,
-) -> list[ExtractionCandidate]:
-    candidates: list[ExtractionCandidate] = []
-    if request.content is not None:
-        candidates.append(
-            ExtractionCandidate(
-                kind="text_chunk",
-                text=_preview_text(request.content),
-                source_id="message.content",
-                confidence=1.0,
-            ),
-        )
-    candidates.extend(
-        ExtractionCandidate(
-            kind="text_chunk",
-            text=_preview_text(document.text),
-            source_id=document.source_id,
-            confidence=1.0,
-        )
-        for document in request.raw_text_documents
-    )
-    if settings.gnosis_ocr_enabled:
-        candidates.extend(
-            ExtractionCandidate(
-                kind="ocr_text",
-                text=f"OCR preview placeholder via {settings.gnosis_ocr_model}",
-                source_id=image.source_id,
-                confidence=0.0,
-            )
-            for image in request.ocr_image_references
-        )
-    return candidates
-
-
-def _preview_text(text: str) -> str:
-    return text[:240]
-
-
-def _session_id(scope: MemoryScope) -> str:
-    return scope.session_id
-
-
-def _user_identifier(scope: MemoryScope) -> str:
-    return (
-        f"{scope.tenant_id}:{scope.space_id}:{scope.visibility.value}:"
-        f"{scope.agent_id}:{scope.user_id}"
-    )
-
-
-def _scope_metadata(scope: MemoryScope) -> dict[str, str]:
-    metadata = {
-        "tenant_id": scope.tenant_id,
-        "space_id": scope.space_id,
-        "agent_id": scope.agent_id,
-        "session_id": scope.session_id,
-        "user_id": scope.user_id,
-        "visibility": scope.visibility.value,
-    }
-    if scope.guild_id is not None:
-        metadata["guild_id"] = scope.guild_id
-    if scope.channel_id is not None:
-        metadata["channel_id"] = scope.channel_id
-    return metadata
-
-
-def _scope_json_metadata(scope: MemoryScope) -> JsonObject:
-    return _JSON_OBJECT_ADAPTER.validate_python(_scope_metadata(scope))
-
-
-def _scoped_filters(scope: MemoryScope, metadata: JsonObject) -> JsonObject:
-    return _JSON_OBJECT_ADAPTER.validate_python(metadata | _scope_metadata(scope))
-
-
-def _write_metadata(
-    scope: MemoryScope,
-    metadata: JsonObject,
-    provenance: object | None,
-) -> JsonObject:
-    base = metadata | _scope_metadata(scope)
-    if isinstance(provenance, BaseModel):
-        base |= _json_object(provenance.model_dump(exclude_none=True))
-    return _redacted_object(_JSON_OBJECT_ADAPTER.validate_python(base))
-
-
-def _reasoning_write_metadata(scope: MemoryScope, metadata: JsonObject) -> JsonObject:
-    return _redacted_object(
-        _JSON_OBJECT_ADAPTER.validate_python(metadata | _scope_metadata(scope)),
-    )
-
-
-def _record_matches_filters(metadata: JsonObject, filters: JsonObject) -> bool:
-    return all(metadata.get(key) == value for key, value in filters.items())
-
-
-def _redacted_entity(record: EntityRecord) -> EntityRecord:
-    return record.model_copy(
-        update={
-            "description": _redacted_optional_text(record.description),
-            "attributes": _redacted_object(record.attributes),
-            "metadata": _redacted_object(record.metadata),
-        },
-    )
-
-
-def _redacted_fact(record: FactRecord) -> FactRecord:
-    return record.model_copy(
-        update={
-            "subject": _redacted_text(record.subject),
-            "predicate": _redacted_text(record.predicate),
-            "object": _redacted_text(record.object),
-            "metadata": _redacted_object(record.metadata),
-        },
-    )
-
-
-def _redacted_preference(record: PreferenceRecord) -> PreferenceRecord:
-    return record.model_copy(
-        update={
-            "preference": _redacted_text(record.preference),
-            "context": _redacted_optional_text(record.context),
-            "metadata": _redacted_object(record.metadata),
-        },
-    )
-
-
-async def _query_recent_facts(
-    client: MemoryClientContext,
-    scope_metadata: Mapping[str, JsonValue],
-) -> list[JsonObject]:
-    """Most recently written scoped facts, newest first.
-
-    Scans a candidate pool sized like /v1/memories/search and re-checks scope
-    on the deserialized rows so the item budget only sees in-scope facts.
-    """
-    params: JsonObject = {
-        "metadata_fragments": _metadata_fragments(scope_metadata),
-        "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
-    }
-    rows = await client.query.cypher(
-        """
-        MATCH (f:Fact)
-        WHERE f.metadata IS NOT NULL
-          AND all(
-            fragment IN $metadata_fragments WHERE f.metadata CONTAINS fragment
-          )
-        WITH f
-        ORDER BY f.created_at DESC, f.subject ASC, f.predicate ASC, f.object ASC
-        LIMIT $candidate_limit
-        RETURN f{
-            .id, .subject, .predicate, .object, .metadata,
-            created_at: toString(f.created_at)
-        } AS f
-        """,
-        params,
-    )
-    return [
-        fact
-        for row in rows
-        if (fact := _fact_from_row(row)) is not None
-        and _fact_matches_scope(fact, scope_metadata)
-    ]
-
-
-def _fact_from_row(row: JsonObject) -> JsonObject | None:
-    fact = row.get("f")
-    if not isinstance(fact, dict):
-        return None
-    required_fields = ("subject", "predicate", "object")
-    if all(isinstance(fact.get(field_name), str) for field_name in required_fields):
-        return fact
-    return None
-
-
-def _fact_from_memory(memory: StoredMemory) -> JsonObject:
-    return {
-        "id": memory.memory_id,
-        "subject": memory.subject,
-        "predicate": memory.predicate,
-        "object": memory.content,
-        "metadata": dict(memory.metadata),
-        "created_at": memory.created_at,
-    }
-
-
-def _fact_freshness(fact: JsonObject) -> FactFreshness:
-    metadata = _fact_raw_metadata(fact)
-    created_at = fact.get("created_at")
-    return FactFreshness(
-        slot_key=slot_key(
-            str(fact.get("subject", "")),
-            str(fact.get("predicate", "")),
-            _metadata_entities(metadata),
-        ),
-        event_date=_metadata_event_date(metadata),
-        created_at=created_at if isinstance(created_at, str) and created_at else None,
-    )
-
-
-def _memory_freshness(memory: StoredMemory) -> FactFreshness:
-    return FactFreshness(
-        slot_key=slot_key(
-            memory.subject,
-            memory.predicate,
-            _metadata_entities(memory.metadata),
-        ),
-        event_date=_metadata_event_date(memory.metadata),
-        created_at=memory.created_at,
-    )
-
-
-def _fact_raw_metadata(fact: JsonObject) -> JsonObject:
-    metadata = fact.get("metadata")
-    if isinstance(metadata, dict):
-        return metadata
-    if isinstance(metadata, str):
-        try:
-            return _JSON_OBJECT_ADAPTER.validate_json(metadata)
-        except ValidationError:
-            return {}
-    return {}
-
-
-def _verbatim_expansion_targets(
-    facts: list[JsonObject],
-    *,
-    cap: int,
-) -> list[tuple[str, list[str]]]:
-    """Highest-ranked extracted facts to expand, with novel source turn ids.
-
-    Source ids already present as ranked facts are dropped so a verbatim turn
-    independently in the result set is never double-rendered; at most ``cap``
-    facts (rank order) are returned.
-    """
-    present_ids = {
-        fact_id
-        for fact in facts
-        if isinstance(fact_id := fact.get("id"), str) and fact_id
-    }
-    targets: list[tuple[str, list[str]]] = []
-    for fact in facts:
-        if len(targets) >= cap:
-            break
-        fact_id = fact.get("id")
-        if str(fact.get("predicate")) != EXTRACTED_FACT_PREDICATE or not isinstance(
-            fact_id,
-            str,
-        ):
-            continue
-        source_ids = [
-            source_id
-            for source_id in _fact_source_memory_ids(fact)
-            if source_id not in present_ids
-        ]
-        if source_ids:
-            targets.append((fact_id, source_ids))
-    return targets
-
-
-def _fact_source_memory_ids(fact: JsonObject) -> list[str]:
-    """Provenance ids of the verbatim turns an extracted fact was derived from."""
-    source_ids = _fact_raw_metadata(fact).get("source_memory_ids")
-    if not isinstance(source_ids, list):
-        return []
-    return [
-        source_id
-        for source_id in source_ids
-        if isinstance(source_id, str) and source_id
-    ]
-
-
-def _metadata_entities(metadata: Mapping[str, JsonValue]) -> list[str]:
-    entities = metadata.get("entities")
-    if not isinstance(entities, list):
-        return []
-    return [entity for entity in entities if isinstance(entity, str)]
-
-
-def _metadata_event_date(metadata: Mapping[str, JsonValue]) -> str | None:
-    event_date = metadata.get("event_date")
-    if isinstance(event_date, str) and event_date:
-        return event_date
-    return None
-
-
-def _log_supersession(dropped: int, candidates: int, *, surface: str) -> None:
-    if dropped == 0:
-        return
-    _LOGGER.info(
-        "read-time supersession dropped superseded facts",
-        extra={"surface": surface, "dropped": dropped, "candidates": candidates},
-    )
-
-
-def _fact_context_line(fact: JsonObject) -> str:
-    """Render one fact as a single dated line of prompt-facing content.
-
-    Provenance stays out of the prompt: it crowds the answer model's
-    attention and remains available through the audit read paths. Subject
-    and predicate only render when they carry signal beyond conversation
-    plumbing (verbatim ``memory`` and turn ``said_*`` predicates repeat the
-    speaker, not knowledge).
-    """
-    predicate = str(fact["predicate"])
-    content = _redacted_text(str(fact["object"]))
-    if predicate != VERBATIM_MEMORY_PREDICATE and not predicate.startswith(
-        TURN_MEMORY_PREDICATE_PREFIX,
-    ):
-        subject = _redacted_text(str(fact["subject"]))
-        content = f"{subject} {_redacted_text(predicate)}: {content}"
-    fact_date = _fact_date(fact, _fact_metadata(fact))
-    if fact_date:
-        return f"- [{_redacted_text(fact_date)}] {content}"
-    return f"- {content}"
-
-
-def _stored_memory_line(memory: StoredMemory) -> str:
-    """Render one search candidate for the recall filter prompt."""
-    return _fact_context_line(_fact_from_memory(memory))
-
-
-def _memory_record_line(record: MemoryRecord) -> str:
-    """Render one already-public memory record for the recall filter prompt."""
-    metadata = _string_metadata(record.metadata)
-    record_date = next(
-        (metadata[key] for key in _FACT_DATE_METADATA_KEYS if metadata.get(key)),
-        (record.created_at or "")[:10],
-    )
-    if record_date:
-        return f"- [{record_date}] {record.content}"
-    return f"- {record.content}"
-
-
-def _fact_matches_scope(
-    fact: JsonObject,
-    scope_metadata: Mapping[str, JsonValue],
-) -> bool:
-    metadata = _fact_metadata(fact)
-    requested_scope = {
-        field_name: scope_value
-        for field_name, scope_value in scope_metadata.items()
-        if field_name in _FACT_SCOPE_FIELDS
-    }
-    return all(
-        metadata.get(field_name) == requested_value
-        for field_name, requested_value in requested_scope.items()
-    ) and all(
-        requested_scope.get(field_name) == fact_value
-        for field_name, fact_value in metadata.items()
-        if field_name in _FACT_SCOPE_FIELDS
-    )
-
-
-def _fact_metadata(fact: JsonObject) -> dict[str, str]:
-    metadata = fact.get("metadata")
-    if isinstance(metadata, str):
-        return _metadata_from_json(metadata)
-    if isinstance(metadata, dict):
-        return _string_metadata(metadata)
-    return {}
-
-
-def _fact_date(fact: JsonObject, metadata: Mapping[str, str]) -> str:
-    for key in _FACT_DATE_METADATA_KEYS:
-        value = metadata.get(key)
-        if value:
-            return value
-    created_at = fact.get("created_at")
-    if isinstance(created_at, str):
-        # The YYYY-MM-DD prefix of the ISO timestamp.
-        return created_at[:10]
-    return ""
-
-
-def _fact_markers(facts: list[JsonObject]) -> set[str]:
-    markers: set[str] = set()
-    for fact in facts:
-        for field_name in ("id", "subject", "object"):
-            value = fact.get(field_name)
-            if isinstance(value, str) and value != "":
-                markers.add(value)
-    return markers
-
-
-def _graph_facts_to_candidates(facts: Sequence[JsonObject]) -> list[JsonObject]:
-    """Adapt graph-QA nodes to long-term fact candidates for fused ranking.
-
-    Each live graph node's summary becomes a verbatim-predicate candidate so
-    ``_fact_context_line`` renders it as a uniform dated line and read-time
-    supersession never claims a slot for it (graph summaries are traversal
-    evidence, not knowledge slots).
-    """
-    candidates: list[JsonObject] = []
-    for fact in facts:
-        summary = fact.get("summary")
-        if not isinstance(summary, str) or not summary or fact.get("deleted") is True:
-            continue
-        identifier = fact.get("id")
-        candidates.append(
-            {
-                "id": identifier if isinstance(identifier, str) else "",
-                "subject": "",
-                "predicate": VERBATIM_MEMORY_PREDICATE,
-                "object": summary,
-                "metadata": {},
-                "graphqa": True,
-            },
-        )
-    return candidates
-
-
-# At most this fraction of the context item budget is reserved for
-# graph-derived candidates, so dense relevance keeps the bulk of the slots.
-_GRAPH_RESERVE_DIVISOR: Final[int] = 4
-
-
-def _cut_with_graph_reserve(
-    facts: list[JsonObject],
-    max_items: int,
-) -> list[JsonObject]:
-    """Apply the item budget while reserving tail slots for graph candidates.
-
-    ``_fuse_graph_facts`` appends graph-derived candidates after the dense
-    ranking, so a plain ``facts[:max_items]`` cut silently dropped every one
-    of them whenever dense retrieval filled the candidate pool (always, on a
-    populated store) - the fusion leg ran but never rendered. Up to a quarter
-    of the budget now goes to the highest-ranked graph candidates; dense
-    candidates keep the rest, in ranking order. A pure passthrough cut when
-    no graph candidate is present.
-    """
-    graph = [fact for fact in facts if fact.get("graphqa") is True]
-    if not graph or len(facts) <= max_items:
-        return facts[:max_items]
-    dense = [fact for fact in facts if fact.get("graphqa") is not True]
-    reserve = min(len(graph), max(1, max_items // _GRAPH_RESERVE_DIVISOR))
-    return [*dense[: max_items - reserve], *graph[:reserve]]
-
-
-def _fuse_graph_facts(
-    dense: list[JsonObject],
-    graph: list[JsonObject],
-) -> list[JsonObject]:
-    """Union graph-derived candidates into the dense set, dropping duplicates.
-
-    A graph candidate is dropped when it shares a memory id with a dense fact
-    or renders to the same dated line, so a node already surfaced by dense
-    retrieval is never double-added. Dense ranking order is preserved; graph
-    candidates append after it (Mnemis unions the unordered structured route).
-    """
-    if not graph:
-        return dense
-    existing_ids = {
-        identifier
-        for fact in dense
-        if isinstance(identifier := fact.get("id"), str) and identifier
-    }
-    existing_lines = {_fact_context_line(fact) for fact in dense}
-    fused = list(dense)
-    for candidate in graph:
-        identifier = candidate.get("id")
-        if isinstance(identifier, str) and identifier and identifier in existing_ids:
-            continue
-        line = _fact_context_line(candidate)
-        if line in existing_lines:
-            continue
-        existing_lines.add(line)
-        fused.append(candidate)
-    return fused
-
-
-def _dedupe_graph_context(
-    graph: GraphContextResponse,
-    long_term_markers: set[str],
-) -> GraphContextResponse:
-    if not long_term_markers or not graph.facts:
-        return graph
-
-    facts = [
-        fact
-        for fact in graph.facts
-        if not _graph_fact_matches_markers(fact, long_term_markers)
-    ]
-    if len(facts) == len(graph.facts):
-        return graph
-
-    return GraphContextResponse(
-        context="\n".join(_graph_fact_summary(fact) for fact in facts),
-        facts=facts,
-    )
-
-
-def _graph_fact_matches_markers(fact: JsonObject, markers: set[str]) -> bool:
-    return any(
-        isinstance(value, str) and value in markers
-        for field_name in ("id", "summary")
-        if (value := fact.get(field_name)) is not None
-    )
-
-
-def _graph_fact_summary(fact: JsonObject) -> str:
-    summary = fact.get("summary")
-    if isinstance(summary, str):
-        return summary
-    return ""
-
-
-def _metadata_fragments(metadata: Mapping[str, JsonValue]) -> list[JsonValue]:
-    fragments: list[JsonValue] = []
-    for key, value in metadata.items():
-        if key not in _FACT_READ_EXCLUDED_FIELDS and isinstance(value, str):
-            fragments.append(f'"{key}": {json.dumps(value)}')
-    return fragments
-
-
-def _long_term_enrichment_enabled(settings: Settings) -> bool:
-    return (
-        settings.gnosis_prompt_entities_enabled
-        or settings.gnosis_prompt_preferences_enabled
-    )
-
-
-def _safe_reasoning_context(context: str) -> str:
-    lines = [
-        line
-        for line in context.splitlines()
-        if not _reasoning_line_exposes_hidden_trace(line)
-    ]
-    return _redacted_text("\n".join(lines))
-
-
-def _reasoning_line_exposes_hidden_trace(line: str) -> bool:
-    normalized = line.casefold()
-    return "thought:" in normalized or "chain_of_thought" in normalized
-
-
-async def _get_reasoning_trace(
-    reasoning: ReasoningMemory,
-    request: ReasoningTraceDetailRequest,
-) -> SdkReasoningTrace | None:
-    if request.include_steps:
-        return await reasoning.get_trace_with_steps(UUID(request.trace_id))
-    return await reasoning.get_trace(request.trace_id)
-
-
-def _scoped_reasoning_traces(
-    scope: MemoryScope,
-    traces: Sequence[SdkReasoningTrace],
-) -> list[ReasoningTraceSummary]:
-    return [
-        _reasoning_trace_summary(trace)
-        for trace in traces
-        if _reasoning_trace_matches_scope(trace, scope)
-    ]
-
-
-def _reasoning_trace_matches_scope(
-    trace: SdkReasoningTrace,
-    scope: MemoryScope,
-) -> bool:
-    metadata = _string_metadata(_json_object(trace.metadata))
-    scope_metadata = _scope_metadata(scope)
-    return trace.session_id == scope.session_id and all(
-        metadata.get(field_name) == expected_value
-        for field_name, expected_value in scope_metadata.items()
-        if field_name != "session_id"
-    )
-
-
-def _reasoning_step_matches_scope(step_like: object, scope: MemoryScope) -> bool:
-    step = _reasoning_step_from_result(step_like)
-    if step is None:
-        return False
-    metadata = _string_metadata(_json_object(step.metadata))
-    scope_metadata = _scope_metadata(scope)
-    return bool(metadata) and all(
-        metadata.get(field_name) == expected_value
-        for field_name, expected_value in scope_metadata.items()
-    )
-
-
-def _reasoning_trace_summary(trace: SdkReasoningTrace) -> ReasoningTraceSummary:
-    return ReasoningTraceSummary(
-        trace_id=str(trace.id),
-        session_id=trace.session_id,
-        task=_redacted_text(trace.task),
-        outcome=_redacted_optional_text(trace.outcome),
-        success=trace.success,
-        started_at=_optional_datetime_text(trace.started_at),
-        completed_at=_optional_datetime_text(trace.completed_at),
-        metadata=_public_reasoning_metadata(_json_object(trace.metadata)),
-    )
-
-
-def _reasoning_step_record(step_like: object) -> ReasoningStepRecord:
-    step = _reasoning_step_from_result(step_like)
-    if step is None:
-        raise BackendCapabilityUnavailable(_REASONING_READ_UNAVAILABLE_DETAIL)
-    return ReasoningStepRecord(
-        step_id=str(step.id),
-        trace_id=str(step.trace_id),
-        step_number=step.step_number,
-        action=_redacted_optional_text(step.action),
-        observation=_redacted_optional_text(step.observation),
-        tool_calls=[
-            _reasoning_tool_call_record(tool_call) for tool_call in step.tool_calls
-        ],
-        metadata=_redacted_reasoning_object(_json_object(step.metadata)),
-    )
-
-
-def _reasoning_step_from_result(step_like: object) -> SdkReasoningStep | None:
-    if isinstance(step_like, SdkReasoningStep):
-        return step_like
-    step = getattr(step_like, "step", None)
-    if isinstance(step, SdkReasoningStep):
-        return step
-    return None
-
-
-def _reasoning_tool_call_record(tool_call: ToolCall) -> JsonObject:
-    return _redacted_reasoning_object(
-        {
-            "tool_call_id": str(tool_call.id),
-            "step_id": (
-                str(tool_call.step_id) if tool_call.step_id is not None else None
-            ),
-            "tool_name": tool_call.tool_name,
-            "arguments": tool_call.arguments,
-            "result": tool_call.result,
-            "status": tool_call.status.value,
-            "duration_ms": tool_call.duration_ms,
-            "error": tool_call.error,
-            "metadata": tool_call.metadata,
-        },
-    )
-
-
-def _reasoning_tool_stats_record(tool_stats: ToolStats) -> ReasoningToolStatsRecord:
-    return ReasoningToolStatsRecord(
-        name=_redacted_text(tool_stats.name),
-        description=_redacted_optional_text(tool_stats.description),
-        total_calls=tool_stats.total_calls,
-        successful_calls=tool_stats.successful_calls,
-        failed_calls=tool_stats.failed_calls,
-        success_rate=tool_stats.success_rate,
-        avg_duration_ms=tool_stats.avg_duration_ms,
-        last_used_at=_optional_datetime_text(tool_stats.last_used_at),
-    )
-
-
-def _optional_datetime_text(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    return value.isoformat()
-
-
-def _redacted_reasoning_object(value: object) -> JsonObject:
-    return _redacted_reasoning_json(_json_object(value))
-
-
-def _redacted_reasoning_json(value: JsonObject) -> JsonObject:
-    redacted: dict[str, JsonValue] = {}
-    for key, member in value.items():
-        normalized_key = key.casefold()
-        if normalized_key in _UNSAFE_REASONING_KEYS:
-            continue
-        if normalized_key in _REDACT_REASONING_KEYS:
-            redacted[key] = "[REDACTED]"
-            continue
-        redacted[key] = _redacted_reasoning_value(member)
-    return _JSON_OBJECT_ADAPTER.validate_python(redacted)
-
-
-def _public_reasoning_metadata(metadata: JsonObject) -> JsonObject:
-    return _redacted_reasoning_json(
-        {
-            key: value
-            for key, value in metadata.items()
-            if key not in _SCOPE_METADATA_KEYS
-        },
-    )
-
-
-def _redacted_reasoning_value(value: JsonValue) -> JsonValue:
-    if isinstance(value, str):
-        return _redacted_text(value)
-    if isinstance(value, dict):
-        return _redacted_reasoning_json(_json_object(value))
-    if isinstance(value, list):
-        return [_redacted_reasoning_value(item) for item in value]
-    return value
-
-
-# Long-term memory is durable across conversations, so reads never narrow by
-# session_id: pinning recall to the requesting session starves the context
-# budget while /v1/memories/search over the same data spans sessions.
-_FACT_READ_EXCLUDED_FIELDS = {
-    "space_id",
-    "session_id",
-}
-
-_FACT_SCOPE_FIELDS = {
-    "tenant_id",
-    "agent_id",
-    "user_id",
-    "visibility",
-    "guild_id",
-    "channel_id",
-}
-
-# Temporal anchor for rendered facts: a stored date tag wins over created_at.
-_FACT_DATE_METADATA_KEYS = ("session_date", "date")
-
-
-def _append_context_section(
-    sections: list[MemoryContextSection],
-    source: str,
-    content: str,
-) -> None:
-    if content:
-        sections.append(MemoryContextSection(source=source, content=content))
-
-
-def _legacy_context_request(request: ContextRequest) -> MemoryContextRequest:
-    """Map a legacy /v1/context request onto the combined memory-context path."""
-    return MemoryContextRequest(
-        scope=request.scope,
-        query=request.query,
-        include_short_term=True,
-        include_long_term=False,
-        include_reasoning=False,
-        include_graph=False,
-        max_items=request.limit,
-    )
-
-
-def _legacy_context_response(response: MemoryContextResponse) -> ContextResponse:
-    """Reduce a combined memory-context response to the legacy short-term shape."""
-    context = next(
-        (
-            section.content
-            for section in response.sections
-            if section.source == "short_term"
-        ),
-        "",
-    )
-    return ContextResponse(context=context)
