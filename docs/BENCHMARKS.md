@@ -19,27 +19,29 @@ mem0 paper's convention). gnosis embeddings: `local-qwen3-embedding-0.6b`
 
 ## Trajectory (headline: context condition, J excl. adversarial)
 
-**37.4 → 41.0 → 59.5** in one day (2026-07-03), against a raw-search
+**37.4 → 41.0 → 59.5 → 58.7** (2026-07-03), against a raw-search
 reference of 61.3.
 
-| Category (n) | Run 1 baseline: context | Run 1 baseline: search | Run 2 (PR #6): context | Run 3 (PR #7): context |
-|---|---|---|---|---|
-| single-hop (200) | 55.0 | 75.0 | 57.0 | **76.5** |
-| multi-hop (74) | 10.8 | 44.6 | 14.9 | 40.5 |
-| temporal (90) | 24.4 | 48.9 | 30.0 | 42.2 |
-| open-domain (21) | 19.1 | 42.9 | 28.6 | 38.1 |
-| adversarial (112) | 74.1 | 68.8 | 67.9 | 67.9 |
-| **overall excl. adversarial (385)** | **37.4** | **61.3** | **41.0** | **59.5** |
-| overall (497) | 45.7 | 63.0 | 47.1 | 61.4 |
+| Category (n) | Run 1 baseline: context | Run 1 baseline: search | Run 2 (PR #6): context | Run 3 (PR #7): context | Run 4 (PR #13): context | Run 4 (PR #13): search |
+|---|---|---|---|---|---|---|
+| single-hop (200) | 55.0 | 75.0 | 57.0 | **76.5** | 74.5 | 73.5 |
+| multi-hop (74) | 10.8 | 44.6 | 14.9 | 40.5 | 40.5 | 46.0 |
+| temporal (90) | 24.4 | 48.9 | 30.0 | 42.2 | 43.3 | 43.3 |
+| open-domain (21) | 19.1 | 42.9 | 28.6 | 38.1 | 38.1 | 33.3 |
+| adversarial (112) | 74.1 | 68.8 | 67.9 | 67.9 | 67.9 | 72.3 |
+| **overall excl. adversarial (385)** | **37.4** | **61.3** | **41.0** | **59.5** | **58.7** | **59.0** |
+| overall (497) | 45.7 | 63.0 | 47.1 | 61.4 | 60.8 | 62.0 |
 
-Retrieval mechanism stats (context condition):
+Retrieval mechanism stats (context condition unless noted):
 
 | Run | avg retrieved chars | % retrievals dated | % "no information" answers |
 |---|---|---|---|
 | Run 1 baseline | 947 | 0% | 36.0% |
 | Run 2 (PR #6) | 10,018 | 100% | 31.4% |
 | Run 3 (PR #7) | 5,218 | 100% | 21.9% |
+| Run 4 (PR #13) | 2,093 | 100% | 20.5% |
 | (search reference) | 4,231 | 100% | 22.3% |
+| Run 4 (PR #13) search | 1,122 | 100% | 23.5% |
 
 ## Run details
 
@@ -83,6 +85,44 @@ Retrieval mechanism stats (context condition):
   within 1.8 of the search reference and **beating search on single-hop**
   (76.5 vs 75.0).
 
+### Run 4 — `results/locomo/recall-filter-20260703/` (measures gnosis PR #13)
+
+- gnosis main @ `d490b83` (EMem-style LLM recall filter behind
+  `GNOSIS_RECALL_FILTER_ENABLED`, candidates cap 30). Same ingested data
+  reused (read-path-only change). Deviations from the frozen config:
+  `GNOSIS_RECALL_FILTER_ENABLED=true` (the feature under test) and gnosis-side
+  `GNOSIS_LLM=openai/gpt-5.5` via the homelab LiteLLM (matches production; the
+  filter needs a real model — reads make no other `GNOSIS_LLM` calls, so this
+  only powers the filter). A logging-only compose overlay
+  (`stack/compose.recall-logging.yaml`) surfaced the filter's structured log
+  extras; app behavior unchanged.
+- Answering + judging both `gpt-5.5` via the responses shim. **Both**
+  conditions rerun — the filter sits in `/v1/memory/context` and
+  `/v1/memories/search`.
+- Scores: context **58.7** J excl. adversarial (−0.8 vs Run 3, ≈3 questions —
+  noise-level), search **59.0** (−2.3 vs the Run 1 search reference; note the
+  answerer route differs from Run 1, copilot vs shim). The hoped-for
+  multi-hop/temporal gains did not materialize on context (multi-hop flat at
+  40.5, temporal +1.1); search moved multi-hop +1.4 and adversarial +3.5 but
+  gave back temporal −5.6 and open-domain −9.5 (n=21).
+- Filter mechanism (from gnosis logs over the run window): avg 29.5
+  candidates in → **4.7 kept** (~84% pruned) in both conditions;
+  fallback-to-unfiltered rate 0.5% (5 of ~995 calls); filter LLM latency
+  mean 7.2 s / p50 5.7 s / p95 12.1 s added to every read. Retrieved payload
+  dropped 60% (context, 5,218 → 2,093 chars) and 73% (search,
+  4,231 → 1,122 chars). The filter's empty-selection fallback returns the
+  *unfiltered* list, so adversarial questions (nothing relevant) mostly still
+  see full context.
+- Wall-clock: ~38 min for both conditions end-to-end (context answer+grade
+  17m46s; search ~20m including one httpx-timeout crash at 496/497 answers
+  and a resumable-driver restart).
+- Verdict: **keep default-off in production.** Accuracy is
+  flat-to-slightly-negative on LOCOMO (EMem's ablation gains did not
+  reproduce here), while every read gains one gpt-5.5 call and ~6-7 s median
+  latency. The 60-73% retrieval-payload cut is real and would matter under
+  tight context budgets or expensive answer models; reconsider with a
+  fast/cheap filter model.
+
 ## Published comparison targets
 
 LOCOMO overall J as published (gpt-4o-mini judge — different judge and
@@ -93,7 +133,7 @@ mem0 66.9 · mem0-graph 68.4 · full-context 72.9 · Letta (blog) 74.0.
 ## Known limitations of the current record
 
 - Subset 3 of 10 LOCOMO conversations; LongMemEval_S not yet run at scale.
-- Answerer route changed between Run 1 and Runs 2/3 (Copilot quota) — the
+- Answerer route changed between Run 1 and Runs 2-4 (Copilot quota) — the
   judge was held constant, but the context-vs-search comparison within Run 1
   is the cleanest same-route pair.
 - gnosis ingests verbatim (no LLM extraction) in all runs to date; enabling
