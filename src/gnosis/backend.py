@@ -356,12 +356,19 @@ _ABSTENTION_INSTRUCTION: Final[str] = (
 # conversational memory). The note step lets the reader reject retrieved
 # similar-but-wrong memories instead of answering from them, and raises
 # rejection of unanswerable questions - reading is the lever, not retrieval.
+# The attribution and yes/no clauses target the two residual adversarial
+# failure patterns measured in Run 15 (2026-07-04, 24 misses): answering
+# with a *different person's* similar fact, and answering yes/no about a
+# thing the memories never mention.
 _CHAIN_OF_NOTE_INSTRUCTION: Final[str] = (
     "Before answering, silently take notes on each memory below: state "
-    "whether it is relevant to the question, what it says, and whether it "
-    "contradicts another memory. Ignore memories that are merely similar to "
-    "the question but do not answer it. Then answer using only the relevant "
-    "memories; if none of them contain the answer, say you don't know."
+    "whether it is relevant to the question, what it says, who it is about, "
+    "and whether it contradicts another memory. Ignore memories that are "
+    "merely similar to the question but do not answer it, especially "
+    "memories about a different person than the question asks about. Then "
+    "answer using only the relevant memories; if no memory states the "
+    "answer, say you don't know - never guess, and never answer yes or no "
+    "about something the memories never mention."
 )
 
 
