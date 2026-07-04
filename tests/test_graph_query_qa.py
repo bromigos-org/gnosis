@@ -204,3 +204,24 @@ async def test_plan_graph_query_swallows_openai_errors() -> None:
 
     # Then: planner failures degrade to no graph context, never an error.
     assert plan is None
+
+
+class _StructuredOutputViolatingPlanner:
+    async def plan_query(self, request: GraphContextRequest) -> GraphQueryPlan | None:
+        del request
+        # The planner LLM returns prose + fenced JSON instead of the structured
+        # contract; `.parse()` raises pydantic ValidationError.
+        _ = GraphQueryPlan.model_validate_json("I don't have direct Neo4j access")
+        return None
+
+
+@pytest.mark.anyio
+async def test_plan_graph_query_swallows_structured_output_violations() -> None:
+    # Given: the planner LLM ignores the structured-output contract.
+    request = GraphContextRequest(scope=_scope(), query="Which roles exist?", limit=5)
+
+    # When: gnosis plans a graph query.
+    plan = await plan_graph_query(_StructuredOutputViolatingPlanner(), request)
+
+    # Then: it degrades to no graph context rather than 500-ing the caller.
+    assert plan is None

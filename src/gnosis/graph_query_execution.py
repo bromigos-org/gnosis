@@ -4,6 +4,7 @@ from typing import Final
 
 from neo4j.exceptions import Neo4jError
 from openai import OpenAIError
+from pydantic import ValidationError
 
 from gnosis.graph_events import GraphNode, node_from_row
 from gnosis.graph_query_qa import GraphQueryPlan, GraphQueryPlanner, ValidatedGraphQuery
@@ -22,7 +23,11 @@ async def plan_graph_query(
 ) -> GraphQueryPlan | None:
     try:
         return await planner.plan_query(request)
-    except (RuntimeError, OSError, Neo4jError, OpenAIError) as error:
+    except (RuntimeError, OSError, Neo4jError, OpenAIError, ValidationError) as error:
+        # ValidationError: the planner LLM sometimes ignores the structured-output
+        # contract and returns prose or fenced JSON, which `.parse()` rejects.
+        # Graph QA is a best-effort enhancement; a planner miss must degrade to
+        # no graph context, never fail the caller's request.
         _LOGGER.info(
             "graph QA planner failed",
             extra=_error_context(error, request),
@@ -55,7 +60,7 @@ def _rows_have_graph_query_shape(rows: Sequence[dict[str, JsonValue]]) -> bool:
 
 
 def _error_context(
-    error: RuntimeError | OSError | Neo4jError | OpenAIError,
+    error: RuntimeError | OSError | Neo4jError | OpenAIError | ValidationError,
     request: GraphContextRequest,
 ) -> CypherParameters:
     return {
