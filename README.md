@@ -7,7 +7,7 @@
 - **Federated**: sovereign gnosis instances share memory only through explicit, consent-tagged promotion and origin-tagged federated queries.
 - **Policy-first**: tenant/scope enforcement, redaction, review-first operator workflows, and safe-by-default feature flags sit in front of every backend access. Clients never touch Neo4j, Bolt, or the SDK directly.
 
-**Documentation** — the [`docs/`](docs/) set: [getting started](docs/getting-started.md) (install, configure, first write & read), [capabilities & algorithms](docs/CAPABILITIES.md) (every technique with its peer-reviewed basis and measured impact), [architecture](docs/architecture.md), [data model](docs/data-model.md), [configuration](docs/configuration.md), [security](docs/security.md), [operations](docs/operations.md), and the [HTTP contract](docs/provider-surface.md).
+**Documentation** — the [`docs/`](docs/) set: [getting started](docs/getting-started.md) (run it, connect a hermes agent, first calls), [capabilities & algorithms](docs/CAPABILITIES.md) (every technique with its peer-reviewed basis and measured impact), [architecture](docs/architecture.md), [data model](docs/data-model.md), [configuration](docs/configuration.md), [security](docs/security.md), [operations](docs/operations.md), and the [HTTP contract](docs/provider-surface.md).
 
 ## Benchmarks
 
