@@ -7,7 +7,20 @@
 - **Federated**: sovereign gnosis instances share memory only through explicit, consent-tagged promotion and origin-tagged federated queries.
 - **Policy-first**: tenant/scope enforcement, redaction, review-first operator workflows, and safe-by-default feature flags sit in front of every backend access. Clients never touch Neo4j, Bolt, or the SDK directly.
 
-**Documentation** — the [`docs/`](docs/) set: [getting started](docs/getting-started.md) (run it, connect a hermes agent, first calls), [capabilities & algorithms](docs/CAPABILITIES.md) (every technique with its peer-reviewed basis and measured impact), [architecture](docs/architecture.md), [data model](docs/data-model.md), [configuration](docs/configuration.md), [security](docs/security.md), [operations](docs/operations.md), and the [HTTP contract](docs/provider-surface.md).
+## Documentation
+
+The full [`docs/`](docs/) set:
+
+- **[Getting started](docs/getting-started.md)** — run gnosis, connect a hermes agent, first calls.
+- **[Capabilities & algorithms](docs/CAPABILITIES.md)** — every technique with its peer-reviewed basis and measured impact.
+- **[Architecture](docs/architecture.md)** — layers, the read/write request flow, and the module map.
+- **[Data model](docs/data-model.md)** — the Neo4j graph schema, node/relationship types, and the scope spine.
+- **[Configuration](docs/configuration.md)** — every `GNOSIS_*` setting and YAML key, with the preferred config.
+- **[Security](docs/security.md)** — the token classes, scope enforcement, redaction, and federation safety.
+- **[Operations](docs/operations.md)** — deploying and running gnosis: health, the extraction worker, backup, scale.
+- **[Development](docs/development.md)** — setup, the four CI gates, and the feature-flag pattern for contributing.
+- **[HTTP contract](docs/provider-surface.md)** — the `/v1/memories` add/search/list/promote surface, filter DSL, and MCP.
+- **[Benchmarks](docs/BENCHMARKS.md)** — every measured run, per-category history, configs, and honest deviations.
 
 ## Benchmarks
 
