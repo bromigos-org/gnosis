@@ -2,6 +2,30 @@
 
 Mirror of the canonical log in [gnosis-membench/RESULTS.md](https://github.com/bromigos-org/gnosis-membench/blob/main/RESULTS.md); the harness repo is the source of truth for new runs.
 
+> **Full-LOCOMO standing (Run 23, 2026-07-04).** The Run 1–22 trajectory
+> below was measured on **subset 3** (3 of 10 conversations, 497 Q) — a fast
+> dev-loop gate, not comparable-n to published systems. **Run 23** is the
+> first full-10 measurement of the production (Run 18) config and the
+> apples-to-apples competitor comparison:
+>
+> | Category (full n) | our F1 | J gpt-5.5 | J gpt-5.4-mini | best published |
+> |---|---|---|---|---|
+> | single-hop (841) | 60.9 | 77.0 | 77.8 | mem0 J 67.13 / F1 38.72 — **lead** |
+> | multi-hop (282) | 34.3 | 41.5 | 49.6 | mem0 J 51.15 / F1 28.64 — **lead F1; J = judge generosity** |
+> | temporal (321) | 32.5 | 73.8 | 73.8 | mem0^g J 58.13 — **lead J (F1 = date artifact)** |
+> | open-domain (96) | 18.0 | 29.2 | 31.2 | Zep J 76.60 — **trail (weakness)** |
+> | adversarial (446) | 83.9 | 83.9 | 83.9 | unpublished |
+> | **excl-adv (1540)** | **47.5** | **66.9** | **68.9** | mem0 66.88 / mem0^g 68.44 / full-ctx 72.90 |
+>
+> Excl-adv J **66.9–68.9** is **at parity with mem0 (66.88)**, ties mem0^g
+> (68.44), and sits **below the full-context ceiling (72.90)**. The prior
+> "74.8, above the ceiling, best overall" headline was a subset-3 artifact
+> (and 74.8 reproduces at ~71 on re-ingest); it does **not** hold at full n.
+> Defensible full-n leads: **single-hop** (both axes), **temporal** and
+> **adversarial** (judge-robust J), **multi-hop on the judge-independent F1**.
+> Genuine weakness: **open-domain**. Full detail in the Run 23 section of
+> RESULTS.md.
+
 
 Canonical record of all gnosis memory-quality benchmark runs. Every run uses the
 frozen comparison config unless a deviation is noted. Raw artifacts
@@ -75,8 +99,10 @@ Read-path changes on the Run 10 entity-graph store:
 | 18 (PR #41) | + likelihood carve-out in the never-guess rule | **74.8** | — | **NEW BEST on both headlines: excl-adv 74.8, overall 76.7.** The carve-out recovered open-domain 28.6→42.9 (3/3 abstention regressions repaired) AND single-hop 78.5→82.0 (best ever, 8 repairs / 1 regression) while adversarial held 83.0 with zero flips. Every category at or within noise of its historic peak — the production config. |
 | 19 (PR #43+#44) | 2x coverage item budget on multi-hop/aggregative routes | 72.5 | — | **rejected — retrieval coverage improved, answers did not.** Gold-item presence on the 27-question enumeration cohort rose 50%→60% yet **0/27 repaired**: even fully-covered questions still answer with a subset. The residual failure is the reader/judge (exact multi-item list golds), not retrieval. Also quantified the noise floor: 20 flips on 437 byte-identical-retrieval questions (±2.3 J between identical configs). |
 
-**Current best: Run 18 — excl-adv 74.8 AND overall 76.7, both new
-bests, with every category at or within noise of its historic peak
+**Current best on the subset-3 dev gate: Run 18 — excl-adv 74.8 AND overall
+76.7** (both subset-3 numbers; **superseded for competitor comparison by Run
+23** — see the banner at top — and ~4 pts optimistic: reproducible level ~71).
+**On subset 3, every category is at or within noise of its historic peak
 simultaneously** (single-hop 82.0 peak, multi-hop 44.6 ties peak,
 temporal 91.1, open-domain 42.9 ties peak, adversarial 83.0 peak).
 The path there: Run 9 proved stacking the measured winners globally
@@ -115,16 +141,24 @@ between identical configs is ±2.3 J excl-adv, wider than every
 post-Run-15 delta; (2) the largest remaining category gap (multi-hop
 ~44) is capped by exact-list grading — full gold coverage in context
 does not flip answers; (3) temporal's 1.1 gap to peak is one
-question. Run 18's 74.8 excl-adv sits above the published
-full-context ceiling (72.9, different judge — directional only).
+question. **[Superseded by Run 23 — see the banner at the top.]** Run 18's
+subset-3 74.8 was originally read as above the full-context ceiling (72.9);
+the full-LOCOMO re-measure shows it does **not** hold — full-n excl-adv J is
+66.9–68.9 (two judges), at parity with mem0 and below the 72.9 ceiling (and
+74.8 itself reproduces at ~71). This saturation note describes subset 3 as a
+dev-loop gate, not the competitive standing.
 
 **Status (2026-07-04): LOCOMO subset 3 is FROZEN as the regression
 gate at the Run 18 config** (extraction + entity graph at write;
 adaptive routing + route-aware hardened CoN v3 with the likelihood
 carve-out at read; embeddings `local-qwen3-embedding-0.6b` /
 1024-dim; judge gpt-5.5; `max_items` 20; context condition).
-Reference scores for the gate: excl-adv 74.8 / overall 76.7, with a
-±2.3 J noise band on excl-adv between identical configs. Any future
+Reference scores for the gate: excl-adv **~71** (the reproducible level —
+the recorded 74.8 was a ~4 pt favorable-extraction outlier; two independent
+re-ingests land at 70.9 and 71.4), with a ±2.3 J noise band on excl-adv
+between identical configs. **This gate is an internal dev-loop signal on 3
+easy conversations, not a competitive claim — see the Run 23 full-LOCOMO
+standing at the top.** Any future
 gnosis change should re-run this gate and is a regression only if it
 lands below the noise band, judged per-category. The gate keeps the
 qwen3 embedder its whole history was measured with, so its recorded
