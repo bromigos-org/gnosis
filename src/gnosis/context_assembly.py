@@ -13,7 +13,7 @@ stays on :class:`gnosis.backend.Neo4jAgentMemoryBackend`.
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Final
 
 from pydantic import ValidationError
@@ -262,6 +262,76 @@ def fact_context_line(fact: JsonObject) -> str:
     if fact_date:
         return f"- [{redacted_text(fact_date)}] {content}"
     return f"- {content}"
+
+
+def entity_group_key(fact: JsonObject) -> str | None:
+    """Return a grouping key when the fact's subject names a person or entity."""
+    predicate = str(fact.get("predicate", ""))
+    if predicate == VERBATIM_MEMORY_PREDICATE or predicate.startswith(
+        TURN_MEMORY_PREDICATE_PREFIX,
+    ):
+        return None
+    subject = redacted_text(str(fact.get("subject", ""))).strip()
+    if not subject:
+        return None
+    # Skip internal identifiers (tenant:message ids, URIs).
+    if ":" in subject or "/" in subject or len(subject) > 64:
+        return None
+    return subject
+
+
+def entity_grouped_context_lines(
+    facts: Sequence[JsonObject],
+    *,
+    query: str,
+    line_for: Callable[[JsonObject], str],
+    expansion: Mapping[str, Sequence[str]] | None = None,
+) -> list[str]:
+    """Render facts grouped by entity, GRAVITY entity-profile style.
+
+    Query-named entities sort first so enumeration questions surface the
+    asked-about person's block at the top of the context.
+    """
+    quotes = expansion or {}
+    grouped: dict[str, list[tuple[int, JsonObject]]] = {}
+    ungrouped: list[tuple[int, JsonObject]] = []
+    for index, fact in enumerate(facts):
+        key = entity_group_key(fact)
+        if key is None:
+            ungrouped.append((index, fact))
+        else:
+            grouped.setdefault(key, []).append((index, fact))
+
+    query_lower = query.casefold()
+
+    def group_sort_key(item: tuple[str, list[tuple[int, JsonObject]]]) -> tuple[int, int, str]:
+        entity, items = item
+        in_query = 0 if entity.casefold() in query_lower else 1
+        return (in_query, -len(items), entity.casefold())
+
+    lines = ["### Long-Term Facts"]
+    for entity, items in sorted(grouped.items(), key=group_sort_key):
+        lines.append(f"#### {entity}")
+        for _, fact in sorted(items, key=lambda item: item[0]):
+            lines.append(line_for(fact))
+            fact_id = fact.get("id")
+            if isinstance(fact_id, str):
+                lines.extend(
+                    f"  quote: {redacted_text(quote)}"
+                    for quote in quotes.get(fact_id, ())
+                )
+
+    if ungrouped:
+        lines.append("#### Other")
+        for _, fact in sorted(ungrouped, key=lambda item: item[0]):
+            lines.append(line_for(fact))
+            fact_id = fact.get("id")
+            if isinstance(fact_id, str):
+                lines.extend(
+                    f"  quote: {redacted_text(quote)}"
+                    for quote in quotes.get(fact_id, ())
+                )
+    return lines
 
 
 def stored_memory_line(memory: StoredMemory) -> str:

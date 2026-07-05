@@ -142,6 +142,11 @@ class Settings(BaseSettings):
     # Run 19: enumeration misses persist at full gold coverage - the reader
     # answers with one salient item; this instructs it to list all/count).
     gnosis_con_enumeration_enabled: bool = False
+    # Entity-grouped context rendering on multi-hop/aggregative routed reads
+    # (GRAVITY entity-profile anchoring, arXiv 2605.01688). Groups retrieved
+    # facts under per-entity headers so enumeration readers see each person's
+    # evidence together instead of a flat ranked list. Off = byte-identical.
+    gnosis_entity_grouped_rendering_enabled: bool = False
     gnosis_fact_verbatim_expansion_enabled: bool = False
     gnosis_fact_verbatim_expansion_max: int = Field(default=5, ge=1)
     gnosis_fact_extraction_enabled: bool = False

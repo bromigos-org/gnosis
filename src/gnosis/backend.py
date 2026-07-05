@@ -44,6 +44,9 @@ from gnosis.context_assembly import (
     dedupe_graph_context as _dedupe_graph_context,
 )
 from gnosis.context_assembly import (
+    entity_grouped_context_lines as _entity_grouped_context_lines,
+)
+from gnosis.context_assembly import (
     fact_context_line as _fact_context_line,
 )
 from gnosis.context_assembly import (
@@ -1214,15 +1217,27 @@ class Neo4jAgentMemoryBackend:
         if not facts:
             return LongTermFactsContext()
         expansion = await self._verbatim_expansion(client, facts, metadata, decision)
-        lines = ["### Long-Term Facts"]
-        for fact in facts:
-            lines.append(_fact_context_line(fact))
-            fact_id = fact.get("id")
-            if isinstance(fact_id, str):
-                lines.extend(
-                    f"  quote: {_redacted_text(quote)}"
-                    for quote in expansion.get(fact_id, ())
-                )
+        use_entity_groups = (
+            self._app_settings.gnosis_entity_grouped_rendering_enabled
+            and decision.route in _ENUMERATION_CLAUSE_ROUTES
+        )
+        if use_entity_groups:
+            lines = _entity_grouped_context_lines(
+                facts,
+                query=request.query or "",
+                line_for=_fact_context_line,
+                expansion=expansion,
+            )
+        else:
+            lines = ["### Long-Term Facts"]
+            for fact in facts:
+                lines.append(_fact_context_line(fact))
+                fact_id = fact.get("id")
+                if isinstance(fact_id, str):
+                    lines.extend(
+                        f"  quote: {_redacted_text(quote)}"
+                        for quote in expansion.get(fact_id, ())
+                    )
         return LongTermFactsContext(
             context="\n".join(lines),
             markers=_fact_markers(facts),
