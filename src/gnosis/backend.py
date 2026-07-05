@@ -418,6 +418,14 @@ from gnosis.recall_filter import (
     keep_relevant_candidates,
 )
 from gnosis.redaction import redact_secrets
+from gnosis.reranker import (
+    MIN_RERANK_CANDIDATES,
+    LiteLLMReranker,
+    Reranker,
+    apply_rerank,
+    rerank_candidate_cap,
+    rerank_model,
+)
 from gnosis.scope_policy import (
     memory_edit_audit as _memory_edit_audit,
 )
@@ -675,6 +683,7 @@ class Neo4jAgentMemoryBackend:
         recall_filter: RecallFilter | None = None,
         fact_extractor: MemoryUnitExtractor | None = None,
         sufficiency_assessor: SufficiencyAssessor | None = None,
+        reranker: Reranker | None = None,
         query_router: QueryRouter | None = None,
         bridge_namer: BridgeNamer | None = None,
     ) -> None:
@@ -708,6 +717,11 @@ class Neo4jAgentMemoryBackend:
                 base_url=settings.litellm_base_url,
                 api_key=settings.litellm_api_key,
             )
+        )
+        self._reranker: Reranker = reranker or LiteLLMReranker(
+            model=rerank_model(settings),
+            base_url=settings.litellm_base_url,
+            api_key=settings.litellm_api_key,
         )
         self._query_router: QueryRouter = query_router or LiteLLMQueryRouter(
             model=_routing_model(settings),
@@ -1165,6 +1179,38 @@ class Neo4jAgentMemoryBackend:
             reason=bounded_reason(verdict.reason),
         )
 
+    async def _reranked_facts(
+        self,
+        query: str,
+        facts: list[JsonObject],
+    ) -> list[JsonObject]:
+        """Reorder fused candidates by query relevance before the budget cut.
+
+        One structured-output LLM call behind GNOSIS_RERANK_ENABLED; a no-op
+        while the flag is off, the query is empty, or there is nothing to
+        reorder. Any failure degrades to the input order so reranking never
+        drops a candidate or blocks a context read.
+        """
+        if (
+            not self._app_settings.gnosis_rerank_enabled
+            or not query
+            or len(facts) < MIN_RERANK_CANDIDATES
+        ):
+            return facts
+        cap = rerank_candidate_cap(self._app_settings)
+        candidates = [_fact_context_line(fact) for fact in facts[:cap]]
+        try:
+            result = await self._reranker.rerank(query, candidates)
+        except (RuntimeError, OSError, OpenAIError, ValidationError) as error:
+            _LOGGER.warning(
+                "rerank failed; keeping retrieval order",
+                extra={"error_type": type(error).__name__},
+            )
+            return facts
+        if result is None:
+            return facts
+        return apply_rerank(facts, result.order, cap)
+
     async def _get_long_term_facts_context(
         self,
         request: MemoryContextRequest,
@@ -1207,6 +1253,7 @@ class Neo4jAgentMemoryBackend:
         )
         facts = await self._recall_filtered_facts(request.query, facts)
         facts = self._superseded_facts(facts)
+        facts = await self._reranked_facts(request.query, facts)
         facts = _cut_with_graph_reserve(
             facts,
             request.max_items * decision.budget_multiplier,

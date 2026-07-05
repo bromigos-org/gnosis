@@ -131,6 +131,14 @@ class Settings(BaseSettings):
     gnosis_routing_model: str = ""
     gnosis_sufficiency_check_enabled: bool = False
     gnosis_sufficiency_model: str = ""
+    # Listwise LLM reranker over fused fact candidates, applied before the item
+    # budget cut so it decides which candidates reach the prompt. Retrieval is
+    # the long-haystack bottleneck (LongMemEval full-ctx 0.606 vs oracle 0.870);
+    # a reranker is the lever common to the strongest 2026 systems. Default-off
+    # (byte-identical read path); one extra structured-output call per query.
+    gnosis_rerank_enabled: bool = False
+    gnosis_rerank_model: str = ""
+    gnosis_rerank_candidate_cap: int = Field(default=50, ge=1, le=200)
     gnosis_abstention_prompt_enabled: bool = False
     gnosis_chain_of_note_enabled: bool = False
     # CoN widenings, both default-off (byte-identical Run 18 instruction).
