@@ -1,0 +1,69 @@
+# Minimal local stack for running gnosis: Neo4j + gnosis.
+#
+# gnosis needs an OpenAI-compatible LLM + embedding endpoint. This file defaults
+# to ollama on the host (http://host.docker.internal:11434/v1); point the
+# OPENAI_BASE_URL / GNOSIS_LLM / GNOSIS_EMBEDDING vars at any OpenAI-compatible
+# endpoint (LiteLLM, OpenAI, ...) instead. For ollama, pull the models first:
+#   ollama pull llama3.2:latest && ollama pull nomic-embed-text
+#
+# Bring it up and check readiness:
+#   docker compose up -d
+#   curl -s localhost:8080/ready        # {"status":"ready"} once deps answer
+#
+# The dev tokens below are placeholders — set real secrets (or an .env beside
+# this file) for anything beyond a local try-out. See docs/getting-started.md.
+
+services:
+  neo4j:
+    image: neo4j:5.26 # final 5.x LTS on Docker Hub; gnosis needs 5.26+
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-gnosis-neo4j}
+    ports:
+      - "7474:7474" # browser
+      - "7687:7687" # bolt
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -u neo4j -p ${NEO4J_PASSWORD:-gnosis-neo4j} 'RETURN 1' || exit 1",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  gnosis:
+    image: ghcr.io/bromigos-org/gnosis:latest
+    # Or build from this checkout instead of pulling the published image:
+    #   build: .
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    ports:
+      - "${GNOSIS_PORT:-8080}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # reach an LLM on the host (Linux)
+    environment:
+      # --- auth (gnosis validates all five as non-empty at startup) ---
+      GNOSIS_TOKEN: ${GNOSIS_TOKEN:-dev-token}
+      GNOSIS_READ_OPERATOR_TOKEN: ${GNOSIS_READ_OPERATOR_TOKEN:-dev-read}
+      GNOSIS_WRITE_OPERATOR_TOKEN: ${GNOSIS_WRITE_OPERATOR_TOKEN:-dev-write}
+      GNOSIS_EXPORT_OPERATOR_TOKEN: ${GNOSIS_EXPORT_OPERATOR_TOKEN:-dev-export}
+      GNOSIS_ADMIN_OPERATOR_TOKEN: ${GNOSIS_ADMIN_OPERATOR_TOKEN:-dev-admin}
+      GNOSIS_TENANT_ID: ${GNOSIS_TENANT_ID:-bromigos}
+      # --- graph store ---
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-gnosis-neo4j}
+      # --- OpenAI-compatible LLM/embedding endpoint (LiteLLM, ollama /v1, ...) ---
+      LITELLM_BASE_URL: ${OPENAI_BASE_URL:-http://host.docker.internal:11434/v1}
+      LITELLM_API_KEY: ${OPENAI_API_KEY:-ollama}
+      GNOSIS_LLM: ${GNOSIS_LLM:-openai/llama3.2:latest}
+      GNOSIS_EMBEDDING: ${GNOSIS_EMBEDDING:-openai/nomic-embed-text}
+      GNOSIS_EMBEDDING_DIMENSIONS: ${GNOSIS_EMBEDDING_DIMENSIONS:-768}
+      # Let clients (e.g. hermes gnosis_update/gnosis_delete) edit memories.
+      GNOSIS_MEMORY_EDIT_ENABLED: ${GNOSIS_MEMORY_EDIT_ENABLED:-true}
+
+volumes:
+  neo4j-data:
