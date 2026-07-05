@@ -1,0 +1,9 @@
+# Run 18 — + likelihood carve-out (gnosis PR #41)
+# LOCOMO subset-3 context J: 74.8 / 76.7.
+# THE PRODUCTION / PREFERRED CONFIG. Same flags; CoN CODE = likelihood carve-out (in main). Full-LOCOMO re-measure (Run 23): excl-adv J 66.9-68.9.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_adaptive_routing_enabled: true
+gnosis_chain_of_note_enabled: true

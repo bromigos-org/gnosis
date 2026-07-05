@@ -1,0 +1,7 @@
+# Run 7 — abstention prompt (gnosis PR #19)
+# LOCOMO subset-3 context J: 69.6.
+# On the Run 5 store. Adversarial +8.9 but over-abstains on answerable.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_abstention_prompt_enabled: true

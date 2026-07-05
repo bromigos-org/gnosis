@@ -1,0 +1,21 @@
+# gnosis — DEFAULT config (Run 18, the LOCOMO benchmark-best).
+# Loaded AUTOMATICALLY when GNOSIS_CONFIG_FILE is unset, so gnosis runs its
+# best-scoring config out of the box. Set GNOSIS_CONFIG_FILE="" to opt out (safe
+# minimal defaults) or point it at another configs/runs/*.yaml.
+#
+# LOCOMO subset-3 context J: 74.8 excl-adv / 76.7 overall (frozen dev gate).
+# Full-LOCOMO (Run 23, apples-to-apples): excl-adv J 66.9-68.9 - competitive
+# with mem0 (66.88), leads on single-hop / temporal / adversarial.
+#
+# Fact extraction + adaptive routing make LLM calls (ingest / per read), so
+# set GNOSIS_LLM to a capable model (the gemma4 default is not adequate for
+# extraction). LOCOMO used local-qwen3-embedding-0.6b (1024-dim); see the
+# LongMemEval config for the cloud-embedding + scoped-dense variant.
+#
+# All other feature flags stay at their safe defaults (off). See configs/runs/
+# for every measured run's config and configs/README.md for the index.
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_adaptive_routing_enabled: true
+gnosis_chain_of_note_enabled: true

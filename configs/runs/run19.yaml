@@ -1,0 +1,10 @@
+# Run 19 — 2x coverage item budget (gnosis PR #43, #44)
+# LOCOMO subset-3 context J: 72.5.
+# REJECTED — retrieval coverage rose, answers did not (reader/grading-capped).
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_adaptive_routing_enabled: true
+gnosis_chain_of_note_enabled: true
+gnosis_coverage_budget_multiplier: 2

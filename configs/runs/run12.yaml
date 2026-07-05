@@ -1,0 +1,8 @@
+# Run 12 — entity-anchored graph traversal (gnosis PR #34, #35)
+# LOCOMO subset-3 context J: 70.7.
+# REJECTED as a global flag — multi-hop went down.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_graph_traversal_enabled: true

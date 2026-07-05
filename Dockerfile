@@ -4,6 +4,9 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
+# Ship the config files so gnosis auto-loads configs/default.yaml (the preferred
+# config) from the working directory when GNOSIS_CONFIG_FILE is unset.
+COPY configs ./configs
 
 RUN uv sync --locked --no-dev --no-cache
 

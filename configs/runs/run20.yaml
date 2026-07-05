@@ -1,0 +1,10 @@
+# Run 20 — speculative-inference CoN widening (gnosis PR #52)
+# LOCOMO subset-3 context J: 74.3.
+# TUNABLE — open-domain +9.5 on same store, adversarial cost. Not a production keep alone.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_adaptive_routing_enabled: true
+gnosis_chain_of_note_enabled: true
+gnosis_con_speculative_inference_enabled: true

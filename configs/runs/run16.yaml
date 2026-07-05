@@ -1,0 +1,10 @@
+# Run 16 — + directed bridge traversal (gnosis PR #39)
+# LOCOMO subset-3 context J: 72.5.
+# REJECTED — mechanism works but fires on too few LOCOMO questions.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_adaptive_routing_enabled: true
+gnosis_chain_of_note_enabled: true
+gnosis_bridge_traversal_enabled: true

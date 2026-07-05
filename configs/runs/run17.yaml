@@ -1,0 +1,9 @@
+# Run 17 — hardened CoN (attribution + never-guess) (gnosis PR #40)
+# LOCOMO subset-3 context J: 72.2.
+# Adversarial 83.0 (best ever). Same flags as Run 18; CoN CODE = hardened (in main).
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_adaptive_routing_enabled: true
+gnosis_chain_of_note_enabled: true

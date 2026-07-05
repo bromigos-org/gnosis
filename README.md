@@ -11,41 +11,42 @@
 
 Memory quality is measured through gnosis's real HTTP API on **LOCOMO** (the standard long-horizon agent-memory benchmark; subset 3, 497 questions, judged by GPT-5.5 with the official protocol) and, since 2026-07-04, **LongMemEval_S** (the harder 500-question benchmark, with abstention and knowledge-update axes LOCOMO lacks).
 
-**Current best (Run 18, the production config): LOCOMO context J 74.8 excluding adversarial / 76.7 overall** (J score, higher is better) — the first config with every category at or within noise of its historic peak simultaneously:
+**Preferred config: Run 18** — LLM fact extraction + entity graph at write; adaptive per-query routing + route-aware hardened Chain-of-Note (with the likelihood carve-out) at read. It is the auto-loaded [`configs/default.yaml`](configs/default.yaml) (see [Configuration](#configuration)). Two measurement scopes matter, and both are reported honestly:
 
-| Category | baseline (Run 1) | best (Run 18) |
-|---|---|---|
-| single-hop | 55.0 | **82.0** (peak) |
-| multi-hop | 10.8 | **44.6** (ties peak) |
-| temporal | 24.4 | **91.1** |
-| open-domain | 19.1 | **42.9** (ties peak) |
-| adversarial (abstention) | 74.1 | **83.0** (peak) |
-| **overall excl. adversarial** | **37.4** | **74.8** |
-| **overall** | **45.7** | **76.7** |
+- **Subset-3 dev gate** (3 of 10 conversations, 497 questions — the fast regression signal used during development): context J **74.8 excl-adv / 76.7 overall**. Reproducibly ~71 on re-ingest (the 74.8 was a favorable-extraction outlier).
+- **Full-LOCOMO (Run 23 — all 10 conversations, the apples-to-apples competitor comparison)**: excl-adv J **66.9–68.9** (gpt-5.5 / gpt-5.4-mini judges) — **competitive with mem0 (66.88)**, ties mem0-graph (68.44), below the full-context ceiling (72.90). Defensible leads: **single-hop, temporal, adversarial**, plus multi-hop on the judge-independent F1.
 
-The Run 18 config: LLM fact extraction + entity graph at write; adaptive per-query routing + route-aware hardened Chain-of-Note (with the likelihood carve-out) at read.
+Subset-3 per-category (the dev gate — not comparable-n to published systems, which report on the full 10):
+
+| Category | baseline (Run 1) | Run 18 (subset-3) | Run 23 (full-10) J |
+|---|---|---|---|
+| single-hop | 55.0 | 82.0 | **77.0** |
+| multi-hop | 10.8 | 44.6 | 41.5 |
+| temporal | 24.4 | 91.1 | **73.8** |
+| open-domain | 19.1 | 42.9 | 29.2 |
+| adversarial (abstention) | 74.1 | 83.0 | **83.9** |
+| **overall excl. adversarial** | **37.4** | **74.8** | **66.9** |
 
 ### How gnosis compares to other memory systems
 
-LOCOMO J, one system per row, sorted by score.
+LOCOMO J, one system per row, sorted by score. gnosis is shown at **full-LOCOMO (Run 23)** — the apples-to-apples comparison, since published systems report on all 10 conversations. (The subset-3 dev gate reads 74.8, but that compares our easy 3 against everyone's full 10, so it is *not* a competitive claim.)
 
 | System | LOCOMO J | Self-hosted | Graph-backed | Notes |
 |---|---|---|---|---|
-| **gnosis — context** | **74.8** | yes | yes | assembled `/v1/memory/context`, Run 18 config |
 | Letta | 74.0 | yes | no | filesystem agent, vendor blog run |
-| full-context (no memory system) | 72.9 | — | — | entire conversation in the prompt; the cost ceiling, not a memory system |
-| **gnosis — search** | **68.8** | yes | yes | raw `/v1/memories/search` (Run 11, the last run to re-measure search) |
-| mem0-graph | 68.4 | no¹ | yes | mem0's Neo4j variant; +2 over base mem0 at ~3x latency (their paper) |
+| full-context (no memory system) | 72.9 | — | — | entire conversation in the prompt; the ceiling, not a memory system |
+| mem0-graph | 68.4 | no¹ | yes | mem0's Neo4j variant; +2 over base mem0 at ~3× latency (their paper) |
+| **gnosis — context** | **66.9–68.9** | yes | yes | **full-LOCOMO (Run 23)**, assembled `/v1/memory/context`, Run 18 config; two judges |
 | mem0 | 66.9 | no¹ | no | vendor-reported, contested by Zep |
 | Zep | 66.0 | no² | yes | vendor-reported, contested by mem0 |
 | LangMem | 58.1 | yes | no | library, not a service |
 | OpenAI memory | 52.9 | no | no | ChatGPT built-in memory |
 
-Published numbers use a gpt-4o-mini judge and backbone; gnosis rows use a GPT-5.5 judge and backbone — so the comparison is directional, not exact, and cross-vendor numbers in this space are actively disputed (mem0 and Zep contest each other's runs). ¹ mem0 OSS exists but has removed graph-store support; the graph variant effectively requires their platform. ² Zep Community Edition is deprecated; Graphiti (the engine) is self-hostable but is a library, not a multi-tenant service.
+Published numbers use a gpt-4o-mini judge and backbone; gnosis rows use GPT-5.5 / gpt-5.4-mini judges — so the comparison is directional, not exact, and cross-vendor numbers in this space are actively disputed (mem0 and Zep contest each other's runs). ¹ mem0 OSS exists but has removed graph-store support; the graph variant effectively requires their platform. ² Zep Community Edition is deprecated; Graphiti (the engine) is self-hostable but is a library, not a multi-tenant service.
 
-Two things worth noting about gnosis's numbers: the assembled-context condition (74.8) lands above every published memory system and above the full-context ceiling — while sending ~4.9k characters, not the entire conversation — and the adversarial/abstention score (83.0, the historic peak) means gnosis does not invent memories it doesn't have.
+Read honestly: on the full 10 conversations gnosis is **competitive with mem0/mem0-graph** — while sending ~4.9k characters, not the entire conversation — with **defensible category leads on single-hop, temporal, and abstention** (adversarial 83.9, which competitors do not publish) and a lead on the judge-independent multi-hop F1. Its genuine weakness is open-domain. gnosis does not top the field, and it does not invent memories it lacks.
 
-### Trajectory: 37.4 → 74.8
+### Trajectory (subset-3 dev gate): 37.4 → 74.8
 
 Every measured run, newest last — kept and rejected changes alike (rejections are documented, not hidden). "Context" = assembled `/v1/memory/context`; "search" = raw `/v1/memories/search`; a dash means that condition was not re-run. Runs 1–6 are cumulative; Runs 7–9 are read-path experiments on the Run 5 store; Run 10 is a fresh ingest (extraction + entity graph); Runs 11–19 are read-path experiments on the Run 10 store.
 
@@ -77,6 +78,23 @@ Every measured run, newest last — kept and rejected changes alike (rejections 
 - **LongMemEval_S is the primary optimization target.** Frozen config: 100-question stratified subset (all 30 abstention instances + 70 sampled proportionally per question type), `gemini-embedding-001` embeddings (3072-dim), gpt-5.5 extraction, the official LongMemEval judge prompts on a frozen gpt-5.5 judge. The baseline run (L-0) is in progress.
 
 Full per-run tables, per-category history, configs, mechanism stats, and honest deviations: [docs/BENCHMARKS.md](docs/BENCHMARKS.md), a mirror of the canonical [gnosis-membench RESULTS.md](https://github.com/bromigos-org/gnosis-membench/blob/main/RESULTS.md). The harness ([gnosis-membench](https://github.com/bromigos-org/gnosis-membench)) re-scores every release weekly in-cluster against a frozen judge, so these numbers cannot silently regress.
+
+## Configuration
+
+Every feature is a flag with a safe default (off). gnosis **auto-loads
+[`configs/default.yaml`](configs/default.yaml) — the preferred (best-scoring)
+config — out of the box**, so it runs at its best with no setup:
+
+```bash
+gnosis                                              # runs configs/default.yaml (Run 18)
+GNOSIS_CONFIG_FILE=configs/runs/run11.yaml gnosis   # load a different config
+GNOSIS_CONFIG_FILE="" gnosis                         # opt out: safe minimal defaults
+```
+
+- **[`configs/default.yaml`](configs/default.yaml)** — the auto-loaded preferred config (Run 18): fact extraction + entity graph at write; adaptive routing + route-aware Chain-of-Note at read. Needs a capable `GNOSIS_LLM` (extraction and routing make LLM calls; the `gemma4` default is not adequate for extraction).
+- **[`configs/runs/`](configs/runs/)** — every measured run's config (`runN.yaml`); **[`configs/README.md`](configs/README.md)** ties each run to its file and score.
+
+Precedence, highest first: explicit `GNOSIS_*` env vars → `.env` → the YAML config file → code defaults. So a single env var still overrides one key from the loaded config.
 
 ## What it does
 

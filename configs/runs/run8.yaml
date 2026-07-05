@@ -1,0 +1,7 @@
+# Run 8 — facts->verbatim expansion (gnosis PR #20)
+# LOCOMO subset-3 context J: 71.2.
+# On the Run 5 store. Flat headline; multi-hop +2.7.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_fact_verbatim_expansion_enabled: true

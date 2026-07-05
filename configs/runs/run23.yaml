@@ -1,0 +1,9 @@
+# Run 23 — full-LOCOMO re-measure of Run 18 (gnosis PR membench #20)
+# LOCOMO subset-3 context J: 66.9-68.9 (full-n excl-adv).
+# SAME config as Run 18, measured on all 10 conversations — the apples-to-apples competitor number. Parity with mem0 (66.88), below the full-context ceiling (72.90).
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_adaptive_routing_enabled: true
+gnosis_chain_of_note_enabled: true

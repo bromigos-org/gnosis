@@ -1,0 +1,9 @@
+# Run 14 — routing + Chain-of-Note (naive) (gnosis PR —)
+# LOCOMO subset-3 context J: 71.4.
+# Does NOT compose naively (CoN parrots relative dates on temporal). Fixed by route-aware CoN — Run 15. Same flags; CoN CODE differs.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_adaptive_routing_enabled: true
+gnosis_chain_of_note_enabled: true

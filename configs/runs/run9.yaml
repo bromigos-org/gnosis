@@ -1,0 +1,9 @@
+# Run 9 — hybrid + verbatim + supersession STACKED (gnosis PR —)
+# LOCOMO subset-3 context J: 57.9.
+# CRASHED -13.3 — features do NOT compose globally. Proves per-query routing is required.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_hybrid_retrieval_enabled: true
+gnosis_read_supersession_enabled: true
+gnosis_fact_verbatim_expansion_enabled: true
