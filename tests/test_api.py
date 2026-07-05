@@ -4367,7 +4367,7 @@ def _protected_post_endpoint_payloads() -> list[tuple[str, dict[str, object]]]:
         ("/v1/memories/list", {"scope": _scope_payload()}),
         (
             "/v1/memories/promote",
-            {"scope": _scope_payload(), "peer": "nolgia"},
+            {"scope": _scope_payload(), "peer": "partner"},
         ),
         ("/v1/events", _client_event_payload()),
         ("/v1/events/batch", {"events": [_client_event_payload()]}),

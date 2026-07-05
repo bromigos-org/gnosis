@@ -62,7 +62,7 @@ _MEMORY_ID_TWO = "00000000-0000-0000-0000-0000000000bb"
 _MEMORY_ID_THREE = "00000000-0000-0000-0000-0000000000cc"
 _FEDERATION_TOKEN = "federation-inbound-token"
 _PEER_TOKEN = "peer-outbound-token"
-_PEER_BASE_URL = "http://gnosis-nolgia.gnosis-nolgia.svc.cluster.local:8080"
+_PEER_BASE_URL = "http://gnosis-partner.gnosis-partner.svc.cluster.local:8080"
 
 
 @pytest.mark.anyio
@@ -316,7 +316,7 @@ async def test_search_memories_with_peers_defers_filtering_to_the_route() -> Non
 
     # When: the backend handles the local leg of the federated search.
     response = await backend.search_memories(
-        MemorySearchRequest(scope=_scope(), query="poofs", peers=["nolgia"]),
+        MemorySearchRequest(scope=_scope(), query="poofs", peers=["partner"]),
     )
 
     # Then: the backend leaves filtering to the route's merged-set pass, so
@@ -436,7 +436,7 @@ def test_federated_search_filters_the_merged_result_set(
         json={
             "scope": _scope().model_dump(mode="json"),
             "query": "what snacks?",
-            "peers": ["nolgia"],
+            "peers": ["partner"],
         },
     )
 
@@ -448,7 +448,7 @@ def test_federated_search_filters_the_merged_result_set(
     ]
     merged = MemorySearchResponse.model_validate_json(response.content)
     assert [(result.memory_id, result.origin) for result in merged.results] == [
-        ("peer-memory-1", "nolgia"),
+        ("peer-memory-1", "partner"),
     ]
 
 
@@ -618,16 +618,16 @@ def _federated_app_client(
         json.dumps(
             [
                 {
-                    "name": "nolgia",
+                    "name": "partner",
                     "base_url": _PEER_BASE_URL,
                     "direction": "both",
-                    "remote_tenant_id": "nolgia",
+                    "remote_tenant_id": "partner",
                 },
             ],
         ),
     )
     monkeypatch.setenv("GNOSIS_FEDERATION_TOKEN", _FEDERATION_TOKEN)
-    monkeypatch.setenv("GNOSIS_PEER_NOLGIA_TOKEN", _PEER_TOKEN)
+    monkeypatch.setenv("GNOSIS_PEER_PARTNER_TOKEN", _PEER_TOKEN)
     assert isinstance(backend, RecallFilteringBackend)
     return TestClient(
         create_app(

@@ -217,7 +217,7 @@ In practice, this means callers can ask for one combined memory response while t
 
 These rules decide who sees which memories and in what order. They are enforced by the gateway, not by client convention.
 
-- **Memory is user-centric within a deployment.** Long-term reads are keyed by `tenant_id` + `user_id`. Two agents on the same gnosis asking about the same user see the same memories. `agent_id` and caller metadata (for example the gateway channel) are write-side tags: they are stored on every record for audit and filtered views, but they do not partition recall, and they are redacted out of prompt-facing content. Agents that must not share memory (different business entities, e.g. nolgia) run against their own gnosis deployment with their own tenant and storage.
+- **Memory is user-centric within a deployment.** Long-term reads are keyed by `tenant_id` + `user_id`. Two agents on the same gnosis asking about the same user see the same memories. `agent_id` and caller metadata (for example the gateway channel) are write-side tags: they are stored on every record for audit and filtered views, but they do not partition recall, and they are redacted out of prompt-facing content. Agents that must not share memory (different business entities) run against their own gnosis deployment with their own tenant and storage.
 - **Recall is cross-session.** `session_id` is write provenance only. It is stored on every record and never used as a read filter, so an agent recalls what it learned in earlier sessions. (Context assembly was session-pinned until 2026-07-03; that was a bug, not the contract.)
 - **Long-term facts are relevance-ranked and date-anchored.** When a query is present, context assembly ranks facts by embedding similarity over the same candidate pool `/v1/memories/search` uses, then renders each fact as a compact dated line (`- [7 May 2023] ...`), preferring a `session_date`/`date` from stored metadata and falling back to `created_at`. Without a query or embedder it falls back to recency ordering. With `GNOSIS_HYBRID_RETRIEVAL_ENABLED` on, a BM25 full-text search over the same stored facts runs beside the embedding search and the two rankings are fused with Reciprocal Rank Fusion (k=60) before scope re-checks, in both context assembly and `/v1/memories/search`. With `GNOSIS_RECALL_FILTER_ENABLED` on, one `GNOSIS_LLM` call then screens the top `GNOSIS_RECALL_FILTER_CANDIDATES` candidates against the query and keeps only those that could help answer it (EMem-style, arXiv 2511.17208); the filter can only remove candidates, never add them, and any failure or empty selection degrades to the unfiltered ranking. With `GNOSIS_READ_SUPERSESSION_ENABLED` on, a deterministic newest-wins pass then drops same-slot older facts (same normalized subject, plus normalized predicate for typed facts or the first entity for extracted `fact` memories; newest by `event_date` else `created_at`, ties and cross-user/scope facts kept) before the item budget applies in both context assembly and `/v1/memories/search`, never mutating storage (freshness paper arXiv 2606.01435). With `GNOSIS_ABSTENTION_PROMPT_ENABLED` on, context assembly prepends a standing grounding instruction as a leading `instructions` section so clients can abstain when the memories do not contain the answer (AbstentionBench arXiv 2506.09038), and with `GNOSIS_SUFFICIENCY_CHECK_ENABLED` on the context response also carries an additive `sufficiency` block (`{assessed, sufficient, reason?}`) from one `GNOSIS_SUFFICIENCY_MODEL` call judging whether the assembled context answers the query, degrading to `assessed: false` on any failure (Sufficient Context arXiv 2411.06037). With `GNOSIS_FACT_VERBATIM_EXPANSION_ENABLED` on, the top `GNOSIS_FACT_VERBATIM_EXPANSION_MAX` ranked extracted `fact` units additionally render their linked source verbatim turn(s) as an indented `  quote:` line beneath the compact fact — matching on the precise atomic fact but assembling the raw text's nuance alongside — via one scope-narrowed, scope-re-checked batch lookup that never surfaces a cross-scope turn or double-renders a verbatim already in the result set, degrading to the compact fact alone on any lookup failure (EverMemOS facts->episodes; True Memory verbatim). With `GNOSIS_GRAPHQA_FUSION_ENABLED` on and a query present, context assembly additionally runs the existing LLM-planned, validation-gated, scope-safe, read-only graph-QA route in parallel (`asyncio.gather`) with dense long-term retrieval and fuses its derived nodes into the candidate set before supersession and the item budget — a graph *traversal* route (entity→relationship→answer) unioned with the vector route to target multi-hop questions the chain of intermediate facts dense matching displaces (Mnemis dual-route, arXiv 2602.15313); a node already present (same memory id or same rendered line) is not double-added, the route is bounded by `GNOSIS_GRAPHQA_FUSION_TIMEOUT_SECONDS`, and any planner/execution failure, validation rejection, or timeout logs a structured warning and degrades to dense-only so the context request never fails. That traversal route only has entity edges to walk when `GNOSIS_ENTITY_GRAPH_ENABLED` was on at ingest: it materializes a per-user knowledge graph next to each extracted `fact` — `(:Entity)` nodes deduplicated within tenant+user scope, `(:Fact)-[:MENTIONS]->(:Entity)` provenance edges, and directed `(:Entity)-[:RELATES {relation, fact_id, event_date}]->(:Entity)` edges from extracted `(head, relation, tail)` triples — so the graph-QA planner (whose validator scopes every `Entity`/`Fact` alias by both `tenant_id` and `user_id`) can walk `RELATES`/`MENTIONS` to answer the multi-hop bridge questions dense retrieval misses; because it is a write-path change, the gain shows only on a fresh ingest with the flag on.
 - **Default ingestion is verbatim; distillation is opt-in.** With `GNOSIS_FACT_EXTRACTION_ENABLED` off (the default), conversation adds store each turn as a dated `said_user`/`said_assistant` fact plus its embedding — no LLM runs at ingest and gnosis behaves as a dated retrieval store. With the flag on, each `messages` + `infer=true` add and each `/v1/messages` write makes one `GNOSIS_FACT_EXTRACTION_MODEL` call (default: `GNOSIS_LLM`) that decomposes the new turns into short, self-contained, entity-normalized memory units (EMem-style enriched event units, arXiv 2511.17208), using the last `GNOSIS_FACT_EXTRACTION_CONTEXT_TURNS` session turns for reference resolution and resolving relative dates against the caller's `metadata.session_date` (or the ingest date). Units are written as ordinary `fact`-predicate memories alongside — never instead of — the verbatim turns, carry `extracted`/`extraction_version`/`extraction_model`/`event_date`/`entities` plus provenance metadata, bypass write-time fact dedup (append-only; contradictions resolve at read time by recency), and are appended to the add response as extra `ADD` results. Extraction is strictly additive: any LLM, schema, or timeout failure logs a structured warning and the add succeeds verbatim-only, exactly as with the flag off. By default (`GNOSIS_FACT_EXTRACTION_MODE=sync`) the extraction call runs in the request path, so adds cost one LLM round-trip (~2–5s on a frontier model); with `GNOSIS_FACT_EXTRACTION_MODE=background` the write returns immediately after the verbatim facts land (the response carries only the verbatim results) and extraction runs on a bounded in-process queue, so extracted facts become recallable a few seconds after the add.
@@ -225,7 +225,7 @@ These rules decide who sees which memories and in what order. They are enforced 
 
 ## Federation
 
-Two sovereign gnosis deployments federate in production: **`bromigos`** — a personal deployment serving the [PC-Principal](https://github.com/bromigos-org/PC-Principal) Discord bot and NousResearch hermes agents (via the [hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis) plugin) — and **`nolgia`**, the NOLGIA business's own sovereign deployment (its own agent workspace). Each runs its own gnosis instance with a separate tenant, storage, and memory — nolgia's is fully isolated from bromigos's — and the two selectively share only consented memories across the boundary. Federation is off by default in both directions, and one peer concept backs both the push and the pull path.
+Two sovereign gnosis deployments can selectively share memories — for example the `bromigos` deployment (serving the [PC-Principal](https://github.com/bromigos-org/PC-Principal) Discord bot and NousResearch hermes agents via the [hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis) plugin) peered with a second sovereign deployment, `partner`. Each runs its own gnosis instance with a separate tenant, storage, and memory — fully isolated — and the two share only consented memories across the boundary. Federation is off by default in both directions, and one peer concept backs both the push and the pull path.
 
 ### Peer model
 
@@ -234,10 +234,10 @@ Two sovereign gnosis deployments federate in production: **`bromigos`** — a pe
 ```json
 [
   {
-    "name": "nolgia",
-    "base_url": "http://gnosis-nolgia.gnosis-nolgia.svc.cluster.local:8080",
+    "name": "partner",
+    "base_url": "http://gnosis-partner.gnosis-partner.svc.cluster.local:8080",
     "direction": "both",
-    "remote_tenant_id": "nolgia"
+    "remote_tenant_id": "partner"
   }
 ]
 ```
@@ -265,15 +265,15 @@ Every other route answers `403` for this token class. Federated callers also can
 
 `POST /v1/memories/search` accepts an optional `peers: []` list. For each named pull-capable peer, the gateway fans the same query out to the peer's `/v1/memories/search` with the scope tenant mapped to the peer's `remote_tenant_id` (per-peer timeout ~10s). The remote side authenticates the peer token as a federated caller, so only explicitly shareable memories ever come back. Remote results merge with local ones by score descending, capped at `limit`, and every result gains `origin: "local" | "<peer name>"`. A failed or timed-out peer degrades gracefully into `peer_errors: [{peer, error}]` rather than a 5xx. Without `peers`, the response contract is unchanged.
 
-### Enabling bromigos and nolgia federation
+### Enabling federation between two deployments
 
-On the bromigos instance:
+On the `bromigos` instance (peering with a second deployment, `partner`):
 
-- `GNOSIS_PEERS='[{"name": "nolgia", "base_url": "http://gnosis-nolgia.gnosis-nolgia.svc.cluster.local:8080", "direction": "both", "remote_tenant_id": "nolgia"}]'`
-- `GNOSIS_PEER_NOLGIA_TOKEN=<nolgia's GNOSIS_FEDERATION_TOKEN>`
+- `GNOSIS_PEERS='[{"name": "partner", "base_url": "http://gnosis-partner.gnosis-partner.svc.cluster.local:8080", "direction": "both", "remote_tenant_id": "partner"}]'`
+- `GNOSIS_PEER_PARTNER_TOKEN=<partner's GNOSIS_FEDERATION_TOKEN>`
 - `GNOSIS_FEDERATION_TOKEN=<bromigos inbound federation token>`
 
-On the nolgia instance, mirror it: name the `bromigos` peer with the bromigos base URL and `remote_tenant_id: "bromigos"`, set `GNOSIS_PEER_BROMIGOS_TOKEN` to bromigos' `GNOSIS_FEDERATION_TOKEN`, and set nolgia's own `GNOSIS_FEDERATION_TOKEN`. Tokens are expected to come from secret-backed deployment config, like the operator tokens.
+On the `partner` instance, mirror it: name the `bromigos` peer with the bromigos base URL and `remote_tenant_id: "bromigos"`, set `GNOSIS_PEER_BROMIGOS_TOKEN` to bromigos' `GNOSIS_FEDERATION_TOKEN`, and set the partner's own `GNOSIS_FEDERATION_TOKEN`. Tokens are expected to come from secret-backed deployment config, like the operator tokens.
 
 ## Request and data flow
 
@@ -356,7 +356,7 @@ When `GNOSIS_MCP_ENABLED` is on, gnosis mounts a streamable-HTTP MCP server at `
 ### Clients
 
 - **PC-Principal** (Discord bot) uses the full gateway surface: combined memory context, message write-back, event batch ingestion, skills, and reasoning traces.
-- **hermes-agent** (bromigo, nolgia) connects through the [`hermes-gnosis`](https://github.com/bromigos-org/hermes-gnosis) memory-provider plugin, which drives the `/v1/memories` surface.
+- **hermes-agent** (e.g. `bromigo`) connects through the [`hermes-gnosis`](https://github.com/bromigos-org/hermes-gnosis) memory-provider plugin, which drives the `/v1/memories` surface.
 - **MCP clients** (Claude, Cursor, and similar) connect to `/mcp` when `GNOSIS_MCP_ENABLED` is on.
 
 ### Operator routes
@@ -600,7 +600,6 @@ Part of the Bromigos agent stack:
 - **[PC-Principal](https://github.com/bromigos-org/PC-Principal)** — Discord bot (Go); a gnosis memory client.
 - **[hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis)** — memory-provider plugin wiring NousResearch hermes agents to gnosis.
 - **[gnosis-membench](https://github.com/bromigos-org/gnosis-membench)** — the benchmark harness (LOCOMO + LongMemEval) that produces the scores above.
-- **nolgia** — the NOLGIA business's own sovereign gnosis deployment and agent workspace, [federated](#federation) with `bromigos` (isolated memory, consented sharing only).
 
 ## Upstream attribution
 
