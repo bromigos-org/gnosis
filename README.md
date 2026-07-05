@@ -2,7 +2,7 @@
 
 `gnosis` is a self-hosted memory platform for AI agents: a policy gateway in front of a Neo4j knowledge graph that gives every agent scoped, auditable, benchmarked long-term memory over one HTTP API.
 
-- **Multi-client**: serves a Discord bot (PC-Principal), NousResearch hermes-agent instances (via the [hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis) plugin), and any MCP client — one memory, many agents.
+- **Multi-client**: serves a Discord bot ([PC-Principal](https://github.com/bromigos-org/PC-Principal)), NousResearch hermes-agent instances (via the [hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis) plugin), and any MCP client — one memory, many agents.
 - **Measured, not vibes**: quality is tracked on the LOCOMO and LongMemEval_S agent-memory benchmarks with the official judging protocols — see [Benchmarks](#benchmarks) below.
 - **Federated**: sovereign gnosis instances share memory only through explicit, consent-tagged promotion and origin-tagged federated queries.
 - **Policy-first**: tenant/scope enforcement, redaction, review-first operator workflows, and safe-by-default feature flags sit in front of every backend access. Clients never touch Neo4j, Bolt, or the SDK directly.
@@ -225,7 +225,7 @@ These rules decide who sees which memories and in what order. They are enforced 
 
 ## Federation
 
-Two sovereign gnosis deployments (for example tenant `bromigos` and tenant `nolgia`) can selectively share memories. Federation is off by default in both directions, and one peer concept backs both the push and the pull path.
+Two sovereign gnosis deployments federate in production: **`bromigos`** — a personal deployment serving the [PC-Principal](https://github.com/bromigos-org/PC-Principal) Discord bot and NousResearch hermes agents (via the [hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis) plugin) — and **`nolgia`**, the NOLGIA business's own sovereign deployment (its own agent workspace). Each runs its own gnosis instance with a separate tenant, storage, and memory — nolgia's is fully isolated from bromigos's — and the two selectively share only consented memories across the boundary. Federation is off by default in both directions, and one peer concept backs both the push and the pull path.
 
 ### Peer model
 
@@ -592,6 +592,15 @@ Homelab deployment assumes an internal service plus ingress, not a public load b
 - SDK passthrough without gateway policy.
 - Public storage of raw media bytes inside Neo4j.
 - Silent enablement of extraction, OCR, prompt enrichment, consolidation scheduling, or buffered writes.
+
+## Related projects
+
+Part of the Bromigos agent stack:
+
+- **[PC-Principal](https://github.com/bromigos-org/PC-Principal)** — Discord bot (Go); a gnosis memory client.
+- **[hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis)** — memory-provider plugin wiring NousResearch hermes agents to gnosis.
+- **[gnosis-membench](https://github.com/bromigos-org/gnosis-membench)** — the benchmark harness (LOCOMO + LongMemEval) that produces the scores above.
+- **nolgia** — the NOLGIA business's own sovereign gnosis deployment and agent workspace, [federated](#federation) with `bromigos` (isolated memory, consented sharing only).
 
 ## Upstream attribution
 
