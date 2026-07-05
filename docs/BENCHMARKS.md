@@ -696,7 +696,7 @@ production keep.**
 ### Run 21 — `results/locomo/con-enumeration-20260704/` (enumeration CoN, gnosis PR #52)
 
 Multi-hop flat at 39.2 (+3/−3 flips). **Rejected.** Run 22 entity-grouped
-rendering (GRAVITY-style) is the next measured lever.
+rendering also **rejected** (multi-hop 36.5, −2.7 vs control).
 
 ## LongMemEval_S — primary optimization target (from 2026-07-04)
 
