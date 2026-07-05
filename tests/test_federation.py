@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 
 _FEDERATION_TOKEN = "federation-inbound-token"
 _PEER_TOKEN = "peer-outbound-token"
-_PEER_BASE_URL = "http://gnosis-nolgia.gnosis-nolgia.svc.cluster.local:8080"
+_PEER_BASE_URL = "http://gnosis-partner.gnosis-partner.svc.cluster.local:8080"
 _MEMORY_ID = "00000000-0000-0000-0000-0000000000aa"
 _OTHER_MEMORY_ID = "00000000-0000-0000-0000-0000000000bb"
 
@@ -72,13 +72,13 @@ def test_peer_settings_parse_and_validate(monkeypatch: pytest.MonkeyPatch) -> No
     settings = Settings()
 
     # Then: peers are validated into typed configs with direction semantics.
-    nolgia, lab = settings.gnosis_peers
-    assert nolgia.name == "nolgia"
-    assert nolgia.base_url == _PEER_BASE_URL
-    assert nolgia.remote_tenant_id == "nolgia"
-    assert nolgia.token_env_var == "GNOSIS_PEER_NOLGIA_TOKEN"
-    assert nolgia.allows_push()
-    assert nolgia.allows_pull()
+    partner, lab = settings.gnosis_peers
+    assert partner.name == "partner"
+    assert partner.base_url == _PEER_BASE_URL
+    assert partner.remote_tenant_id == "partner"
+    assert partner.token_env_var == "GNOSIS_PEER_PARTNER_TOKEN"
+    assert partner.allows_push()
+    assert partner.allows_pull()
     assert lab.allows_pull()
     assert not lab.allows_push()
 
@@ -104,7 +104,7 @@ def test_peer_settings_reject_duplicate_names(
     # Given: two peers whose names collide after env-var normalization.
     monkeypatch.setenv(
         "GNOSIS_PEERS",
-        json.dumps([_peer_payload(name="nolgia"), _peer_payload(name="Nolgia")]),
+        json.dumps([_peer_payload(name="partner"), _peer_payload(name="Partner")]),
     )
 
     # When / Then: startup validation fails loudly.
@@ -245,7 +245,7 @@ def test_federated_search_rejects_peer_fanout(
     response = client.post(
         "/v1/memories/search",
         headers=_federation_header(),
-        json={"scope": _scope_payload(), "query": "loop", "peers": ["nolgia"]},
+        json={"scope": _scope_payload(), "query": "loop", "peers": ["partner"]},
     )
 
     # Then: fan-out is refused so federation cannot loop between instances.
@@ -324,7 +324,7 @@ def test_federation_token_is_rejected_on_non_memory_routes(
         client.post(
             "/v1/memories/promote",
             headers=_federation_header(),
-            json={"scope": _scope_payload(), "peer": "nolgia"},
+            json={"scope": _scope_payload(), "peer": "partner"},
         ),
     ]
 
@@ -373,7 +373,7 @@ def test_promote_dry_run_returns_only_shareable_candidates(
         headers=_auth_header(),
         json={
             "scope": _scope_payload(),
-            "peer": "nolgia",
+            "peer": "partner",
             "filters": {"metadata.topic": "snacks"},
             "limit": 25,
         },
@@ -382,7 +382,7 @@ def test_promote_dry_run_returns_only_shareable_candidates(
     # Then: shareable-only candidates return and nothing leaves the instance.
     assert response.status_code == 200
     assert response.json() == {
-        "peer": "nolgia",
+        "peer": "partner",
         "count": 1,
         "dry_run": True,
         "candidates": [
@@ -447,7 +447,7 @@ def test_promote_real_run_posts_provenance_and_reports_partial_failure(
     response = client.post(
         "/v1/memories/promote",
         headers=_auth_header(),
-        json={"scope": _scope_payload(), "peer": "nolgia", "dry_run": False},
+        json={"scope": _scope_payload(), "peer": "partner", "dry_run": False},
     )
 
     # Then: the manifest reports the applied push and the partial failure.
@@ -474,7 +474,7 @@ def test_promote_real_run_posts_provenance_and_reports_partial_failure(
     accepted = MemoryAddRequest.model_validate_json(calls[0].content)
     assert str(calls[0].url) == f"{_PEER_BASE_URL}/v1/memories"
     assert calls[0].headers["Authorization"] == f"Bearer {_PEER_TOKEN}"
-    assert accepted.scope.tenant_id == "nolgia"
+    assert accepted.scope.tenant_id == "partner"
     assert accepted.scope.space_id == "federation"
     assert accepted.scope.agent_id == "gnosis:bromigos"
     assert accepted.scope.session_id == "promote"
@@ -522,12 +522,12 @@ def test_promote_rejects_pull_only_peer(monkeypatch: pytest.MonkeyPatch) -> None
     response = client.post(
         "/v1/memories/promote",
         headers=_auth_header(),
-        json={"scope": _scope_payload(), "peer": "nolgia"},
+        json={"scope": _scope_payload(), "peer": "partner"},
     )
 
     # Then: the direction policy is enforced.
     assert response.status_code == 403
-    assert response.json()["detail"] == "peer nolgia does not allow push"
+    assert response.json()["detail"] == "peer partner does not allow push"
 
 
 def test_promote_real_run_requires_outbound_token(
@@ -541,12 +541,12 @@ def test_promote_real_run_requires_outbound_token(
     response = client.post(
         "/v1/memories/promote",
         headers=_auth_header(),
-        json={"scope": _scope_payload(), "peer": "nolgia", "dry_run": False},
+        json={"scope": _scope_payload(), "peer": "partner", "dry_run": False},
     )
 
     # Then: the misconfiguration is reported clearly instead of half-running.
     assert response.status_code == 503
-    assert "GNOSIS_PEER_NOLGIA_TOKEN" in response.json()["detail"]
+    assert "GNOSIS_PEER_PARTNER_TOKEN" in response.json()["detail"]
 
 
 def test_search_with_peers_merges_by_score_with_origin_tags(
@@ -581,7 +581,7 @@ def test_search_with_peers_merges_by_score_with_origin_tags(
         json={
             "scope": _scope_payload(),
             "query": "what snacks?",
-            "peers": ["nolgia"],
+            "peers": ["partner"],
         },
     )
 
@@ -591,9 +591,9 @@ def test_search_with_peers_merges_by_score_with_origin_tags(
     assert [
         (result.memory_id, result.origin, result.score) for result in merged.results
     ] == [
-        ("peer-memory-1", "nolgia", 0.95),
+        ("peer-memory-1", "partner", 0.95),
         (_MEMORY_ID, "local", 0.91),
-        ("peer-memory-2", "nolgia", 0.11),
+        ("peer-memory-2", "partner", 0.11),
     ]
     assert b'"peer_errors"' not in response.content
 
@@ -601,7 +601,7 @@ def test_search_with_peers_merges_by_score_with_origin_tags(
     remote = MemorySearchRequest.model_validate_json(calls[0].content)
     assert str(calls[0].url) == f"{_PEER_BASE_URL}/v1/memories/search"
     assert calls[0].headers["Authorization"] == f"Bearer {_PEER_TOKEN}"
-    assert remote.scope.tenant_id == "nolgia"
+    assert remote.scope.tenant_id == "partner"
     assert remote.scope.user_id == "789"
     assert remote.query == "what snacks?"
     assert remote.peers == []
@@ -638,7 +638,7 @@ def test_search_with_peers_caps_merged_results_at_limit(
             "scope": _scope_payload(),
             "query": "what snacks?",
             "limit": 2,
-            "peers": ["nolgia"],
+            "peers": ["partner"],
         },
     )
 
@@ -673,7 +673,7 @@ def test_search_with_peers_degrades_gracefully_on_peer_timeout(
         json={
             "scope": _scope_payload(),
             "query": "what snacks?",
-            "peers": ["nolgia"],
+            "peers": ["partner"],
         },
     )
 
@@ -682,7 +682,7 @@ def test_search_with_peers_degrades_gracefully_on_peer_timeout(
     merged = MemorySearchResponse.model_validate_json(response.content)
     assert [result.origin for result in merged.results] == ["local"]
     assert merged.peer_errors == [
-        MemoryPeerError(peer="nolgia", error="peer request timed out"),
+        MemoryPeerError(peer="partner", error="peer request timed out"),
     ]
 
 
@@ -721,12 +721,12 @@ def test_search_with_push_only_peer_is_rejected(
     response = client.post(
         "/v1/memories/search",
         headers=_auth_header(),
-        json={"scope": _scope_payload(), "query": "anything", "peers": ["nolgia"]},
+        json={"scope": _scope_payload(), "query": "anything", "peers": ["partner"]},
     )
 
     # Then: the direction policy is enforced.
     assert response.status_code == 403
-    assert response.json()["detail"] == "peer nolgia does not allow pull"
+    assert response.json()["detail"] == "peer partner does not allow pull"
 
 
 def test_search_without_peers_keeps_existing_contract(
@@ -761,9 +761,9 @@ def test_search_without_peers_keeps_existing_contract(
 
 def _peer_payload(
     *,
-    name: str = "nolgia",
+    name: str = "partner",
     direction: str = "both",
-    remote_tenant_id: str = "nolgia",
+    remote_tenant_id: str = "partner",
 ) -> dict[str, str]:
     return {
         "name": name,
@@ -785,9 +785,9 @@ def _federated_app_client(  # noqa: PLR0913 - mirrors the federation env knobs.
     monkeypatch.setenv("GNOSIS_PEERS", json.dumps(peers or [_peer_payload()]))
     monkeypatch.setenv("GNOSIS_FEDERATION_TOKEN", federation_token)
     if peer_token is None:
-        monkeypatch.delenv("GNOSIS_PEER_NOLGIA_TOKEN", raising=False)
+        monkeypatch.delenv("GNOSIS_PEER_PARTNER_TOKEN", raising=False)
     else:
-        monkeypatch.setenv("GNOSIS_PEER_NOLGIA_TOKEN", peer_token)
+        monkeypatch.setenv("GNOSIS_PEER_PARTNER_TOKEN", peer_token)
     return TestClient(
         create_app(
             settings_factory=Settings,
