@@ -74,6 +74,8 @@ Read-path changes on the Run 10 entity-graph store:
 | 17 (PR #40) | hardened CoN (attribution + never-guess clauses) | 72.2 | — | **adversarial 83.0 = BEST EVER (+4.4, 5 repairs / 0 regressions), overall 74.7 = new best**, multi-hop 44.6 ties best. Cost: the never-guess rule over-abstains on open-domain "would X likely..." inference questions (42.9→28.6, 3 abstention regressions on n=21). Carve-out measured next. |
 | 18 (PR #41) | + likelihood carve-out in the never-guess rule | **74.8** | — | **NEW BEST on both headlines: excl-adv 74.8, overall 76.7.** The carve-out recovered open-domain 28.6→42.9 (3/3 abstention regressions repaired) AND single-hop 78.5→82.0 (best ever, 8 repairs / 1 regression) while adversarial held 83.0 with zero flips. Every category at or within noise of its historic peak — the production config. |
 | 19 (PR #43+#44) | 2x coverage item budget on multi-hop/aggregative routes | 72.5 | — | **rejected — retrieval coverage improved, answers did not.** Gold-item presence on the 27-question enumeration cohort rose 50%→60% yet **0/27 repaired**: even fully-covered questions still answer with a subset. The residual failure is the reader/judge (exact multi-item list golds), not retrieval. Also quantified the noise floor: 20 flips on 437 byte-identical-retrieval questions (±2.3 J between identical configs). |
+| 20 (PR #52) | speculative-inference CoN widening | 74.3 | — | **tunable — open-domain +9.5 on same-store control, adversarial −1.7.** Not a production keep alone. |
+| 21 (PR #52) | enumeration CoN widening (multi-hop/aggregative routes) | 71.7 | — | **rejected — multi-hop flat (+3/−3 flips).** Confirms reader/judge seam; Run 22 entity-grouped rendering next. |
 
 **Current best: Run 18 — excl-adv 74.8 AND overall 76.7, both new
 bests, with every category at or within noise of its historic peak
@@ -151,17 +153,18 @@ Chain-of-Note, skipped on the temporal route; 16: Run 15 config plus
 directed bridge-entity traversal on the multi-hop route; 17: Run 15
 config with the hardened Chain-of-Note instruction; 18: Run 17 plus
 the likelihood carve-out clause; 19: Run 18 plus a 2x item budget on
-the multi-hop and aggregative routes).
+the multi-hop and aggregative routes). Runs 20–21 on ``multihop-lab-20260704``
+store; A/B vs ``run18-control-lab-20260704``.
 
-| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) | Run 9 stacked | Run 10 graph (#29) | Run 11 routed (#30) | Run 12 traversal (#35) | Run 13 CoN (#31) | Run 14 routed+CoN | Run 15 route-aware (#37) | Run 16 bridge (#39) | Run 17 hardened (#40) | Run 18 likelihood (#41) | Run 19 coverage (#43+#44) |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | 80.5 | 79.5 | 78.5 | 80.0 | 75.5 | 79.0 | 81.0 | 79.5 | 79.5 | 80.0 | 79.5 | 79.5 | 78.5 | **82.0** | 78.5 |
-| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 | 37.8 | 41.9 | 28.4 | 39.2 | **44.6** | 36.5 | 43.2 | 43.2 | 43.2 | 41.9 | **44.6** | **44.6** | 43.2 |
-| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** | 85.6 | 84.4 | 47.8 | 85.6 | **92.2** | 85.6 | 85.6 | 83.3 | 91.1 | 90.0 | 91.1 | 91.1 | 90.0 |
-| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 | 28.6 | 33.3 | 38.1 | **42.9** | 38.1 | **42.9** | **42.9** | 38.1 | **42.9** | 38.1 | 28.6 | **42.9** | **42.9** |
-| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 | 76.8 | 68.8 | 64.3 | 67.9 | 62.5 | 64.3 | 79.5 | 75.9 | 78.6 | 76.8 | **83.0** | **83.0** | **83.0** |
-| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** | **69.6** | **71.2** | **57.9** | **70.9** | **74.3** | **70.7** | **72.0** | **71.4** | **73.2** | **72.5** | **72.2** | **74.8** | **72.5** |
-| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 | 71.2 | 70.7 | 59.4 | 70.2 | 71.6 | 69.2 | 73.6 | 72.4 | 74.5 | 73.4 | 74.7 | **76.7** | 74.9 |
+| Category (n) | Run 1 | Run 2 (#6) | Run 3 (#7) | Run 4 (#13) | Run 5 (#14) | Run 6 (#15) | Run 7 abst (#19) | Run 8 verb (#20) | Run 9 stacked | Run 10 graph (#29) | Run 11 routed (#30) | Run 12 traversal (#35) | Run 13 CoN (#31) | Run 14 routed+CoN | Run 15 route-aware (#37) | Run 16 bridge (#39) | Run 17 hardened (#40) | Run 18 likelihood (#41) | Run 19 coverage (#43+#44) | Run 20 spec-inf (#52) | Run 21 enum (#52) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| single-hop (200) | 55.0 | 57.0 | 76.5 | 74.5 | 80.5 | 79.5 | 78.5 | 80.0 | 75.5 | 79.0 | 81.0 | 79.5 | 79.5 | 80.0 | 79.5 | 79.5 | 78.5 | **82.0** | 78.5 | 83.5 | 80.5 |
+| multi-hop (74) | 10.8 | 14.9 | 40.5 | 40.5 | 39.2 | 33.8 | 37.8 | 41.9 | 28.4 | 39.2 | **44.6** | 36.5 | 43.2 | 43.2 | 43.2 | 41.9 | **44.6** | **44.6** | 43.2 | 40.5 | 39.2 |
+| temporal (90) | 24.4 | 30.0 | 42.2 | 43.3 | 84.4 | **92.2** | 85.6 | 84.4 | 47.8 | 85.6 | **92.2** | 85.6 | 85.6 | 83.3 | 91.1 | 90.0 | 91.1 | 91.1 | 90.0 | 87.8 | 86.7 |
+| open-domain (21) | 19.1 | 28.6 | 38.1 | 38.1 | 38.1 | 38.1 | 28.6 | 33.3 | 38.1 | **42.9** | 38.1 | **42.9** | **42.9** | 38.1 | **42.9** | 38.1 | 28.6 | **42.9** | **42.9** | 47.6 | 38.1 |
+| adversarial (112) | 74.1 | 67.9 | 67.9 | 67.9 | 67.9 | 71.4 | 76.8 | 68.8 | 64.3 | 67.9 | 62.5 | 64.3 | 79.5 | 75.9 | 78.6 | 76.8 | **83.0** | **83.0** | **83.0** | 80.4 | 83.0 |
+| **overall excl. adv. (385)** | **37.4** | **41.0** | **59.5** | **58.7** | **71.2** | **71.4** | **69.6** | **71.2** | **57.9** | **70.9** | **74.3** | **70.7** | **72.0** | **71.4** | **73.2** | **72.5** | **72.2** | **74.8** | **72.5** | **74.3** | **71.7** |
+| overall (497) | 45.7 | 47.1 | 61.4 | 60.8 | 70.4 | 71.4 | 71.2 | 70.7 | 59.4 | 70.2 | 71.6 | 69.2 | 73.6 | 72.4 | 74.5 | 73.4 | 74.7 | **76.7** | 74.9 | 75.7 | 74.2 |
 
 ### Full per-category history — search condition (`/v1/memories/search`)
 
@@ -683,6 +686,17 @@ Retrieval mechanism stats (context condition unless noted):
   dominant term between configs: ±2.3 J excl-adv between two runs of
   effectively identical retrieval. Flag stays merged, default 1 (off);
   Run 18 remains the production config.
+
+### Run 20 — `results/locomo/con-speculative-20260704/` (speculative-inference CoN, gnosis PR #52)
+
+See `gnosis-membench/RESULTS.md` for full forensics. Summary: open-domain
++9.5 vs same-store control (47.6 vs 38.1); adversarial −1.7. **Tunable, not
+production keep.**
+
+### Run 21 — `results/locomo/con-enumeration-20260704/` (enumeration CoN, gnosis PR #52)
+
+Multi-hop flat at 39.2 (+3/−3 flips). **Rejected.** Run 22 entity-grouped
+rendering (GRAVITY-style) is the next measured lever.
 
 ## LongMemEval_S — primary optimization target (from 2026-07-04)
 
