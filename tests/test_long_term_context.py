@@ -1014,8 +1014,8 @@ async def test_chain_of_note_unchanged_while_widening_flags_off() -> None:
     content = response.sections[0].content
     likelihood_tail = (
         "Only when the question itself asks what is likely or probable, infer "
-         "the most plausible answer from the relevant memories instead of "
-         "saying you don't know."
+        "the most plausible answer from the relevant memories instead of "
+        "saying you don't know."
     )
     assert content.endswith(likelihood_tail)
     assert "speculative judgment" not in content
