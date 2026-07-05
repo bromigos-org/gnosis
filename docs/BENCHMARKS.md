@@ -752,7 +752,9 @@ deviations**:
 - **Embeddings: `gemini-embedding-001` at 3072 dims** (vs the LOCOMO
   gate's local qwen3/1024) — see the embedder note at the top.
 - **`GNOSIS_SCOPED_DENSE_RETRIEVAL_ENABLED=true`** (gnosis PR #46,
-  pool 10,000): LongMemEval instances share haystack sessions, so the
+  `GNOSIS_DENSE_SCOPE_POOL=10000` — note the membench stack defaults to
+  `4000`, so reproducing this frozen config requires the override):
+  LongMemEval instances share haystack sessions, so the
   100 instances live as ~100 users in one store whose fact vectors are
   near-duplicates across users. The SDK's dense path ranks the vector
   index *globally* and scope-filters afterwards, so with ~100 users'
