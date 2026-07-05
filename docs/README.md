@@ -2,6 +2,7 @@
 
 | Doc | What it covers |
 |---|---|
+| [getting-started.md](getting-started.md) | Install, configure, and make your first write and read — Docker, the local stack, or from source. **Start here to run gnosis.** |
 | [CAPABILITIES.md](CAPABILITIES.md) | Every technique/algorithm — write path, read path, federation, policy — each with its approach, peer-reviewed basis, flag, and measured status. **Start here for "what does gnosis do and how."** |
 | [architecture.md](architecture.md) | Layers, the read/write request flow, graph-QA planning, and the module map. |
 | [data-model.md](data-model.md) | The Neo4j graph schema: node labels, relationships, properties, the scope spine, and the bi-temporal/append-only model. |
