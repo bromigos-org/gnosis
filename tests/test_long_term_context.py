@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Self, cast
@@ -34,6 +35,7 @@ from gnosis.models import (
     PreferenceRecord,
 )
 from gnosis.query_router import QueryRoute, RouteVerdict
+from gnosis.reranker import RerankResult
 from gnosis.settings import Settings
 from gnosis.sufficiency import SufficiencyVerdict
 
@@ -109,6 +111,65 @@ async def test_combined_context_includes_scoped_facts_preferences_entities() -> 
             '"channel_id": "456"',
         ],
     }
+
+
+@dataclass
+class _ReversingReranker:
+    """Reverses candidate order, to prove reranking wires into the read path."""
+
+    async def rerank(
+        self,
+        query: str,
+        candidates: Sequence[str],
+    ) -> RerankResult | None:
+        _ = query
+        return RerankResult(order=list(reversed(range(len(candidates)))))
+
+
+@pytest.mark.anyio
+async def test_rerank_reorders_rendered_long_term_facts() -> None:
+    # Given: three scoped facts retrieved in alpha, beta, gamma order; rerank on.
+    scope = _scope()
+    rows: list[JsonObject] = [
+        {
+            "f": _fact_row(
+                subject=f"tenant:bromigos:message:{name}",
+                predicate="fact",
+                object_value=f"note {name}",
+                metadata=_scope_metadata(scope),
+                created_at="2026-06-28T00:00:00Z",
+            ),
+        }
+        for name in ("alpha", "beta", "gamma")
+    ]
+    backend = Neo4jAgentMemoryBackend(
+        _settings(gnosis_rerank_enabled=True),
+        memory_client_factory=MemoryClientFactory(
+            RecordingMemoryClient(query=RecordingQuery(rows=rows)),
+        ),
+        graph_store=RecordingGraphStore(),
+        reranker=_ReversingReranker(),
+    )
+
+    # When: context is read with a query.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=scope,
+            query="which notes?",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+            max_items=5,
+        ),
+    )
+
+    # Then: the rendered facts appear in reranked (reversed) order.
+    content = response.sections[0].content
+    assert (
+        content.index("note gamma")
+        < content.index("note beta")
+        < content.index("note alpha")
+    )
 
 
 @pytest.mark.anyio
