@@ -8,6 +8,7 @@
 | [configuration.md](configuration.md) | Complete settings reference — every `GNOSIS_*` env var and YAML key, grouped, with defaults and the preferred config. |
 | [security.md](security.md) | Trust boundary, the six token classes, scope enforcement, redaction, review-first ops, and federation safety. |
 | [operations.md](operations.md) | Deploying and running gnosis — requirements, config, health probes, the extraction worker, operator workflows, backup, and scale. |
+| [development.md](development.md) | Contributing: setup, the four CI gates, tests, running locally, the feature-flag pattern, measuring changes, and conventions. |
 | [provider-surface.md](provider-surface.md) | The HTTP contract: `/v1/memories` add/search/list/promote/edit, the filter DSL, storage model, and MCP. |
 | [BENCHMARKS.md](BENCHMARKS.md) | Every measured run, per-category history, configs, and honest deviations (LOCOMO + LongMemEval). |
 
