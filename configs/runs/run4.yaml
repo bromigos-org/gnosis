@@ -1,0 +1,6 @@
+# Run 4 — LLM recall filter (gnosis PR #13)
+# LOCOMO subset-3 context J: 58.7.
+# REJECTED — flat, +6s/read.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_recall_filter_enabled: true

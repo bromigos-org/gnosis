@@ -1,0 +1,6 @@
+# Run 1 — baseline — verbatim dated RAG (gnosis PR —)
+# LOCOMO subset-3 context J: 37.4 / 45.7.
+# All features off. gnosis as a dated-RAG store (gemma4).
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+# (no feature flags — all default off)

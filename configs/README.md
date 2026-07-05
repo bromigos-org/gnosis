@@ -1,0 +1,63 @@
+# gnosis configs
+
+Every gnosis feature is a flag (safe defaults: off). A **config file** turns a
+named set of them on.
+
+**gnosis auto-loads [`default.yaml`](default.yaml) when `GNOSIS_CONFIG_FILE` is
+unset** — so out of the box it runs the preferred (best-scoring) config. To
+change that:
+
+```bash
+GNOSIS_CONFIG_FILE=configs/runs/run11.yaml gnosis   # load a different config
+GNOSIS_CONFIG_FILE="" gnosis                         # opt out: safe minimal defaults
+```
+
+Precedence, highest first: explicit `GNOSIS_*` env vars → `.env` → the YAML
+config file → code defaults. So the file sets the baseline and a single env var
+still overrides one key.
+
+## default.yaml — the preferred config (Run 18)
+
+[`default.yaml`](default.yaml) is the LOCOMO benchmark-best: fact extraction +
+entity graph at write; adaptive routing + route-aware Chain-of-Note at read.
+LOCOMO subset-3 J **74.8 / 76.7**; full-LOCOMO (Run 23) excl-adv J **66.9–68.9**
+— competitive with mem0, leading single-hop / temporal / adversarial. Needs a
+capable `GNOSIS_LLM` (extraction/routing make LLM calls; the `gemma4` default is
+not adequate for extraction).
+
+## All measured runs
+
+Each `runs/runN.yaml` reproduces that run's **flags** on the current code. Runs
+14/15/17/18 share the same four flags — they differ by Chain-of-Note *code*
+(naive → route-aware → hardened → likelihood carve-out), all now in `main`, so
+those files all load today's (Run 18) CoN. Runs 1–3 were code changes with no
+flags. Full per-run detail: [docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
+
+| Run | Config | Change | ctx J | Verdict |
+|---|---|---|---|---|
+| 1 | [run1](runs/run1.yaml) | baseline — verbatim dated RAG | 37.4 | starting line |
+| 2 | [run2](runs/run2.yaml) | cross-session reads + dates + budget | 41.0 | kept (code) |
+| 3 | [run3](runs/run3.yaml) | relevance ranking + compact rendering | 59.5 | kept (code) |
+| 4 | [run4](runs/run4.yaml) | LLM recall filter | 58.7 | rejected |
+| 5 | [run5](runs/run5.yaml) | **fact extraction at ingest** | 71.2 | **kept (+11.7)** |
+| 6 | [run6](runs/run6.yaml) | + hybrid BM25 retrieval | 71.4 | wash |
+| 7 | [run7](runs/run7.yaml) | abstention prompt | 69.6 | tunable |
+| 8 | [run8](runs/run8.yaml) | facts→verbatim expansion | 71.2 | flat |
+| 9 | [run9](runs/run9.yaml) | hybrid + verbatim + supersession stacked | 57.9 | **crashed −13.3** |
+| 10 | [run10](runs/run10.yaml) | entity graph + graph-QA fusion | 70.9 | multi-hop flat |
+| 11 | [run11](runs/run11.yaml) | adaptive per-query routing | 74.3 | new best +2.9 |
+| 12 | [run12](runs/run12.yaml) | entity-anchored graph traversal | 70.7 | rejected |
+| 13 | [run13](runs/run13.yaml) | Chain-of-Note reading instruction | 72.0 | kept |
+| 14 | [run14](runs/run14.yaml) | routing + CoN (naive) | 71.4 | doesn't compose |
+| 15 | [run15](runs/run15.yaml) | routing + route-aware CoN | 73.2 | composes |
+| 16 | [run16](runs/run16.yaml) | + directed bridge traversal | 72.5 | rejected |
+| 17 | [run17](runs/run17.yaml) | hardened CoN | 72.2 | adversarial 83.0 |
+| **18** | **[run18](runs/run18.yaml)** | **+ likelihood carve-out** | **74.8** | **= default.yaml** |
+| 19 | [run19](runs/run19.yaml) | 2× coverage item budget | 72.5 | rejected |
+| 20 | [run20](runs/run20.yaml) | speculative-inference CoN | 74.3 | tunable |
+| 21 | [run21](runs/run21.yaml) | enumeration CoN | 71.7 | rejected |
+| 22 | [run22](runs/run22.yaml) | entity-grouped rendering (GRAVITY) | 71.9 | rejected |
+| 23 | [run23](runs/run23.yaml) | full-LOCOMO re-measure of Run 18 | 66.9–68.9¹ | apples-to-apples |
+
+¹ Run 23 is the full-10-conversation measurement (excl-adv J, two judges); all
+other rows are the subset-3 dev gate.

@@ -1,0 +1,8 @@
+# Run 10 — entity graph + graph-QA fusion (gnosis PR #29)
+# LOCOMO subset-3 context J: 70.9.
+# Fresh store (write-path change). Multi-hop flat — the graph alone is inert.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_graphqa_fusion_enabled: true

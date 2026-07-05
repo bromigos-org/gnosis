@@ -1,0 +1,9 @@
+# Run 15 — routing + route-aware CoN (gnosis PR #37)
+# LOCOMO subset-3 context J: 73.2.
+# COMPOSES — route-aware CoN skips the temporal route. Same flags as Run 18; CoN CODE = route-aware (now in main).
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_adaptive_routing_enabled: true
+gnosis_chain_of_note_enabled: true

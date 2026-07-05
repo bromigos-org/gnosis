@@ -1,0 +1,6 @@
+# Run 5 — fact extraction at ingest (gnosis PR #14)
+# LOCOMO subset-3 context J: 71.2 / 70.4.
+# KEPT — the single biggest lever (+11.7; temporal 42->84).
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true

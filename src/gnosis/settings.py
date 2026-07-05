@@ -1,8 +1,47 @@
 from os import environ
-from typing import ClassVar, Literal
+from pathlib import Path
+from typing import ClassVar, Literal, override
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    YamlConfigSettingsSource,
+)
+
+# A YAML config file sets a deployment's baseline configuration. gnosis loads
+# configs/default.yaml (the preferred / best-scoring config) automatically when
+# GNOSIS_CONFIG_FILE is unset. Set GNOSIS_CONFIG_FILE to a path to load a
+# different config, or to "" to opt out and use the safe minimal code defaults.
+_CONFIG_FILE_ENV_VAR = "GNOSIS_CONFIG_FILE"
+_DEFAULT_CONFIG_NAME = "default.yaml"
+
+
+def _default_config_path() -> Path | None:
+    """The shipped default config, if present, tried repo- then CWD-relative.
+
+    Repo/editable layout puts it at ``<repo>/configs/default.yaml`` (three
+    parents up from this file); the container image copies ``configs/`` next to
+    the working directory, so ``./configs/default.yaml`` covers that too.
+    """
+    candidates = (
+        Path(__file__).resolve().parents[2] / "configs" / _DEFAULT_CONFIG_NAME,
+        Path.cwd() / "configs" / _DEFAULT_CONFIG_NAME,
+    )
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def _config_file_path() -> Path | None:
+    """Resolve which YAML config to load, honoring GNOSIS_CONFIG_FILE.
+
+    Unset -> the shipped default config (auto-load). Empty string -> opt out
+    (no config file; code defaults). A path -> that file.
+    """
+    override = environ.get(_CONFIG_FILE_ENV_VAR)
+    if override is not None:
+        return Path(override) if override else None
+    return _default_config_path()
 
 type PeerDirection = Literal["both", "push", "pull"]
 
@@ -40,6 +79,35 @@ class Settings(BaseSettings):
         extra="ignore",
         validate_default=True,
     )
+
+    @override
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Add the YAML config file as a low-priority settings source.
+
+        Precedence, highest first: explicit init args, environment variables,
+        the ``.env`` file, then the YAML config file (``configs/default.yaml``
+        by default; see ``_config_file_path``), then field defaults. So the
+        config file sets the baseline while individual env vars still override
+        single keys.
+        """
+        sources: list[PydanticBaseSettingsSource] = [
+            init_settings,
+            env_settings,
+            dotenv_settings,
+        ]
+        yaml_path = _config_file_path()
+        if yaml_path is not None:
+            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=yaml_path))
+        sources.append(file_secret_settings)
+        return tuple(sources)
 
     gnosis_token: str = Field(default="", min_length=1)
     gnosis_read_operator_token: str = Field(

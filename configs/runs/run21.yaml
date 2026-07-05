@@ -1,0 +1,10 @@
+# Run 21 — enumeration CoN widening (gnosis PR #52)
+# LOCOMO subset-3 context J: 71.7.
+# REJECTED — multi-hop flat; instruction alone can't emit exact multi-item lists.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_adaptive_routing_enabled: true
+gnosis_chain_of_note_enabled: true
+gnosis_con_enumeration_enabled: true

@@ -1,0 +1,10 @@
+# Run 22 — entity-grouped rendering (GRAVITY) (gnosis PR #53)
+# LOCOMO subset-3 context J: 71.9.
+# REJECTED — multi-hop 39.2->36.5; grouping disrupted dense-rank order.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_adaptive_routing_enabled: true
+gnosis_chain_of_note_enabled: true
+gnosis_entity_grouped_rendering_enabled: true

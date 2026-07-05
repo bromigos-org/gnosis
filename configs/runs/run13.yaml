@@ -1,0 +1,8 @@
+# Run 13 — Chain-of-Note reading instruction (gnosis PR #31)
+# LOCOMO subset-3 context J: 72.0.
+# KEPT — adversarial 79.5 (best ever at the time) + excl-adv +1.1.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_chain_of_note_enabled: true

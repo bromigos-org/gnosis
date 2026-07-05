@@ -1,0 +1,8 @@
+# Run 11 — adaptive per-query routing (gnosis PR #30, #33)
+# LOCOMO subset-3 context J: 74.3.
+# On the Run 10 store. Routing composes each category's measured-best set.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_entity_graph_enabled: true
+gnosis_adaptive_routing_enabled: true

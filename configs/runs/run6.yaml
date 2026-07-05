@@ -1,0 +1,7 @@
+# Run 6 — + hybrid BM25 retrieval (gnosis PR #15)
+# LOCOMO subset-3 context J: 71.4.
+# Wash on subset-3 (temporal +8, multi-hop -5).
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+gnosis_fact_extraction_enabled: true
+gnosis_hybrid_retrieval_enabled: true

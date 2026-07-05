@@ -1,0 +1,6 @@
+# Run 2 — cross-session reads + dates + budget (gnosis PR #6)
+# LOCOMO subset-3 context J: 41.0.
+# CODE change (fixed a session-pinned context bug); no feature flags.
+# Loads onto current gnosis code (flags only; CODE-level changes are in main).
+
+# (no feature flags — all default off)

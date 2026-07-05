@@ -61,6 +61,14 @@ One row per run, newest last. "Context" = assembled `/v1/memory/context`;
 "search" = raw `/v1/memories/search`. A dash means that condition was not
 re-run (read-path change measured on context only).
 
+**Each run's flag config is a YAML file in the gnosis repo:
+[`configs/runs/runN.yaml`](../configs/runs/), indexed in
+[`configs/README.md`](../configs/README.md). gnosis auto-loads
+[`configs/default.yaml`](../configs/default.yaml) (= Run 18, the preferred
+config) out of the box; set `GNOSIS_CONFIG_FILE` to load a different run.** Runs
+that share flags but differ by Chain-of-Note *code* (14/15/17/18) are noted in
+each file.
+
 | Run | Change under test | Context J | Search J | Verdict |
 |---|---|---|---|---|
 | 1 (baseline) | verbatim RAG, gemma4 | 37.4 | 61.3 | starting line |
