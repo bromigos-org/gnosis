@@ -7,6 +7,8 @@
 - **Federated**: sovereign gnosis instances share memory only through explicit, consent-tagged promotion and origin-tagged federated queries.
 - **Policy-first**: tenant/scope enforcement, redaction, review-first operator workflows, and safe-by-default feature flags sit in front of every backend access. Clients never touch Neo4j, Bolt, or the SDK directly.
 
+**Capabilities & the research behind them:** [docs/CAPABILITIES.md](docs/CAPABILITIES.md) documents every algorithm — fact extraction, entity-graph recall, adaptive per-query routing, Chain-of-Note, read-time supersession, dual-route graph-QA fusion, listwise reranking — with its peer-reviewed basis and measured impact.
+
 ## Benchmarks
 
 Memory quality is measured through gnosis's real HTTP API on **LOCOMO** (the standard long-horizon agent-memory benchmark; subset 3, 497 questions, judged by GPT-5.5 with the official protocol) and, since 2026-07-04, **LongMemEval_S** (the harder 500-question benchmark, with abstention and knowledge-update axes LOCOMO lacks).
