@@ -12,7 +12,7 @@ Deploying and running gnosis. For every tunable, see
 
 ## Run
 
-The image (`ghcr.io/bromigos-org/gnosis`) runs `uvicorn gnosis.main:app` on
+The image (`ghcr.io/nolgiainc/gnosis`) runs `uvicorn gnosis.main:app` on
 `:8080` and **ships `configs/`**, so it auto-loads the preferred config
 (`configs/default.yaml`) unless `GNOSIS_CONFIG_FILE` says otherwise. Minimum
 environment:
@@ -28,7 +28,7 @@ GNOSIS_EMBEDDING=<embedding-model> GNOSIS_EMBEDDING_DIMENSIONS=<dim> \
 ```
 
 A local stack (Neo4j + gnosis, wired to ollama or LiteLLM) is in the sibling
-[`gnosis-membench`](https://github.com/bromigos-org/gnosis-membench) harness's
+[`gnosis-membench`](https://github.com/nolgiainc/gnosis-membench) harness's
 `stack/compose.yaml`.
 
 ## Configuration

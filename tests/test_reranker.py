@@ -23,7 +23,7 @@ def _settings(**overrides: JsonValue) -> Settings:
         "gnosis_export_operator_token": "value",
         "gnosis_write_operator_token": "value",
         "gnosis_admin_operator_token": "value",
-        "gnosis_tenant_id": "bromigos",
+        "gnosis_tenant_id": "nolgia",
         "neo4j_uri": "bolt://neo4j.local:7687",
         "neo4j_username": "neo4j",
         "neo4j_password": "value",

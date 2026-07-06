@@ -707,11 +707,11 @@ def _auth_header() -> dict[str, str]:
     return {"Authorization": f"Bearer {environ['GNOSIS_TOKEN']}"}
 
 
-def _scope_payload(*, tenant_id: str = "bromigos") -> dict[str, str]:
+def _scope_payload(*, tenant_id: str = "nolgia") -> dict[str, str]:
     return {
         "tenant_id": tenant_id,
         "space_id": "discord",
-        "agent_id": "pc-principal",
+        "agent_id": "nolgia-agent",
         "session_id": "guild:123:channel:456",
         "user_id": "789",
         "visibility": "channel",

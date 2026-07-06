@@ -2,7 +2,7 @@
 
 `gnosis` is a self-hosted memory platform for AI agents: a policy gateway in front of a Neo4j knowledge graph that gives every agent scoped, auditable, benchmarked long-term memory over one HTTP API.
 
-- **Multi-client**: serves a Discord bot ([PC-Principal](https://github.com/bromigos-org/PC-Principal)), NousResearch hermes-agent instances (via the [hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis) plugin), and any MCP client — one memory, many agents.
+- **Multi-client**: serves Discord bots, NousResearch hermes-agent instances (via the [hermes-gnosis](https://github.com/nolgiainc/hermes-gnosis) plugin), and any MCP client — one memory, many agents.
 - **Measured, not vibes**: quality is tracked on the LOCOMO and LongMemEval_S agent-memory benchmarks with the official judging protocols — see [Benchmarks](#benchmarks) below.
 - **Federated**: sovereign gnosis instances share memory only through explicit, consent-tagged promotion and origin-tagged federated queries.
 - **Policy-first**: tenant/scope enforcement, redaction, review-first operator workflows, and safe-by-default feature flags sit in front of every backend access. Clients never touch Neo4j, Bolt, or the SDK directly.
@@ -92,7 +92,7 @@ Every measured run, newest last — kept and rejected changes alike (rejections 
 - **LOCOMO subset 3 is frozen as the regression gate** at the Run 18 config. The benchmark is saturated for this system: Run 19 measured a ±2.3 J excl-adv noise floor between identical configs — wider than every remaining candidate lever — and the largest residual category gap (multi-hop) is capped by exact-list grading, not retrieval. Any future gnosis change re-runs the gate and counts as a regression only if it lands below the noise band, judged per-category.
 - **LongMemEval_S is the primary optimization target.** Frozen config: 100-question stratified subset (all 30 abstention instances + 70 sampled proportionally per question type), `gemini-embedding-001` embeddings (3072-dim), gpt-5.5 extraction, the official LongMemEval judge prompts on a frozen gpt-5.5 judge. The baseline run (L-0) is in progress.
 
-Full per-run tables, per-category history, configs, mechanism stats, and honest deviations: [docs/BENCHMARKS.md](docs/BENCHMARKS.md), a mirror of the canonical [gnosis-membench RESULTS.md](https://github.com/bromigos-org/gnosis-membench/blob/main/RESULTS.md). The harness ([gnosis-membench](https://github.com/bromigos-org/gnosis-membench)) re-scores every release weekly in-cluster against a frozen judge, so these numbers cannot silently regress.
+Full per-run tables, per-category history, configs, mechanism stats, and honest deviations: [docs/BENCHMARKS.md](docs/BENCHMARKS.md), a mirror of the canonical [gnosis-membench RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md). The harness ([gnosis-membench](https://github.com/nolgiainc/gnosis-membench)) re-scores every release weekly in-cluster against a frozen judge, so these numbers cannot silently regress.
 
 ## Configuration
 
@@ -124,7 +124,7 @@ Precedence, highest first: explicit `GNOSIS_*` env vars → `.env` → the YAML 
 
 ```mermaid
 flowchart LR
-    Clients[PC-Principal, hermes agents via hermes-gnosis, MCP clients]
+    Clients[Discord bots, hermes agents via hermes-gnosis, MCP clients]
     Gateway[gnosis HTTP gateway]
     Policy[Scope checks, auth, redaction, rollout policy]
     SDK[neo4j-agent-memory SDK 0.5.0]
@@ -150,7 +150,7 @@ The gateway is a FastAPI app under `src/gnosis/`, organized as focused modules s
 
 ## Gateway boundary
 
-- `gnosis` is the only Bromigos service in this workspace that talks to Neo4j and the Python SDK directly.
+- `gnosis` is the only Nolgia service in this workspace that talks to Neo4j and the Python SDK directly.
 - Callers use HTTP only. They do not open Bolt connections, run Cypher, or import the SDK.
 - Scope policy lives here, not in prompt templates or client-side filtering.
 - The gateway redacts sensitive backend payloads before returning diagnostics, exports, consolidation reports, or reasoning results.
@@ -166,7 +166,7 @@ The graph QA planner follows the same guidance as Neo4j skill-style Cypher helpe
 - Generated Cypher must use `LIMIT $limit` and return rows with `id`, `type`, `summary`, and `deleted`.
 - Generated Cypher must use only approved graph labels, relationships, and properties from gnosis' event graph schema.
 - Generated Cypher must never use write clauses, unsafe procedures, or raw scope literals.
-- PC-Principal and other callers ask natural-language questions over HTTP; only gnosis plans, validates, logs, and executes Cypher.
+- Clients ask natural-language questions over HTTP; only gnosis plans, validates, logs, and executes Cypher.
 
 ## Memory model
 
@@ -240,7 +240,7 @@ These rules decide who sees which memories and in what order. They are enforced 
 
 ## Federation
 
-Two sovereign gnosis deployments can selectively share memories — for example the `bromigos` deployment (serving the [PC-Principal](https://github.com/bromigos-org/PC-Principal) Discord bot and NousResearch hermes agents via the [hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis) plugin) peered with a second sovereign deployment, `partner`. Each runs its own gnosis instance with a separate tenant, storage, and memory — fully isolated — and the two share only consented memories across the boundary. Federation is off by default in both directions, and one peer concept backs both the push and the pull path.
+Two sovereign gnosis deployments can selectively share memories — for example a primary `nolgia` deployment (serving Discord bots and NousResearch hermes agents via the [hermes-gnosis](https://github.com/nolgiainc/hermes-gnosis) plugin) peered with a second sovereign deployment, `partner`. Each runs its own gnosis instance with a separate tenant, storage, and memory — fully isolated — and the two share only consented memories across the boundary. Federation is off by default in both directions, and one peer concept backs both the push and the pull path.
 
 ### Peer model
 
@@ -282,13 +282,13 @@ Every other route answers `403` for this token class. Federated callers also can
 
 ### Enabling federation between two deployments
 
-On the `bromigos` instance (peering with a second deployment, `partner`):
+On the `nolgia` instance (peering with a second deployment, `partner`):
 
 - `GNOSIS_PEERS='[{"name": "partner", "base_url": "http://gnosis-partner.gnosis-partner.svc.cluster.local:8080", "direction": "both", "remote_tenant_id": "partner"}]'`
 - `GNOSIS_PEER_PARTNER_TOKEN=<partner's GNOSIS_FEDERATION_TOKEN>`
-- `GNOSIS_FEDERATION_TOKEN=<bromigos inbound federation token>`
+- `GNOSIS_FEDERATION_TOKEN=<nolgia inbound federation token>`
 
-On the `partner` instance, mirror it: name the `bromigos` peer with the bromigos base URL and `remote_tenant_id: "bromigos"`, set `GNOSIS_PEER_BROMIGOS_TOKEN` to bromigos' `GNOSIS_FEDERATION_TOKEN`, and set the partner's own `GNOSIS_FEDERATION_TOKEN`. Tokens are expected to come from secret-backed deployment config, like the operator tokens.
+On the `partner` instance, mirror it: name the `nolgia` peer with the nolgia base URL and `remote_tenant_id: "nolgia"`, set `GNOSIS_PEER_NOLGIA_TOKEN` to nolgia' `GNOSIS_FEDERATION_TOKEN`, and set the partner's own `GNOSIS_FEDERATION_TOKEN`. Tokens are expected to come from secret-backed deployment config, like the operator tokens.
 
 ## Request and data flow
 
@@ -370,8 +370,8 @@ When `GNOSIS_MCP_ENABLED` is on, gnosis mounts a streamable-HTTP MCP server at `
 
 ### Clients
 
-- **PC-Principal** (Discord bot) uses the full gateway surface: combined memory context, message write-back, event batch ingestion, skills, and reasoning traces.
-- **hermes-agent** (e.g. `bromigo`) connects through the [`hermes-gnosis`](https://github.com/bromigos-org/hermes-gnosis) memory-provider plugin, which drives the `/v1/memories` surface.
+- **Discord bots** use the full gateway surface: combined memory context, message write-back, event batch ingestion, skills, and reasoning traces.
+- **hermes-agent** (e.g. `nolgia`) connects through the [`hermes-gnosis`](https://github.com/nolgiainc/hermes-gnosis) memory-provider plugin, which drives the `/v1/memories` surface.
 - **MCP clients** (Claude, Cursor, and similar) connect to `/mcp` when `GNOSIS_MCP_ENABLED` is on.
 
 ### Operator routes
@@ -462,7 +462,7 @@ Preview comes before persistence. If extraction work is being evaluated, use `PO
 ## Extraction, OCR, and RustFS
 
 - `POST /v1/messages` and `POST /v1/memory/extraction/preview` can carry raw text documents, OCR image references, and RustFS source references.
-- OCR calls go through LiteLLM when enabled, with the homelab OCR alias configured as `unlimited-ocr`.
+- OCR calls go through LiteLLM when enabled, with the self-hosted OCR alias configured as `unlimited-ocr`.
 - RustFS is for private source artifacts and provenance, not public attachment dumping.
 - Neo4j stores extracted text, provenance, checksums, source URIs, and metadata. It should not store raw media bytes.
 
@@ -571,7 +571,7 @@ uv run ruff check .
 
 ## Deployment and GitOps
 
-Homelab deployment assumes an internal service plus ingress, not a public load balancer.
+Self-hosted deployment assumes an internal service plus ingress, not a public load balancer.
 
 - Kubernetes service type is `ClusterIP`.
 - External access is exposed through Traefik `IngressRoute`.
@@ -610,12 +610,11 @@ Homelab deployment assumes an internal service plus ingress, not a public load b
 
 ## Related projects
 
-Part of the Bromigos agent stack:
+Part of the Nolgia agent stack:
 
-- **[PC-Principal](https://github.com/bromigos-org/PC-Principal)** — Discord bot (Go); a gnosis memory client.
-- **[hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis)** — memory-provider plugin wiring NousResearch hermes agents to gnosis.
-- **[gnosis-membench](https://github.com/bromigos-org/gnosis-membench)** — the benchmark harness (LOCOMO + LongMemEval) that produces the scores above.
+- **[hermes-gnosis](https://github.com/nolgiainc/hermes-gnosis)** — memory-provider plugin wiring NousResearch hermes agents to gnosis.
+- **[gnosis-membench](https://github.com/nolgiainc/gnosis-membench)** — the benchmark harness (LOCOMO + LongMemEval) that produces the scores above.
 
 ## Upstream attribution
 
-This service is built on top of `neo4j-agent-memory==0.5.0`, but the Bromigos-specific value here is the gateway layer: HTTP contracts, auth model, scope enforcement, rollout controls, and redaction policy.
+This service is built on top of `neo4j-agent-memory==0.5.0`, but the Nolgia-specific value here is the gateway layer: HTTP contracts, auth model, scope enforcement, rollout controls, and redaction policy.

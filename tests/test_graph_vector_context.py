@@ -95,9 +95,9 @@ async def test_neo4j_executor_embeds_graph_node_on_upsert() -> None:
 
 def _scope() -> MemoryScope:
     return MemoryScope(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         space_id="discord",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         session_id="guild:guild-123:channel:channel-456",
         user_id="user-789",
         visibility=MemoryVisibility.CHANNEL,
@@ -108,9 +108,9 @@ def _scope() -> MemoryScope:
 
 def _message_event() -> ClientEvent:
     return ClientEvent(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         source_client=SourceClient.DISCORD,
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         event_id="message_created:message-999",
         event_type=ClientEventType.MESSAGE_CREATED,
         occurred_at="2026-06-27T01:02:03Z",

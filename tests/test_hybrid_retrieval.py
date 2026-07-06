@@ -174,7 +174,7 @@ async def test_search_memories_hybrid_surfaces_lexical_only_keyword_hit() -> Non
     assert f"db.index.fulltext.queryNodes('{FACT_OBJECT_FULLTEXT_INDEX}'" in statement
     assert params == {
         "query": "Zephyrine\\-9",
-        "scope_fragments": ['"tenant_id": "bromigos"', '"user_id": "789"'],
+        "scope_fragments": ['"tenant_id": "nolgia"', '"user_id": "789"'],
         "candidate_limit": 100,
     }
 
@@ -519,9 +519,9 @@ def _context_request() -> MemoryContextRequest:
 
 def _scope() -> MemoryScope:
     return MemoryScope(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         space_id="discord",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         session_id="guild:123:channel:456",
         user_id="789",
         visibility=MemoryVisibility.PRIVATE_USER,
@@ -530,9 +530,9 @@ def _scope() -> MemoryScope:
 
 def _scope_metadata() -> dict[str, JsonValue]:
     return {
-        "tenant_id": "bromigos",
+        "tenant_id": "nolgia",
         "space_id": "discord",
-        "agent_id": "pc-principal",
+        "agent_id": "nolgia-agent",
         "session_id": "guild:123:channel:456",
         "user_id": "789",
         "visibility": "private_user",
@@ -550,7 +550,7 @@ def _stored_memory(
         metadata["similarity"] = similarity
     return StoredMemory(
         memory_id=memory_id,
-        subject="bromigos:discord:private_user:pc-principal:789",
+        subject="nolgia:discord:private_user:nolgia-agent:789",
         predicate="memory",
         content=content,
         metadata=metadata,
@@ -562,7 +562,7 @@ def _stored_memory(
 def _fact(content: str, *, memory_id: str, similarity: float = 0.9) -> Fact:
     return Fact(
         id=UUID(memory_id),
-        subject="bromigos:discord:private_user:pc-principal:789",
+        subject="nolgia:discord:private_user:nolgia-agent:789",
         predicate="memory",
         object=content,
         created_at=datetime(2026, 6, 27, 1, 2, 3, tzinfo=UTC),
@@ -578,7 +578,7 @@ def _fact_row(
 ) -> JsonObject:
     return {
         "id": memory_id,
-        "subject": "bromigos:discord:private_user:pc-principal:789",
+        "subject": "nolgia:discord:private_user:nolgia-agent:789",
         "predicate": "memory",
         "object": content,
         "metadata": json.dumps(metadata or _scope_metadata()),

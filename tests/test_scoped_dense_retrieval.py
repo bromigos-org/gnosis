@@ -114,7 +114,7 @@ async def test_search_scoped_dense_queries_the_vector_index_with_scope() -> None
     assert params["embedding"] == [0.1, 0.2]
     assert params["vector_pool"] == 4000
     assert params["scope_fragments"] == [
-        '"tenant_id": "bromigos"',
+        '"tenant_id": "nolgia"',
         '"user_id": "789"',
     ]
     assert params["candidate_limit"] == 100
@@ -355,9 +355,9 @@ def _context_request() -> MemoryContextRequest:
 
 def _scope() -> MemoryScope:
     return MemoryScope(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         space_id="discord",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         session_id="guild:123:channel:456",
         user_id="789",
         visibility=MemoryVisibility.PRIVATE_USER,
@@ -366,9 +366,9 @@ def _scope() -> MemoryScope:
 
 def _scope_metadata() -> dict[str, JsonValue]:
     return {
-        "tenant_id": "bromigos",
+        "tenant_id": "nolgia",
         "space_id": "discord",
-        "agent_id": "pc-principal",
+        "agent_id": "nolgia-agent",
         "session_id": "guild:123:channel:456",
         "user_id": "789",
         "visibility": "private_user",
@@ -378,7 +378,7 @@ def _scope_metadata() -> dict[str, JsonValue]:
 def _fact(content: str, *, memory_id: str, similarity: float = 0.9) -> Fact:
     return Fact(
         id=UUID(memory_id),
-        subject="bromigos:discord:private_user:pc-principal:789",
+        subject="nolgia:discord:private_user:nolgia-agent:789",
         predicate="memory",
         object=content,
         created_at=datetime(2026, 6, 27, 1, 2, 3, tzinfo=UTC),
@@ -395,7 +395,7 @@ def _scored_fact_row(
 ) -> JsonObject:
     return {
         "id": memory_id,
-        "subject": "bromigos:discord:private_user:pc-principal:789",
+        "subject": "nolgia:discord:private_user:nolgia-agent:789",
         "predicate": "memory",
         "object": content,
         "metadata": json.dumps(metadata or _scope_metadata()),

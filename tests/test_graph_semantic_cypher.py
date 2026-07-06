@@ -37,11 +37,11 @@ def test_discord_message_upsert_cypher_fans_out_semantic_nodes() -> None:
     assert "MERGE (u)-[:AUTHORED]->(m)" in UPSERT_EVENT_CYPHER
     assert "MERGE (m)-[:IN_CHANNEL]->(ch)" in UPSERT_EVENT_CYPHER
     assert "MERGE (ch)-[:IN_GUILD]->(g)" in UPSERT_EVENT_CYPHER
-    assert parameters["message_node_id"] == "tenant:bromigos:message:message-999"
-    assert parameters["channel_node_id"] == "tenant:bromigos:channel:channel-456"
-    assert parameters["user_node_id"] == "tenant:bromigos:user:user-789"
-    assert parameters["guild_node_id"] == "tenant:bromigos:guild:guild-123"
-    assert parameters["tenant_node_id"] == "tenant:bromigos:tenant:bromigos"
+    assert parameters["message_node_id"] == "tenant:nolgia:message:message-999"
+    assert parameters["channel_node_id"] == "tenant:nolgia:channel:channel-456"
+    assert parameters["user_node_id"] == "tenant:nolgia:user:user-789"
+    assert parameters["guild_node_id"] == "tenant:nolgia:guild:guild-123"
+    assert parameters["tenant_node_id"] == "tenant:nolgia:tenant:nolgia"
 
 
 def test_discord_link_and_attachment_upsert_cypher_fans_out_media_nodes() -> None:
@@ -71,14 +71,14 @@ def test_discord_link_and_attachment_upsert_cypher_fans_out_media_nodes() -> Non
     assert "MERGE (l)-[:LINKED_FROM]->(m)" in UPSERT_EVENT_CYPHER
     assert "MERGE (att)-[:ATTACHED_TO]->(m)" in UPSERT_EVENT_CYPHER
     assert link_parameters["link_node_id"] == (
-        "tenant:bromigos:link:https://example.invalid/docs"
+        "tenant:nolgia:link:https://example.invalid/docs"
     )
-    assert link_parameters["message_node_id"] == "tenant:bromigos:message:message-999"
+    assert link_parameters["message_node_id"] == "tenant:nolgia:message:message-999"
     assert attachment_parameters["attachment_node_id"] == (
-        "tenant:bromigos:attachment:attachment-1"
+        "tenant:nolgia:attachment:attachment-1"
     )
     assert attachment_parameters["message_node_id"] == (
-        "tenant:bromigos:message:message-999"
+        "tenant:nolgia:message:message-999"
     )
 
 
@@ -96,11 +96,11 @@ def test_discord_category_upsert_cypher_fans_out_channel_hierarchy() -> None:
     assert "MERGE (cat)-[:IN_GUILD]->(g)" in UPSERT_EVENT_CYPHER
     assert "MERGE (ch)-[:IN_CATEGORY]->(cat)" in UPSERT_EVENT_CYPHER
     assert category_parameters["category_node_id"] == (
-        "tenant:bromigos:category:category-111"
+        "tenant:nolgia:category:category-111"
     )
     assert category_parameters["has_category_subject"] is True
     assert child_parameters["category_node_id"] == (
-        "tenant:bromigos:category:category-111"
+        "tenant:nolgia:category:category-111"
     )
     assert child_parameters["has_channel_category"] is True
 
@@ -172,14 +172,14 @@ def test_discord_child_channel_cannot_overwrite_real_parent_category_name() -> N
     # Then: the child can name itself and link to the real parent without naming it.
     assert category_parameters["category_name"] == "Programming/Cohort"
     assert category_parameters["category_node_id"] == (
-        "tenant:bromigos:category:programming-cohort"
+        "tenant:nolgia:category:programming-cohort"
     )
-    assert child_parameters["channel_node_id"] == "tenant:bromigos:channel:bot-status"
+    assert child_parameters["channel_node_id"] == "tenant:nolgia:channel:bot-status"
     assert child_parameters["channel_name"] == "bot_status"
     assert child_parameters["channel_kind"] == "text"
     assert child_parameters["category_id"] == "programming-cohort"
     assert child_parameters["category_node_id"] == (
-        "tenant:bromigos:category:programming-cohort"
+        "tenant:nolgia:category:programming-cohort"
     )
     assert child_parameters["category_name"] == ""
     assert child_parameters["has_category"] is True
@@ -241,7 +241,7 @@ def test_discord_role_upsert_cypher_fans_out_guild_role_ownership() -> None:
     # Then: roles are typed and owned by their guild without dynamic labels.
     assert "MERGE (r:Role" in UPSERT_EVENT_CYPHER
     assert "MERGE (g)-[:OWNS_ROLE]->(r)" in UPSERT_EVENT_CYPHER
-    assert parameters["role_node_id"] == "tenant:bromigos:role:role-222"
+    assert parameters["role_node_id"] == "tenant:nolgia:role:role-222"
     assert parameters["role_id"] == "role-222"
     assert parameters["role_name"] == "hall monitor"
     assert parameters["has_role"] is True
@@ -272,10 +272,10 @@ def test_discord_member_update_cypher_fans_out_user_role_assignments() -> None:
         "FOREACH (member_role_node_id IN $member_role_node_ids" in UPSERT_EVENT_CYPHER
     )
     assert "MERGE (member)-[:HAS_ROLE]->(role)" in UPSERT_EVENT_CYPHER
-    assert parameters["member_user_node_id"] == "tenant:bromigos:user:user-789"
+    assert parameters["member_user_node_id"] == "tenant:nolgia:user:user-789"
     assert parameters["member_role_node_ids"] == [
-        "tenant:bromigos:role:role-222",
-        "tenant:bromigos:role:role-333",
+        "tenant:nolgia:role:role-222",
+        "tenant:nolgia:role:role-333",
     ]
     assert parameters["has_member_roles"] is True
 
@@ -292,8 +292,8 @@ def test_discord_member_update_cypher_removes_stale_roles_from_full_snapshot() -
     assert "stale_role_node.id IN $member_role_node_ids" in UPSERT_EVENT_CYPHER
     assert "DELETE stale_role" in UPSERT_EVENT_CYPHER
     assert parameters["member_role_node_ids"] == [
-        "tenant:bromigos:role:role-222",
-        "tenant:bromigos:role:role-333",
+        "tenant:nolgia:role:role-222",
+        "tenant:nolgia:role:role-333",
     ]
     assert parameters["has_member_role_snapshot"] is True
 
@@ -316,14 +316,14 @@ def test_discord_member_update_empty_roles_removes_all_current_roles() -> None:
     parameters = upsert_parameters(plan_event(event))
 
     # Then: empty roles still trigger snapshot reconciliation, not no-op handling.
-    assert parameters["member_user_node_id"] == "tenant:bromigos:user:user-789"
+    assert parameters["member_user_node_id"] == "tenant:nolgia:user:user-789"
     assert parameters["member_role_node_ids"] == []
     assert parameters["has_member_roles"] is False
     assert parameters["has_member_role_snapshot"] is True
 
 
-def test_pc_principal_topology_event_enum_accepts_new_event_types() -> None:
-    # Given: PC-Principal emits explicit user and member-role topology facts.
+def test_nolgia_agent_topology_event_enum_accepts_new_event_types() -> None:
+    # Given: nolgia-agent emits explicit user and member-role topology facts.
     event_types = (
         "user_discovered",
         "member_role_assigned",
@@ -333,7 +333,7 @@ def test_pc_principal_topology_event_enum_accepts_new_event_types() -> None:
     # When: those wire values are parsed through the strict event enum.
     parsed = tuple(ClientEventType(event_type) for event_type in event_types)
 
-    # Then: only the known PC-Principal topology event types are accepted.
+    # Then: only the known nolgia-agent topology event types are accepted.
     assert parsed == (
         ClientEventType.USER_DISCOVERED,
         ClientEventType.MEMBER_ROLE_ASSIGNED,
@@ -341,8 +341,8 @@ def test_pc_principal_topology_event_enum_accepts_new_event_types() -> None:
     )
 
 
-def test_pc_principal_user_discovered_cypher_repairs_bot_typing() -> None:
-    # Given: PC-Principal discovers a bot user before message history is replayed.
+def test_nolgia_agent_user_discovered_cypher_repairs_bot_typing() -> None:
+    # Given: nolgia-agent discovers a bot user before message history is replayed.
     event = _user_discovered_event()
 
     # When: Neo4j parameters are built for the discovered user.
@@ -351,15 +351,15 @@ def test_pc_principal_user_discovered_cypher_repairs_bot_typing() -> None:
     # Then: the subject user is upserted as both User and Bot through fixed Cypher.
     assert "SET u:Bot" in UPSERT_EVENT_CYPHER
     assert parameters["node_type"] == "user"
-    assert parameters["user_node_id"] == "tenant:bromigos:user:bot-007"
+    assert parameters["user_node_id"] == "tenant:nolgia:user:bot-007"
     assert parameters["actor_is_bot"] is True
     semantic_node_ids = parameters["semantic_node_ids"]
     assert isinstance(semantic_node_ids, list)
-    assert "tenant:bromigos:bot:bot-007" in semantic_node_ids
+    assert "tenant:nolgia:bot:bot-007" in semantic_node_ids
 
 
-def test_pc_principal_user_discovered_human_payload_clears_stale_bot_typing() -> None:
-    # Given: PC-Principal later corrects a previously bot-typed user to human.
+def test_nolgia_agent_user_discovered_human_payload_clears_stale_bot_typing() -> None:
+    # Given: nolgia-agent later corrects a previously bot-typed user to human.
     event = _user_discovered_event().model_copy(
         update={
             "event_id": "user_discovered:user-789",
@@ -392,18 +392,18 @@ def test_pc_principal_user_discovered_human_payload_clears_stale_bot_typing() ->
     assert "u.user_type = CASE WHEN $actor_is_bot THEN 'bot' ELSE 'user' END" in (
         UPSERT_EVENT_CYPHER
     )
-    assert parameters["user_node_id"] == "tenant:bromigos:user:user-789"
+    assert parameters["user_node_id"] == "tenant:nolgia:user:user-789"
     assert parameters["user_identity_id"] == "user-789"
     assert parameters["actor_is_bot"] is False
     assert parameters["node_type"] == "user"
     semantic_node_ids = parameters["semantic_node_ids"]
     assert isinstance(semantic_node_ids, list)
-    assert "tenant:bromigos:user:user-789" in semantic_node_ids
-    assert "tenant:bromigos:bot:user-789" not in semantic_node_ids
+    assert "tenant:nolgia:user:user-789" in semantic_node_ids
+    assert "tenant:nolgia:bot:user-789" not in semantic_node_ids
 
 
-def test_pc_principal_member_updated_bot_payload_types_member_as_bot() -> None:
-    # Given: PC-Principal emits a member snapshot for a bot user.
+def test_nolgia_agent_member_updated_bot_payload_types_member_as_bot() -> None:
+    # Given: nolgia-agent emits a member snapshot for a bot user.
     event = _member_event().model_copy(
         update={
             "event_id": "member_updated:bot-007",
@@ -412,7 +412,7 @@ def test_pc_principal_member_updated_bot_payload_types_member_as_bot() -> None:
             "payload": {
                 "user_id": "bot-007",
                 "guild_id": "guild-123",
-                "display_name": "PC Principal",
+                "display_name": "Nolgia Agent",
                 "is_bot": True,
                 "user_type": "bot",
                 "roles": ["role-222"],
@@ -425,14 +425,14 @@ def test_pc_principal_member_updated_bot_payload_types_member_as_bot() -> None:
 
     # Then: the member User node is typed as Bot with a stable user id.
     assert "SET member:Bot" in UPSERT_EVENT_CYPHER
-    assert parameters["member_user_node_id"] == "tenant:bromigos:user:bot-007"
+    assert parameters["member_user_node_id"] == "tenant:nolgia:user:bot-007"
     assert parameters["member_user_id"] == "bot-007"
     assert parameters["member_is_bot"] is True
     assert parameters["member_user_type"] == "bot"
 
 
-def test_pc_principal_member_updated_human_payload_clears_member_bot_label() -> None:
-    # Given: PC-Principal emits an authoritative human correction for a member.
+def test_nolgia_agent_member_updated_human_payload_clears_member_bot_label() -> None:
+    # Given: nolgia-agent emits an authoritative human correction for a member.
     event = _member_event().model_copy(
         update={
             "payload": {
@@ -451,13 +451,13 @@ def test_pc_principal_member_updated_human_payload_clears_member_bot_label() -> 
 
     # Then: the member User node is human and stale Bot labeling is removed.
     assert "REMOVE member:Bot" in UPSERT_EVENT_CYPHER
-    assert parameters["member_user_node_id"] == "tenant:bromigos:user:user-789"
+    assert parameters["member_user_node_id"] == "tenant:nolgia:user:user-789"
     assert parameters["member_is_bot"] is False
     assert parameters["member_user_type"] == "user"
 
 
-def test_pc_principal_member_role_assigned_cypher_creates_current_has_role() -> None:
-    # Given: PC-Principal emits an explicit role assignment fact.
+def test_nolgia_agent_member_role_assigned_cypher_creates_current_has_role() -> None:
+    # Given: nolgia-agent emits an explicit role assignment fact.
     event = _member_role_event(ClientEventType.MEMBER_ROLE_ASSIGNED)
 
     # When: Neo4j parameters are built for the assignment.
@@ -465,17 +465,17 @@ def test_pc_principal_member_role_assigned_cypher_creates_current_has_role() -> 
 
     # Then: the writer targets the member and role nodes for a current HAS_ROLE edge.
     assert "MERGE (member)-[:HAS_ROLE]->(role)" in UPSERT_EVENT_CYPHER
-    assert parameters["node_id"] == "tenant:bromigos:user:user-789"
-    assert parameters["member_user_node_id"] == "tenant:bromigos:user:user-789"
-    assert parameters["member_role_node_ids"] == ["tenant:bromigos:role:role-222"]
-    assert parameters["role_node_id"] == "tenant:bromigos:role:role-222"
+    assert parameters["node_id"] == "tenant:nolgia:user:user-789"
+    assert parameters["member_user_node_id"] == "tenant:nolgia:user:user-789"
+    assert parameters["member_role_node_ids"] == ["tenant:nolgia:role:role-222"]
+    assert parameters["role_node_id"] == "tenant:nolgia:role:role-222"
     assert parameters["has_member_roles"] is True
     assert parameters["is_member_role_assignment"] is True
     assert parameters["is_member_role_unassignment"] is False
 
 
-def test_pc_principal_member_role_unassigned_cypher_removes_current_has_role() -> None:
-    # Given: PC-Principal emits an explicit role unassignment fact.
+def test_nolgia_agent_member_role_unassigned_cypher_removes_current_has_role() -> None:
+    # Given: nolgia-agent emits an explicit role unassignment fact.
     event = _member_role_event(ClientEventType.MEMBER_ROLE_UNASSIGNED)
 
     # When: Neo4j parameters are built for the unassignment.
@@ -483,10 +483,10 @@ def test_pc_principal_member_role_unassigned_cypher_removes_current_has_role() -
 
     # Then: the writer deletes the current HAS_ROLE edge instead of recreating it.
     assert "DELETE current_role" in UPSERT_EVENT_CYPHER
-    assert parameters["node_id"] == "tenant:bromigos:user:user-789"
-    assert parameters["member_user_node_id"] == "tenant:bromigos:user:user-789"
+    assert parameters["node_id"] == "tenant:nolgia:user:user-789"
+    assert parameters["member_user_node_id"] == "tenant:nolgia:user:user-789"
     assert parameters["member_role_node_ids"] == []
-    assert parameters["role_node_id"] == "tenant:bromigos:role:role-222"
+    assert parameters["role_node_id"] == "tenant:nolgia:role:role-222"
     assert parameters["has_member_roles"] is False
     assert parameters["is_member_role_assignment"] is False
     assert parameters["is_member_role_unassignment"] is True
@@ -498,7 +498,7 @@ def test_discord_bot_actor_cypher_adds_queryable_bot_typing() -> None:
         update={
             "actor": ClientEventActor(
                 id="bot-007",
-                display_name="PC Principal",
+                display_name="Nolgia Agent",
                 is_bot=True,
             ),
         },
@@ -509,7 +509,7 @@ def test_discord_bot_actor_cypher_adds_queryable_bot_typing() -> None:
 
     # Then: the User node is additionally typed as Bot through fixed Cypher.
     assert "SET u:Bot" in UPSERT_EVENT_CYPHER
-    assert parameters["user_node_id"] == "tenant:bromigos:user:bot-007"
+    assert parameters["user_node_id"] == "tenant:nolgia:user:bot-007"
     assert parameters["actor_is_bot"] is True
 
 
@@ -553,21 +553,21 @@ async def test_duplicate_replay_repairs_semantic_graph_state() -> None:
     assert await store.event_count() == 1
     assert context.context == "message message-999: remember this"
     assert executor.semantic_node_ids_for_test() == {
-        "tenant:bromigos:agent:pc-principal",
-        "tenant:bromigos:channel:channel-456",
-        "tenant:bromigos:client:discord",
-        "tenant:bromigos:guild:guild-123",
-        "tenant:bromigos:message:message-999",
-        "tenant:bromigos:tenant:bromigos",
-        "tenant:bromigos:user:user-789",
+        "tenant:nolgia:agent:nolgia-agent",
+        "tenant:nolgia:channel:channel-456",
+        "tenant:nolgia:client:discord",
+        "tenant:nolgia:guild:guild-123",
+        "tenant:nolgia:message:message-999",
+        "tenant:nolgia:tenant:nolgia",
+        "tenant:nolgia:user:user-789",
     }
 
 
 def _scope() -> MemoryScope:
     return MemoryScope(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         space_id="discord",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         session_id="guild:guild-123:channel:channel-456",
         user_id="user-789",
         visibility=MemoryVisibility.CHANNEL,
@@ -578,9 +578,9 @@ def _scope() -> MemoryScope:
 
 def _message_event() -> ClientEvent:
     return ClientEvent(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         source_client=SourceClient.DISCORD,
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         event_id="message_created:message-999",
         event_type=ClientEventType.MESSAGE_CREATED,
         occurred_at="2026-06-27T01:02:03Z",
@@ -609,9 +609,9 @@ def _message_event() -> ClientEvent:
 
 def _category_event() -> ClientEvent:
     return ClientEvent(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         source_client=SourceClient.DISCORD,
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         event_id="channel_created:category-111",
         event_type=ClientEventType.CHANNEL_CREATED,
         occurred_at="2026-06-27T01:02:03Z",
@@ -632,9 +632,9 @@ def _category_event() -> ClientEvent:
 
 def _channel_child_event() -> ClientEvent:
     return ClientEvent(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         source_client=SourceClient.DISCORD,
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         event_id="channel_created:channel-456",
         event_type=ClientEventType.CHANNEL_CREATED,
         occurred_at="2026-06-27T01:02:03Z",
@@ -669,9 +669,9 @@ def _channel_payload(*, channel_type: str | int) -> JsonObject:
 
 def _role_event() -> ClientEvent:
     return ClientEvent(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         source_client=SourceClient.DISCORD,
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         event_id="role_created:role-222",
         event_type=ClientEventType.ROLE_CREATED,
         occurred_at="2026-06-27T01:02:03Z",
@@ -691,9 +691,9 @@ def _role_event() -> ClientEvent:
 
 def _member_event() -> ClientEvent:
     return ClientEvent(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         source_client=SourceClient.DISCORD,
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         event_id="member_updated:user-789",
         event_type=ClientEventType.MEMBER_UPDATED,
         occurred_at="2026-06-27T01:02:03Z",
@@ -715,21 +715,21 @@ def _member_event() -> ClientEvent:
 
 def _user_discovered_event() -> ClientEvent:
     return ClientEvent(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         source_client=SourceClient.DISCORD,
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         event_id="user_discovered:bot-007",
         event_type=ClientEventType.USER_DISCOVERED,
         occurred_at="2026-06-27T01:02:03Z",
         observed_at="2026-06-27T01:02:04Z",
         idempotency_key="user_discovered:bot-007",
         scope=_scope().model_copy(update={"visibility": MemoryVisibility.GUILD}),
-        actor=ClientEventActor(id="bot-007", display_name="PC Principal", is_bot=True),
+        actor=ClientEventActor(id="bot-007", display_name="Nolgia Agent", is_bot=True),
         subject=ClientEventSubject(id="bot-007", type="bot", parent_id="guild-123"),
         payload={
             "guild_id": "guild-123",
             "user_id": "bot-007",
-            "display_name": "PC Principal",
+            "display_name": "Nolgia Agent",
             "is_bot": True,
             "user_type": "bot",
         },
@@ -739,9 +739,9 @@ def _user_discovered_event() -> ClientEvent:
 
 def _member_role_event(event_type: ClientEventType) -> ClientEvent:
     return ClientEvent(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         source_client=SourceClient.DISCORD,
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         event_id=f"{event_type.value}:user-789:role-222",
         event_type=event_type,
         occurred_at="2026-06-27T01:02:03Z",
@@ -773,9 +773,9 @@ def _media_event(
     payload: JsonObject,
 ) -> ClientEvent:
     return ClientEvent(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         source_client=SourceClient.DISCORD,
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         event_id=event_id,
         event_type=event_type,
         occurred_at="2026-06-27T01:02:03Z",

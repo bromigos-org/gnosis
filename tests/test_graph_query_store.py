@@ -46,7 +46,7 @@ async def test_dynamic_graph_query_runs_after_activity_aggregate_miss() -> None:
     assert len(nodes) == 1
     assert nodes[0].summary == "general-chat"
     assert planner.requests == [request]
-    assert driver.parameters[-1]["tenant_id"] == "bromigos"
+    assert driver.parameters[-1]["tenant_id"] == "nolgia"
     assert driver.parameters[-1]["guild_id"] == "guild-123"
 
 
@@ -103,9 +103,9 @@ async def test_dynamic_graph_query_falls_back_when_rows_have_bad_shape() -> None
 
 def _scope() -> MemoryScope:
     return MemoryScope(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         space_id="discord",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         session_id="guild:guild-123:channel:channel-456",
         user_id="user-789",
         visibility=MemoryVisibility.CHANNEL,
@@ -116,7 +116,7 @@ def _scope() -> MemoryScope:
 
 def _graph_row() -> dict[str, JsonValue]:
     return {
-        "id": "tenant:bromigos:channel:channel-456",
+        "id": "tenant:nolgia:channel:channel-456",
         "type": "graph_query",
         "summary": "general-chat",
         "deleted": False,

@@ -24,15 +24,15 @@ def test_normalize_entity_name_folds_case_and_collapses_whitespace() -> None:
 
 def test_entity_id_encodes_scope_and_normalized_name() -> None:
     # Then: the id is deterministic and encodes tenant + user + entity.
-    assert entity_id("bromigos", "789", "alice") == (
-        "tenant:bromigos:user:789:entity:alice"
+    assert entity_id("nolgia", "789", "alice") == (
+        "tenant:nolgia:user:789:entity:alice"
     )
 
 
 def test_statements_materialize_scoped_mentions_and_relations() -> None:
     # Given: a fact naming two entities linked by one directed triple.
     statements = entity_graph_statements(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         user_id="789",
         fact_id="fact-1",
         entities=["Alice", "Acme Corp"],
@@ -44,19 +44,19 @@ def test_statements_materialize_scoped_mentions_and_relations() -> None:
     assert len(statements) == 2
     mentions_query, mentions_params = statements[0]
     assert mentions_query == MERGE_ENTITY_MENTIONS_CYPHER
-    assert mentions_params["tenant_id"] == "bromigos"
+    assert mentions_params["tenant_id"] == "nolgia"
     assert mentions_params["user_id"] == "789"
     assert mentions_params["fact_id"] == "fact-1"
     assert _rows(mentions_params, "entities") == [
         {
             "normalized": "alice",
             "name": "Alice",
-            "id": "tenant:bromigos:user:789:entity:alice",
+            "id": "tenant:nolgia:user:789:entity:alice",
         },
         {
             "normalized": "acme corp",
             "name": "Acme Corp",
-            "id": "tenant:bromigos:user:789:entity:acme corp",
+            "id": "tenant:nolgia:user:789:entity:acme corp",
         },
     ]
 
@@ -64,7 +64,7 @@ def test_statements_materialize_scoped_mentions_and_relations() -> None:
     # carrying the relation, the fact id, and the fact's event date.
     relations_query, relations_params = statements[1]
     assert relations_query == MERGE_ENTITY_RELATIONS_CYPHER
-    assert relations_params["tenant_id"] == "bromigos"
+    assert relations_params["tenant_id"] == "nolgia"
     assert relations_params["user_id"] == "789"
     assert relations_params["fact_id"] == "fact-1"
     assert relations_params["event_date"] == "2023-05-07"
@@ -76,7 +76,7 @@ def test_statements_materialize_scoped_mentions_and_relations() -> None:
 def test_statements_add_relation_endpoints_missing_from_entities() -> None:
     # Given: a triple whose tail was not listed in the unit's entities.
     statements = entity_graph_statements(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         user_id="789",
         fact_id="fact-2",
         entities=["Alice"],
@@ -98,7 +98,7 @@ def test_statements_add_relation_endpoints_missing_from_entities() -> None:
 def test_statements_drop_self_loops_blank_and_unbalanced_triples() -> None:
     # Given: triples that a knowledge graph must not materialize as edges.
     statements = entity_graph_statements(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         user_id="789",
         fact_id="fact-3",
         entities=["Alice", "Bob", ""],
@@ -128,7 +128,7 @@ def test_statements_drop_self_loops_blank_and_unbalanced_triples() -> None:
 def test_statements_keep_relation_endpoints_as_entities() -> None:
     # Given: a triple whose endpoints never appear in the entities list.
     statements = entity_graph_statements(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         user_id="789",
         fact_id="fact-4",
         entities=["Alice"],
@@ -153,7 +153,7 @@ def test_statements_keep_relation_endpoints_as_entities() -> None:
 def test_statements_without_entities_materialize_nothing() -> None:
     # Given: a unit that names no entities and states no relations.
     statements = entity_graph_statements(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         user_id="789",
         fact_id="fact-5",
         entities=[],
@@ -168,7 +168,7 @@ def test_statements_without_entities_materialize_nothing() -> None:
 def test_statements_with_only_entities_emit_mentions_only() -> None:
     # Given: a unit that names entities but states no relationship.
     statements = entity_graph_statements(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         user_id="789",
         fact_id="fact-6",
         entities=["Alice", "Tokyo"],
@@ -184,7 +184,7 @@ def test_statements_with_only_entities_emit_mentions_only() -> None:
 def test_statements_isolate_entities_by_scope() -> None:
     # Given: the same entity name under two different user scopes.
     first = entity_graph_statements(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         user_id="alice",
         fact_id="fact-a",
         entities=["Paris"],
@@ -192,7 +192,7 @@ def test_statements_isolate_entities_by_scope() -> None:
         event_date=None,
     )
     second = entity_graph_statements(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         user_id="bob",
         fact_id="fact-b",
         entities=["Paris"],
@@ -203,8 +203,8 @@ def test_statements_isolate_entities_by_scope() -> None:
     # Then: the scope-keyed ids differ, so the MERGE can never merge the two
     # users' entities into one node.
     assert _rows(first[0][1], "entities")[0]["id"] == (
-        "tenant:bromigos:user:alice:entity:paris"
+        "tenant:nolgia:user:alice:entity:paris"
     )
     assert _rows(second[0][1], "entities")[0]["id"] == (
-        "tenant:bromigos:user:bob:entity:paris"
+        "tenant:nolgia:user:bob:entity:paris"
     )

@@ -90,9 +90,9 @@ async def test_add_memories_when_content_is_verbatim() -> None:
     assert result.metadata == {"topic": "snacks"}
     write = client.long_term.fact_writes[0]
     assert write.predicate == "memory"
-    assert write.metadata["tenant_id"] == "bromigos"
+    assert write.metadata["tenant_id"] == "nolgia"
     assert write.metadata["user_id"] == "789"
-    assert write.metadata["agent_id"] == "pc-principal"
+    assert write.metadata["agent_id"] == "nolgia-agent"
     assert write.metadata["topic"] == "snacks"
     assert client.short_term.messages == []
 
@@ -236,7 +236,7 @@ async def test_add_memories_extraction_writes_units_alongside_verbatim() -> None
     assert create_params is not None
     assert create_params["predicate"] == "fact"
     assert create_params["subject"] == (
-        "bromigos:discord:private_user:pc-principal:789"
+        "nolgia:discord:private_user:nolgia-agent:789"
     )
     assert create_params["object"] == "Cartman ate cheesy poofs on 7 May 2023"
     assert create_params["embedding"] == [0.1, 0.2]
@@ -250,7 +250,7 @@ async def test_add_memories_extraction_writes_units_alongside_verbatim() -> None
     assert stored_metadata["entities"] == ["Cartman"]
     assert stored_metadata["source_memory_ids"] == verbatim_ids
     assert stored_metadata["source_turn_ids"] == [1]
-    assert stored_metadata["tenant_id"] == "bromigos"
+    assert stored_metadata["tenant_id"] == "nolgia"
     assert stored_metadata["user_id"] == "789"
     assert stored_metadata["session_id"] == "guild:123:channel:456"
     assert stored_metadata["topic"] == "snacks"
@@ -422,7 +422,7 @@ async def test_add_memories_entity_graph_materializes_nodes_and_edges() -> None:
     # Then: the extracted fact still lands as a Fact node, now scope-tagged.
     fact_query, fact_params = _write_containing(client, "CREATE (f:Fact")
     _ = fact_query
-    assert fact_params["tenant_id"] == "bromigos"
+    assert fact_params["tenant_id"] == "nolgia"
     assert fact_params["user_id"] == "789"
     fact_id = fact_params["memory_id"]
 
@@ -432,7 +432,7 @@ async def test_add_memories_entity_graph_materializes_nodes_and_edges() -> None:
     # Then: a MENTIONS write MERGEs both entities scope-keyed by tenant + user
     # and links them to the just-written fact.
     _, mentions_params = _write_containing(client, "[:MENTIONS]")
-    assert mentions_params["tenant_id"] == "bromigos"
+    assert mentions_params["tenant_id"] == "nolgia"
     assert mentions_params["user_id"] == "789"
     assert mentions_params["fact_id"] == fact_id
     assert {row["normalized"] for row in _entity_rows(mentions_params, "entities")} == {
@@ -440,8 +440,8 @@ async def test_add_memories_entity_graph_materializes_nodes_and_edges() -> None:
         "acme corp",
     }
     assert {row["id"] for row in _entity_rows(mentions_params, "entities")} == {
-        "tenant:bromigos:user:789:entity:alice",
-        "tenant:bromigos:user:789:entity:acme corp",
+        "tenant:nolgia:user:789:entity:alice",
+        "tenant:nolgia:user:789:entity:acme corp",
     }
 
     # Then: a RELATES write connects the two entities with the extracted
@@ -574,7 +574,7 @@ async def test_add_memories_extraction_context_respects_configured_turns() -> No
     assert context_params["limit"] == 2
     assert context_params["predicate_prefix"] == "said_"
     assert context_params["scope_fragments"] == [
-        '"tenant_id": "bromigos"',
+        '"tenant_id": "nolgia"',
         '"user_id": "789"',
         '"session_id": "guild:123:channel:456"',
     ]
@@ -889,7 +889,7 @@ async def test_list_memories_when_pages_are_deterministic() -> None:
     query, params = client.query.calls[0]
     assert "ORDER BY f.created_at DESC, f.id ASC" in query
     assert params is not None
-    assert params["scope_fragments"] == ['"tenant_id": "bromigos"', '"user_id": "789"']
+    assert params["scope_fragments"] == ['"tenant_id": "nolgia"', '"user_id": "789"']
 
 
 @pytest.mark.anyio
@@ -953,7 +953,7 @@ async def test_update_memory_when_record_is_in_scope() -> None:
         cast("str", write_params["metadata"]),
     )
     assert stored_metadata["topic"] == "games"
-    assert stored_metadata["tenant_id"] == "bromigos"
+    assert stored_metadata["tenant_id"] == "nolgia"
     assert stored_metadata["user_id"] == "789"
 
 
@@ -1140,9 +1140,9 @@ def _backend(  # noqa: PLR0913 - One knob per gated feature under test.
 
 def _scope() -> MemoryScope:
     return MemoryScope(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         space_id="discord",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         session_id="guild:123:channel:456",
         user_id="789",
         visibility=MemoryVisibility.PRIVATE_USER,
@@ -1151,9 +1151,9 @@ def _scope() -> MemoryScope:
 
 def _scope_metadata(*, user_id: str = "789") -> dict[str, JsonValue]:
     return {
-        "tenant_id": "bromigos",
+        "tenant_id": "nolgia",
         "space_id": "discord",
-        "agent_id": "pc-principal",
+        "agent_id": "nolgia-agent",
         "session_id": "guild:123:channel:456",
         "user_id": user_id,
         "visibility": "private_user",
@@ -1162,7 +1162,7 @@ def _scope_metadata(*, user_id: str = "789") -> dict[str, JsonValue]:
 
 def _fact(content: str, metadata: dict[str, JsonValue]) -> Fact:
     return Fact(
-        subject="bromigos:discord:private_user:pc-principal:789",
+        subject="nolgia:discord:private_user:nolgia-agent:789",
         predicate="memory",
         object=content,
         created_at=datetime(2026, 6, 27, 1, 2, 3, tzinfo=UTC),
@@ -1183,7 +1183,7 @@ def _memory_row(
         metadata["topic"] = topic
     return {
         "id": memory_id,
-        "subject": "bromigos:discord:private_user:pc-principal:789",
+        "subject": "nolgia:discord:private_user:nolgia-agent:789",
         "predicate": "memory",
         "object": content,
         "metadata": json.dumps(metadata),
@@ -1195,7 +1195,7 @@ def _memory_row(
 def _turn_row(memory_id: str, role: str, content: str) -> JsonObject:
     return {
         "id": memory_id,
-        "subject": "bromigos:discord:private_user:pc-principal:789",
+        "subject": "nolgia:discord:private_user:nolgia-agent:789",
         "predicate": f"said_{role}",
         "object": content,
         "metadata": json.dumps(_scope_metadata()),

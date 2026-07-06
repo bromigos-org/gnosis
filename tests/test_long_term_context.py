@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 async def test_combined_context_includes_scoped_facts_preferences_entities() -> None:
     # Given: one locally stored fact plus separate upstream long-term context.
     fact = _fact_row(
-        subject="tenant:bromigos:message:one",
+        subject="tenant:nolgia:message:one",
         predicate="discord.message_created",
         object_value="message one mentions the library schedule",
         metadata=_scope_metadata(_scope()) | {"event_id": "event-one"},
@@ -85,7 +85,7 @@ async def test_combined_context_includes_scoped_facts_preferences_entities() -> 
             source="long_term_facts",
             content=(
                 "### Long-Term Facts\n"
-                "- tenant:bromigos:message:one discord.message_created: "
+                "- tenant:nolgia:message:one discord.message_created: "
                 "message one mentions the library schedule"
             ),
         ),
@@ -97,14 +97,14 @@ async def test_combined_context_includes_scoped_facts_preferences_entities() -> 
             ),
         ),
     ]
-    assert response.sections[0].content.count("tenant:bromigos:message:one") == 1
-    assert "tenant:bromigos:message:one" not in response.sections[1].content
+    assert response.sections[0].content.count("tenant:nolgia:message:one") == 1
+    assert "tenant:nolgia:message:one" not in response.sections[1].content
     assert client.long_term.context_queries == ["what should I remember?"]
     assert client.query.cypher_calls[0].parameters == {
         "candidate_limit": 100,
         "metadata_fragments": [
-            '"tenant_id": "bromigos"',
-            '"agent_id": "pc-principal"',
+            '"tenant_id": "nolgia"',
+            '"agent_id": "nolgia-agent"',
             '"user_id": "789"',
             '"visibility": "channel"',
             '"guild_id": "123"',
@@ -133,7 +133,7 @@ async def test_rerank_reorders_rendered_long_term_facts() -> None:
     rows: list[JsonObject] = [
         {
             "f": _fact_row(
-                subject=f"tenant:bromigos:message:{name}",
+                subject=f"tenant:nolgia:message:{name}",
                 predicate="fact",
                 object_value=f"note {name}",
                 metadata=_scope_metadata(scope),
@@ -183,7 +183,7 @@ async def test_fact_context_does_not_cross_tenant_or_channel_scope() -> None:
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:visible",
+                        subject="tenant:nolgia:message:visible",
                         predicate="discord.message_created",
                         object_value="visible channel note",
                         metadata=_scope_metadata(requested_scope),
@@ -199,7 +199,7 @@ async def test_fact_context_does_not_cross_tenant_or_channel_scope() -> None:
                 },
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:wrong-channel",
+                        subject="tenant:nolgia:message:wrong-channel",
                         predicate="discord.message_created",
                         object_value="wrong channel note",
                         metadata=_scope_metadata(other_channel_scope),
@@ -228,9 +228,9 @@ async def test_fact_context_does_not_cross_tenant_or_channel_scope() -> None:
     # Then: only the same-tenant same-channel fact appears.
     assert len(response.sections) == 1
     content = response.sections[0].content
-    assert "tenant:bromigos:message:visible" in content
+    assert "tenant:nolgia:message:visible" in content
     assert "tenant:other:message:hidden" not in content
-    assert "tenant:bromigos:message:wrong-channel" not in content
+    assert "tenant:nolgia:message:wrong-channel" not in content
     assert "other tenant note" not in content
     assert "wrong channel note" not in content
 
@@ -244,7 +244,7 @@ async def test_fact_context_dates_prefer_stored_session_date() -> None:
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:tagged",
+                        subject="tenant:nolgia:message:tagged",
                         predicate="said_user",
                         object_value="we went hiking yesterday",
                         metadata=(
@@ -255,7 +255,7 @@ async def test_fact_context_dates_prefer_stored_session_date() -> None:
                 },
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:untagged",
+                        subject="tenant:nolgia:message:untagged",
                         predicate="said_assistant",
                         object_value="hiking sounds great",
                         metadata=_scope_metadata(scope),
@@ -298,7 +298,7 @@ async def test_fact_context_spans_sessions_and_matches_search_item_count() -> No
     rows: list[JsonObject] = []
     search_results: list[FactRecord] = []
     for index in range(5):
-        subject = f"tenant:bromigos:message:{index}"
+        subject = f"tenant:nolgia:message:{index}"
         content_value = f"turn {index} of the conversation"
         metadata = _scope_metadata(scope) | {"session_id": f"session-{index}"}
         rows.append(
@@ -359,7 +359,7 @@ async def test_fact_context_truncates_to_max_items_after_scope_filter() -> None:
     rows: list[JsonObject] = [
         {
             "f": _fact_row(
-                subject=f"tenant:bromigos:message:{index}",
+                subject=f"tenant:nolgia:message:{index}",
                 predicate="said_user",
                 object_value=f"note {index}",
                 metadata=_scope_metadata(scope),
@@ -397,12 +397,12 @@ async def test_fact_context_ranks_relevance_over_recency_when_query_present() ->
     # while the recency read would surface the decoy first.
     scope = _scope()
     relevant_old = _fact_record(
-        subject="tenant:bromigos:message:relevant",
+        subject="tenant:nolgia:message:relevant",
         object_value="Maria adopted a golden retriever named Biscuit",
         metadata=_scope_metadata(scope) | {"session_date": "7 May 2023"},
     )
     decoy_recent = _fact_record(
-        subject="tenant:bromigos:message:decoy",
+        subject="tenant:nolgia:message:decoy",
         object_value="the weather was rainy this morning",
         metadata=_scope_metadata(scope) | {"session_date": "28 June 2026"},
     )
@@ -416,7 +416,7 @@ async def test_fact_context_ranks_relevance_over_recency_when_query_present() ->
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:decoy",
+                        subject="tenant:nolgia:message:decoy",
                         predicate="said_user",
                         object_value="the weather was rainy this morning",
                         metadata=_scope_metadata(scope),
@@ -467,7 +467,7 @@ async def test_fact_context_keeps_recency_order_without_similarity_ranking() -> 
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:new",
+                        subject="tenant:nolgia:message:new",
                         predicate="said_user",
                         object_value="newest note",
                         metadata=_scope_metadata(scope),
@@ -476,7 +476,7 @@ async def test_fact_context_keeps_recency_order_without_similarity_ranking() -> 
                 },
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:old",
+                        subject="tenant:nolgia:message:old",
                         predicate="said_user",
                         object_value="older note",
                         metadata=_scope_metadata(scope),
@@ -517,7 +517,7 @@ async def test_fact_context_renders_signal_predicates_with_subject() -> None:
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:turn",
+                        subject="tenant:nolgia:message:turn",
                         predicate="said_user",
                         object_value="I moved to Lisbon last spring",
                         metadata=_scope_metadata(scope) | {"date": "7 May 2023"},
@@ -525,7 +525,7 @@ async def test_fact_context_renders_signal_predicates_with_subject() -> None:
                 },
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:event",
+                        subject="tenant:nolgia:message:event",
                         predicate="discord.message_created",
                         object_value="message event: schedule posted",
                         metadata=_scope_metadata(scope),
@@ -557,7 +557,7 @@ async def test_fact_context_renders_signal_predicates_with_subject() -> None:
     content = response.sections[0].content
     assert "- [7 May 2023] I moved to Lisbon last spring" in content
     assert (
-        "- [2026-06-28] tenant:bromigos:message:event discord.message_created: "
+        "- [2026-06-28] tenant:nolgia:message:event discord.message_created: "
         "message event: schedule posted"
     ) in content
     assert "provenance:" not in content
@@ -802,7 +802,7 @@ async def test_abstention_instruction_prepended_when_enabled() -> None:
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:one",
+                        subject="tenant:nolgia:message:one",
                         predicate="said_user",
                         object_value="the library opens at nine",
                         metadata=_scope_metadata(scope),
@@ -844,7 +844,7 @@ async def test_chain_of_note_instruction_prepended_when_enabled() -> None:
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:one",
+                        subject="tenant:nolgia:message:one",
                         predicate="said_user",
                         object_value="the library opens at nine",
                         metadata=_scope_metadata(scope),
@@ -889,7 +889,7 @@ async def test_routed_temporal_query_reads_without_chain_of_note() -> None:
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:one",
+                        subject="tenant:nolgia:message:one",
                         predicate="said_user",
                         object_value="the library opened on 2023-05-07",
                         metadata=_scope_metadata(scope),
@@ -936,7 +936,7 @@ async def test_routed_multi_hop_query_keeps_chain_of_note() -> None:
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:one",
+                        subject="tenant:nolgia:message:one",
                         predicate="said_user",
                         object_value="the library opens at nine",
                         metadata=_scope_metadata(scope),
@@ -982,7 +982,7 @@ async def test_chain_of_note_unchanged_while_widening_flags_off() -> None:
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:one",
+                        subject="tenant:nolgia:message:one",
                         predicate="said_user",
                         object_value="the library opens at nine",
                         metadata=_scope_metadata(scope),
@@ -1031,7 +1031,7 @@ async def test_speculative_inference_flag_widens_the_carve_out() -> None:
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:one",
+                        subject="tenant:nolgia:message:one",
                         predicate="fact",
                         object_value="user enjoys classical music",
                         metadata=_scope_metadata(scope),
@@ -1081,7 +1081,7 @@ async def test_enumeration_clause_applies_on_aggregative_route_only() -> None:
                 rows=[
                     {
                         "f": _fact_row(
-                            subject="tenant:bromigos:message:one",
+                            subject="tenant:nolgia:message:one",
                             predicate="fact",
                             object_value="user made peach cobbler",
                             metadata=_scope_metadata(scope),
@@ -1130,7 +1130,7 @@ async def test_chain_of_note_takes_precedence_over_abstention_prompt() -> None:
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:one",
+                        subject="tenant:nolgia:message:one",
                         predicate="said_user",
                         object_value="the library opens at nine",
                         metadata=_scope_metadata(scope),
@@ -1202,7 +1202,7 @@ async def test_abstention_instruction_absent_when_disabled() -> None:
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:one",
+                        subject="tenant:nolgia:message:one",
                         predicate="said_user",
                         object_value="the library opens at nine",
                         metadata=_scope_metadata(scope),
@@ -1420,7 +1420,7 @@ async def test_routing_unanswerable_risk_prepends_abstention_instruction() -> No
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:one",
+                        subject="tenant:nolgia:message:one",
                         predicate="said_user",
                         object_value="the library opens at nine",
                         metadata=_scope_metadata(scope),
@@ -1465,7 +1465,7 @@ async def test_routing_classifier_failure_falls_back_to_global_flags(
             rows=[
                 {
                     "f": _fact_row(
-                        subject="tenant:bromigos:message:one",
+                        subject="tenant:nolgia:message:one",
                         predicate="said_user",
                         object_value="the library opens at nine",
                         metadata=_scope_metadata(scope),
@@ -1909,7 +1909,7 @@ async def test_verbatim_expansion_ignores_non_extracted_facts() -> None:
     # Given: only a verbatim turn fact (no extracted units) is ranked.
     scope = _scope()
     turn = _fact_record(
-        subject="tenant:bromigos:message:one",
+        subject="tenant:nolgia:message:one",
         object_value="the library opens at nine",
         metadata=_scope_metadata(scope),
     )
@@ -2687,7 +2687,7 @@ def _settings(
 ) -> Settings:
     settings_values: JsonObject = {
         "gnosis_token": "value",
-        "gnosis_tenant_id": "bromigos",
+        "gnosis_tenant_id": "nolgia",
         "neo4j_uri": "bolt://neo4j.local:7687",
         "neo4j_username": "neo4j",
         "neo4j_password": "value",
@@ -2704,13 +2704,13 @@ def _settings(
 
 def _scope(
     *,
-    tenant_id: str = "bromigos",
+    tenant_id: str = "nolgia",
     channel_id: str = "456",
 ) -> MemoryScope:
     return MemoryScope(
         tenant_id=tenant_id,
         space_id="discord",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         session_id=f"guild:123:channel:{channel_id}",
         user_id="789",
         visibility=MemoryVisibility.CHANNEL,

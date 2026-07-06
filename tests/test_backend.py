@@ -161,7 +161,7 @@ _JSON_OBJECT_ADAPTER: TypeAdapter[JsonObject] = TypeAdapter(JsonObject)
 
 
 def test_litellm_embedding_model_when_embedding_alias_is_bare() -> None:
-    # Given: homelab config uses a bare LiteLLM proxy alias for memory embeddings.
+    # Given: self-hosted config uses a bare LiteLLM proxy alias for memory embeddings.
     model = "local-qwen3-embedding-0.6b"
 
     # When: the model is prepared for the LiteLLM SDK provider.
@@ -550,20 +550,20 @@ async def test_long_term_fake_supports_protocol() -> None:
     entity = await client.long_term.add_entity(
         "Cartman",
         "PERSON",
-        metadata={"tenant_id": "bromigos"},
+        metadata={"tenant_id": "nolgia"},
     )
     fact = await client.long_term.add_fact(
         "Cartman",
         "prefers",
         "snacks",
-        metadata={"tenant_id": "bromigos"},
+        metadata={"tenant_id": "nolgia"},
         generate_embedding=True,
     )
     preference = await client.long_term.add_preference(
         "style",
         "concise answers",
-        metadata={"tenant_id": "bromigos"},
-        user_identifier="bromigos:cartman",
+        metadata={"tenant_id": "nolgia"},
+        user_identifier="nolgia:cartman",
     )
     entity_linked = await client.long_term.link_entity_to_message(
         UUID("00000000-0000-0000-0000-000000000001"),
@@ -583,14 +583,14 @@ async def test_long_term_fake_supports_protocol() -> None:
     ] == ["style"]
     assert [
         item.preference
-        for item in await client.long_term.get_preferences_for("bromigos:cartman")
+        for item in await client.long_term.get_preferences_for("nolgia:cartman")
     ] == ["concise answers"]
     assert [
         item.object for item in await client.long_term.get_facts_about("Cartman")
     ] == ["snacks"]
     assert entity.name == "Cartman"
     assert fact.confidence == 1.0
-    assert preference.user_identifier == "bromigos:cartman"
+    assert preference.user_identifier == "nolgia:cartman"
     assert entity_linked is True
 
 
@@ -615,7 +615,7 @@ def test_long_term_operation_contracts_are_json_safe_and_limited() -> None:
                 id="entity-1",
                 name="Cartman",
                 type="PERSON",
-                metadata={"tenant_id": "bromigos"},
+                metadata={"tenant_id": "nolgia"},
                 provenance=provenance,
             ),
         ],
@@ -641,7 +641,7 @@ def test_long_term_operation_contracts_are_json_safe_and_limited() -> None:
 
     # Then: limits, scope, provenance, confidence, and JSON-safe metadata are explicit.
     assert request.limit == 25
-    assert response.entities[0].metadata == {"tenant_id": "bromigos"}
+    assert response.entities[0].metadata == {"tenant_id": "nolgia"}
     assert fact_write.provenance == provenance
     assert preference_write.metadata == {"audience": ["agents"]}
     assert FactSearchRequest(scope=scope, query="snacks").limit == 10
@@ -699,18 +699,18 @@ async def test_backend_promotes_accepted_event_to_embedded_long_term_fact() -> N
     assert result.status == EventIngestStatus.ACCEPTED
     assert fake_client.long_term.facts == [
         LongTermFactWrite(
-            subject="tenant:bromigos:message:message-999",
+            subject="tenant:nolgia:message:message-999",
             predicate="discord.message_created",
             obj="message message-999: remember this",
             metadata={
-                "agent_id": "pc-principal",
+                "agent_id": "nolgia-agent",
                 "channel_id": "456",
                 "event_id": "discord-message-999",
                 "event_type": "message_created",
                 "guild_id": "123",
                 "idempotency_key": "discord:message:message-999:create",
                 "session_id": "guild:123:channel:456",
-                "tenant_id": "bromigos",
+                "tenant_id": "nolgia",
                 "user_id": "789",
                 "visibility": "channel",
             },
@@ -738,13 +738,13 @@ async def test_backend_repairs_duplicate_event_graph_without_promoting_fact() ->
     assert duplicate.status == EventIngestStatus.DUPLICATE
     assert len(fake_client.long_term.facts) == 1
     assert executor.semantic_node_ids_for_test() == {
-        "tenant:bromigos:agent:pc-principal",
-        "tenant:bromigos:channel:456",
-        "tenant:bromigos:client:discord",
-        "tenant:bromigos:guild:123",
-        "tenant:bromigos:message:message-999",
-        "tenant:bromigos:tenant:bromigos",
-        "tenant:bromigos:user:789",
+        "tenant:nolgia:agent:nolgia-agent",
+        "tenant:nolgia:channel:456",
+        "tenant:nolgia:client:discord",
+        "tenant:nolgia:guild:123",
+        "tenant:nolgia:message:message-999",
+        "tenant:nolgia:tenant:nolgia",
+        "tenant:nolgia:user:789",
     }
 
 
@@ -869,7 +869,7 @@ async def test_memory_context_omits_empty_sections_and_disabled_graph() -> None:
 async def test_memory_context_uses_short_term_and_facts_by_default() -> None:
     # Given: SDK long-term and reasoning contexts exist while prompt flags are disabled.
     fact = _fact_row(
-        subject="tenant:bromigos:message:message-999",
+        subject="tenant:nolgia:message:message-999",
         predicate="discord.message_created",
         object_value="message message-999: default fact",
         metadata=_scope_metadata(_scope()),
@@ -1340,7 +1340,7 @@ async def test_graph_export_uses_scoped_sdk_graph_parameters() -> None:
             RecordingSdkNode(
                 id="message-1",
                 labels=["Message"],
-                properties={"tenant_id": "bromigos", "api_key": "sk-secret"},
+                properties={"tenant_id": "nolgia", "api_key": "sk-secret"},
             ),
         ],
         relationships=[
@@ -1381,7 +1381,7 @@ async def test_graph_export_uses_scoped_sdk_graph_parameters() -> None:
             GraphExportNode(
                 id="message-1",
                 labels=["Message"],
-                properties={"tenant_id": "bromigos", "api_key": "[REDACTED]"},
+                properties={"tenant_id": "nolgia", "api_key": "[REDACTED]"},
             ),
         ],
         relationships=[
@@ -1402,9 +1402,9 @@ async def test_scoped_long_term_search_filters_and_redacts_sdk_records() -> None
     # Given: SDK search returns mixed-scope records with sensitive metadata.
     scoped_metadata = _json_object(
         {
-            "tenant_id": "bromigos",
+            "tenant_id": "nolgia",
             "space_id": "discord",
-            "agent_id": "pc-principal",
+            "agent_id": "nolgia-agent",
             "session_id": "guild:123:channel:456",
             "user_id": "789",
             "visibility": "channel",
@@ -1528,7 +1528,7 @@ async def test_scoped_long_term_writes_attach_provenance_and_redact_metadata() -
     )
 
     # Then: SDK metadata is scope-bound, redacted, and provenance-aware.
-    assert entity.metadata["tenant_id"] == "bromigos"
+    assert entity.metadata["tenant_id"] == "nolgia"
     assert entity.metadata["api_key"] == "[REDACTED]"
     assert entity.metadata["source"] == "message"
     assert fake_client.long_term.facts == [
@@ -1537,14 +1537,14 @@ async def test_scoped_long_term_writes_attach_provenance_and_redact_metadata() -
             predicate="prefers",
             obj="snacks",
             metadata={
-                "agent_id": "pc-principal",
+                "agent_id": "nolgia-agent",
                 "channel_id": "456",
                 "guild_id": "123",
                 "session_id": "guild:123:channel:456",
                 "source": "message",
                 "source_id": "message-1",
                 "space_id": "discord",
-                "tenant_id": "bromigos",
+                "tenant_id": "nolgia",
                 "token": "[REDACTED]",
                 "user_id": "789",
                 "visibility": "channel",
@@ -1553,8 +1553,8 @@ async def test_scoped_long_term_writes_attach_provenance_and_redact_metadata() -
         ),
     ]
     assert fact.metadata["token"] == "[REDACTED]"
-    assert preference.metadata["tenant_id"] == "bromigos"
-    assert preference.user_identifier == "bromigos:discord:channel:pc-principal:789"
+    assert preference.metadata["tenant_id"] == "nolgia"
+    assert preference.user_identifier == "nolgia:discord:channel:nolgia-agent:789"
 
 
 @pytest.mark.anyio
@@ -3320,9 +3320,9 @@ class FailingDriver:
 
 def _scope() -> MemoryScope:
     return MemoryScope(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         space_id="discord",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         session_id="guild:123:channel:456",
         user_id="789",
         visibility=MemoryVisibility.CHANNEL,
@@ -3504,9 +3504,9 @@ def _consolidation_apply_request(  # noqa: PLR0913
 
 def _client_event() -> ClientEvent:
     return ClientEvent(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         source_client=SourceClient.DISCORD,
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         event_id="discord-message-999",
         event_type=ClientEventType.MESSAGE_CREATED,
         occurred_at="2026-06-27T01:02:03Z",

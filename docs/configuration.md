@@ -19,7 +19,7 @@ YAML config file → code defaults**.
 | `GNOSIS_READ_OPERATOR_TOKEN` / `WRITE` / `EXPORT` / `ADMIN` `_OPERATOR_TOKEN` | operator token classes (see [security.md](security.md)) |
 | `NEO4J_URI` / `NEO4J_USERNAME` / `NEO4J_PASSWORD` | graph store |
 | `LITELLM_BASE_URL` / `LITELLM_API_KEY` | OpenAI-compatible LLM + embedding endpoint |
-| `GNOSIS_TENANT_ID` | default tenant (`bromigos`) |
+| `GNOSIS_TENANT_ID` | default tenant (`nolgia`) |
 
 ## Models & backends
 
