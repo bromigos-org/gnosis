@@ -77,7 +77,7 @@ async def test_add_memory_tool_round_trip_builds_server_side_scope() -> None:
 
     # Then: the scope is constructed server-side and results flow back.
     request = stub.add_requests[0]
-    assert request.scope.tenant_id == "bromigos"
+    assert request.scope.tenant_id == "nolgia"
     assert request.scope.space_id == "mcp"
     assert request.scope.agent_id == "mcp-client"
     assert request.scope.session_id == "mcp:789"

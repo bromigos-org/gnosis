@@ -37,8 +37,8 @@ async def test_approved_skill_is_returned() -> None:
     backend = _backend(
         SkillRecord(
             skill_id="skill-approved",
-            tenant_id="bromigos",
-            agent_id="pc-principal",
+            tenant_id="nolgia",
+            agent_id="nolgia-agent",
             name="Summarize channel",
             description="Summarize visible Discord channel context for review.",
             status=SkillStatus.APPROVED,
@@ -46,8 +46,8 @@ async def test_approved_skill_is_returned() -> None:
         ),
         SkillRecord(
             skill_id="skill-proposed",
-            tenant_id="bromigos",
-            agent_id="pc-principal",
+            tenant_id="nolgia",
+            agent_id="nolgia-agent",
             name="Draft skill",
             description="A draft that must not enter prompt context.",
             status=SkillStatus.PROPOSED,
@@ -55,9 +55,9 @@ async def test_approved_skill_is_returned() -> None:
         ),
     )
 
-    # When: PC Principal asks for runnable skill context.
+    # When: Nolgia Agent asks for runnable skill context.
     response = await backend.list_skills(
-        SkillListRequest(tenant_id="bromigos", agent_id="pc-principal"),
+        SkillListRequest(tenant_id="nolgia", agent_id="nolgia-agent"),
     )
 
     # Then: only the approved reviewed skill is returned.
@@ -74,13 +74,13 @@ async def test_unapproved_proposal_is_not_runnable() -> None:
 
     # When: the agent lists skills and tries to record usage for the proposal id.
     list_response = await backend.list_skills(
-        SkillListRequest(tenant_id="bromigos", agent_id="pc-principal"),
+        SkillListRequest(tenant_id="nolgia", agent_id="nolgia-agent"),
     )
     usage_response = await backend.record_skill_usage(
         SkillUsage(
             skill_id=proposal.proposal_id,
-            tenant_id="bromigos",
-            agent_id="pc-principal",
+            tenant_id="nolgia",
+            agent_id="nolgia-agent",
             used_by="789",
             used_at="2026-06-27T01:02:05Z",
             metadata={"outcome": "blocked"},
@@ -100,14 +100,14 @@ async def test_skill_proposal_is_persisted_for_review() -> None:
     backend = _backend(registry=registry)
     proposal = _proposal()
 
-    # When: PC Principal proposes a skill.
+    # When: Nolgia Agent proposes a skill.
     response = await backend.propose_skill(proposal)
 
     # Then: the proposal is stored for review without creating an approved skill.
     assert response == proposal
     assert registry.proposals == (proposal,)
     skills = await backend.list_skills(
-        SkillListRequest(tenant_id="bromigos", agent_id="pc-principal"),
+        SkillListRequest(tenant_id="nolgia", agent_id="nolgia-agent"),
     )
     assert skills.skills == []
 
@@ -119,8 +119,8 @@ async def test_approved_skill_usage_is_recorded() -> None:
         records=(
             SkillRecord(
                 skill_id="skill-approved",
-                tenant_id="bromigos",
-                agent_id="pc-principal",
+                tenant_id="nolgia",
+                agent_id="nolgia-agent",
                 name="Summarize channel",
                 description="Summarize visible Discord channel context for review.",
                 status=SkillStatus.APPROVED,
@@ -132,8 +132,8 @@ async def test_approved_skill_usage_is_recorded() -> None:
     backend = _backend(registry=registry)
     usage = SkillUsage(
         skill_id="skill-approved",
-        tenant_id="bromigos",
-        agent_id="pc-principal",
+        tenant_id="nolgia",
+        agent_id="nolgia-agent",
         used_by="789",
         used_at="2026-06-27T01:02:05Z",
         metadata={"outcome": "ok"},
@@ -161,8 +161,8 @@ def _backend(
 def _proposal() -> SkillProposal:
     return SkillProposal(
         proposal_id="proposal-1",
-        tenant_id="bromigos",
-        agent_id="pc-principal",
+        tenant_id="nolgia",
+        agent_id="nolgia-agent",
         proposed_by="789",
         name="Summarize channel",
         description="Summarize visible Discord channel context for review.",

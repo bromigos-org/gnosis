@@ -34,7 +34,7 @@ services:
       retries: 30
 
   gnosis:
-    image: ghcr.io/bromigos-org/gnosis:latest
+    image: ghcr.io/nolgiainc/gnosis:latest
     # Or build from this checkout instead of pulling the published image:
     #   build: .
     depends_on:
@@ -51,7 +51,7 @@ services:
       GNOSIS_WRITE_OPERATOR_TOKEN: ${GNOSIS_WRITE_OPERATOR_TOKEN:-dev-write}
       GNOSIS_EXPORT_OPERATOR_TOKEN: ${GNOSIS_EXPORT_OPERATOR_TOKEN:-dev-export}
       GNOSIS_ADMIN_OPERATOR_TOKEN: ${GNOSIS_ADMIN_OPERATOR_TOKEN:-dev-admin}
-      GNOSIS_TENANT_ID: ${GNOSIS_TENANT_ID:-bromigos}
+      GNOSIS_TENANT_ID: ${GNOSIS_TENANT_ID:-nolgia}
       # --- graph store ---
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USERNAME: neo4j

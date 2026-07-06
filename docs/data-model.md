@@ -56,8 +56,8 @@ deleting stored records. See supersession in [CAPABILITIES.md](CAPABILITIES.md).
 **Identity & scope**
 `Tenant`, `Agent`, `Client`, `User` — the scope/identity nodes.
 
-**Source modules** (populated by the writing client's domain, e.g. Discord via
-PC-Principal): `Guild`, `Channel`, `Role`, `Category`, `Link`, `Attachment`,
+**Source modules** (populated by the writing client's domain, e.g. a Discord
+bot): `Guild`, `Channel`, `Role`, `Category`, `Link`, `Attachment`,
 `Event`. These are source-specific and generalize behind the scope spine.
 
 **Operations / audit**

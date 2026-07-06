@@ -1,7 +1,7 @@
 [project]
 name = "gnosis"
 version = "0.1.0"
-description = "Scoped graph/vector memory API for homelab agents"
+description = "Scoped graph/vector memory API for self-hosted agents"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

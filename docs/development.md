@@ -52,7 +52,7 @@ config sets `GNOSIS_CONFIG_FILE` itself.
 ## Running gnosis locally
 
 gnosis needs Neo4j and an OpenAI-compatible LLM + embedding endpoint. The sibling
-[`gnosis-membench`](https://github.com/bromigos-org/gnosis-membench) harness ships
+[`gnosis-membench`](https://github.com/nolgiainc/gnosis-membench) harness ships
 a `stack/compose.yaml` (Neo4j + gnosis, wired to ollama or LiteLLM) — the fastest
 way to bring the whole thing up. Otherwise see [operations.md](operations.md).
 
@@ -82,7 +82,7 @@ compose cleanly and stay measurable:
 ## Measuring a change
 
 Quality is measured, not asserted. Run the change through
-[`gnosis-membench`](https://github.com/bromigos-org/gnosis-membench) on LOCOMO or
+[`gnosis-membench`](https://github.com/nolgiainc/gnosis-membench) on LOCOMO or
 LongMemEval with the official judges, flag-gated and A/B'd against the frozen
 gate, and record the result — **kept and rejected alike** — in
 [BENCHMARKS.md](BENCHMARKS.md). Guardrails learned the hard way:

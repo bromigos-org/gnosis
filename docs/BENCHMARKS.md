@@ -1,6 +1,6 @@
 # Official benchmark results
 
-Mirror of the canonical log in [gnosis-membench/RESULTS.md](https://github.com/bromigos-org/gnosis-membench/blob/main/RESULTS.md); the harness repo is the source of truth for new runs.
+Mirror of the canonical log in [gnosis-membench/RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md); the harness repo is the source of truth for new runs.
 
 > **Full-LOCOMO standing (Run 23, 2026-07-04).** The Run 1–22 trajectory
 > below was measured on **subset 3** (3 of 10 conversations, 497 Q) — a fast
@@ -36,7 +36,7 @@ durable summary.
 **Frozen config (LOCOMO — regression gate)**: LOCOMO subset 3 (conv-26,
 conv-30, conv-41), 1,451 turns
 ingested, 497 questions; retrieval depth `max_items`/`limit` = 20; answering
-and judging on GPT-5.5 via homelab LiteLLM at judge temperature = provider
+and judging on GPT-5.5 via self-hosted LiteLLM at judge temperature = provider
 default (gpt-5.5 hard-rejects the `temperature` param — deviation from the
 official protocol, constant across all runs); LOCOMO adversarial rows scored
 by the official substring rule; headline J excludes adversarial (matches the
@@ -45,7 +45,7 @@ mem0 paper's convention). gnosis embeddings: `local-qwen3-embedding-0.6b`
 
 **Embedder note (2026-07-04)**: the LongMemEval_S campaign (new primary
 target) switches gnosis to cloud embeddings — `gemini-embedding-001`
-(3072-dim, via the homelab LiteLLM; homelab PR #14 exposed the route).
+(3072-dim, via the self-hosted LiteLLM).
 Chosen over `text-embedding-3-small`/`-large` because it outranks both on
 MTEB retrieval and the goal is highest scores, not published-system
 comparability; verified live through gnosis's config path (3072-dim Fact
@@ -292,7 +292,7 @@ Retrieval mechanism stats (context condition unless noted):
   `GNOSIS_RECALL_FILTER_ENABLED`, candidates cap 30). Same ingested data
   reused (read-path-only change). Deviations from the frozen config:
   `GNOSIS_RECALL_FILTER_ENABLED=true` (the feature under test) and gnosis-side
-  `GNOSIS_LLM=openai/gpt-5.5` via the homelab LiteLLM (matches production; the
+  `GNOSIS_LLM=openai/gpt-5.5` via the self-hosted LiteLLM (matches production; the
   filter needs a real model — reads make no other `GNOSIS_LLM` calls, so this
   only powers the filter). A logging-only compose overlay
   (`stack/compose.recall-logging.yaml`) surfaced the filter's structured log
@@ -804,7 +804,7 @@ mem0 66.9 · mem0-graph 68.4 · full-context 72.9 · Letta (blog) 74.0.
 - Runs 1-4 ingest verbatim (no LLM extraction); Run 5 onward ingests with
   edu-v1 fact extraction.
 - Weekly regression runs (subset 2, this same frozen judge) execute in-cluster
-  via the homelab `membench` CronJob and upload to RustFS `membench/results/`.
+  via the scheduled `membench` CronJob and upload to RustFS `membench/results/`.
 
 ## Research sources behind the measured changes
 

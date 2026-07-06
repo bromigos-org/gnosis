@@ -3,7 +3,7 @@
 gnosis gives your agents durable, cross-session memory behind an auth + scope +
 redaction gateway. This guide brings gnosis up, then wires a **real project** to
 it — a [NousResearch **hermes**](https://github.com/NousResearch/hermes-agent)
-agent, via the [hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis)
+agent, via the [hermes-gnosis](https://github.com/nolgiainc/hermes-gnosis)
 memory-provider plugin — so you finish with an agent that remembers across turns
 and sessions. If you're integrating a different client, the raw HTTP path is at
 the end and the full contract is in [provider-surface.md](provider-surface.md).
@@ -19,7 +19,7 @@ gnosis is a stateless gateway with two backing services:
   always used; the write/read LLM features (extraction, routing) want a *capable*
   chat model.
 
-The `ghcr.io/bromigos-org/gnosis` image runs uvicorn on `:8080` and bundles
+The `ghcr.io/nolgiainc/gnosis` image runs uvicorn on `:8080` and bundles
 `configs/`, so it auto-loads the preferred config on start.
 
 ## 1 — Run gnosis
@@ -29,7 +29,7 @@ fastest way up. It defaults to ollama on the host; edit the `OPENAI_BASE_URL` /
 `GNOSIS_LLM` / `GNOSIS_EMBEDDING` vars for any other endpoint.
 
 ```bash
-git clone https://github.com/bromigos-org/gnosis && cd gnosis
+git clone https://github.com/nolgiainc/gnosis && cd gnosis
 # for the local ollama default, pull the models first:
 #   ollama pull llama3.2:latest && ollama pull nomic-embed-text
 docker compose up -d
@@ -48,12 +48,12 @@ docker run --rm -p 8080:8080 \
   -e GNOSIS_WRITE_OPERATOR_TOKEN=$(openssl rand -hex 32) \
   -e GNOSIS_EXPORT_OPERATOR_TOKEN=$(openssl rand -hex 32) \
   -e GNOSIS_ADMIN_OPERATOR_TOKEN=$(openssl rand -hex 32) \
-  -e GNOSIS_TENANT_ID=bromigos \
+  -e GNOSIS_TENANT_ID=nolgia \
   -e NEO4J_URI=bolt://neo4j:7687 -e NEO4J_USERNAME=neo4j -e NEO4J_PASSWORD=... \
   -e LITELLM_BASE_URL=http://litellm:4000/v1 -e LITELLM_API_KEY=... \
   -e GNOSIS_LLM=openai/<capable-chat-model> \
   -e GNOSIS_EMBEDDING=<embedding-model> -e GNOSIS_EMBEDDING_DIMENSIONS=<dim> \
-  ghcr.io/bromigos-org/gnosis
+  ghcr.io/nolgiainc/gnosis
 ```
 
 **From source** (Python 3.13 + [uv](https://docs.astral.sh/uv/); see
@@ -65,7 +65,7 @@ uv run uvicorn gnosis.main:app --host 0.0.0.0 --port 8080   # export the env var
 ```
 </details>
 
-`GNOSIS_TENANT_ID` (default `bromigos`) is the deployment's isolation boundary:
+`GNOSIS_TENANT_ID` (default `nolgia`) is the deployment's isolation boundary:
 every request's `scope.tenant_id` **must match it** or the gateway returns `403`
 before the backend runs. Keep the tenant consistent between gnosis and every
 client below.
@@ -102,7 +102,7 @@ deployment asking about the same user see the same memories; `agent_id` and
 
 ## 4 — Use it in a real project: a hermes agent
 
-[hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis) is a drop-in
+[hermes-gnosis](https://github.com/nolgiainc/hermes-gnosis) is a drop-in
 memory provider for [NousResearch hermes-agent](https://github.com/NousResearch/hermes-agent).
 Point a hermes agent at your gnosis instance and it gains long-term memory with
 no code changes — this is the intended integration path.
@@ -111,7 +111,7 @@ no code changes — this is the intended integration path.
 default `~/.hermes/plugins/`):
 
 ```bash
-pip install git+https://github.com/bromigos-org/hermes-gnosis   # or a local checkout path
+pip install git+https://github.com/nolgiainc/hermes-gnosis   # or a local checkout path
 hermes-gnosis-install                                           # copies it into $HERMES_HOME/plugins/gnosis/
 ```
 
@@ -132,7 +132,7 @@ Then set the connection in `$HERMES_HOME/gnosis.json` (or run
 ```json
 {
   "gnosis_url": "http://localhost:8080",
-  "tenant_id": "bromigos",
+  "tenant_id": "nolgia",
   "user_id": "hermes-user",
   "agent_id": "hermes"
 }
@@ -169,7 +169,7 @@ export GNOSIS_URL=http://localhost:8080 TOKEN=<your GNOSIS_TOKEN>
 curl -s $GNOSIS_URL/v1/memories \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{
-    "scope": {"tenant_id":"bromigos","space_id":"demo","agent_id":"assistant",
+    "scope": {"tenant_id":"nolgia","space_id":"demo","agent_id":"assistant",
               "session_id":"sess-1","user_id":"alice","visibility":"private_user"},
     "messages": [
       {"role":"user","content":"I moved from Seattle to Austin last March."},
@@ -188,7 +188,7 @@ need not match):
 curl -s $GNOSIS_URL/v1/memory/context \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{
-    "scope": {"tenant_id":"bromigos","space_id":"demo","agent_id":"assistant",
+    "scope": {"tenant_id":"nolgia","space_id":"demo","agent_id":"assistant",
               "session_id":"sess-2","user_id":"alice","visibility":"private_user"},
     "query": "Where does Alice live?", "max_items": 8
   }'
@@ -216,7 +216,7 @@ full setting reference: [configuration.md](configuration.md).
 
 ## Where to next
 
-- [hermes-gnosis](https://github.com/bromigos-org/hermes-gnosis) — the plugin's
+- [hermes-gnosis](https://github.com/nolgiainc/hermes-gnosis) — the plugin's
   own README: tool behavior, prefetch/turn-sync internals, and every setting.
 - [CAPABILITIES.md](CAPABILITIES.md) — what each read/write technique does and why.
 - [provider-surface.md](provider-surface.md) — the complete HTTP contract + MCP.
@@ -226,6 +226,6 @@ full setting reference: [configuration.md](configuration.md).
   federation safety.
 
 > Benchmarking rather than integrating? The
-> [gnosis-membench](https://github.com/bromigos-org/gnosis-membench) harness
+> [gnosis-membench](https://github.com/nolgiainc/gnosis-membench) harness
 > ships a build-from-source variant of this stack that A/Bs feature flags against
 > the official LOCOMO / LongMemEval judges.

@@ -62,5 +62,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/bromigos-org/gnosis:latest
-            ghcr.io/bromigos-org/gnosis:sha-${{ github.sha }}
+            ghcr.io/nolgiainc/gnosis:latest
+            ghcr.io/nolgiainc/gnosis:sha-${{ github.sha }}

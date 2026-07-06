@@ -135,7 +135,7 @@ class Settings(BaseSettings):
         ),
         min_length=1,
     )
-    gnosis_tenant_id: str = Field(default="bromigos", min_length=1)
+    gnosis_tenant_id: str = Field(default="nolgia", min_length=1)
     neo4j_uri: str = Field(default="", min_length=1)
     neo4j_username: str = Field(default="neo4j", min_length=1)
     neo4j_password: str = Field(default="", min_length=1)

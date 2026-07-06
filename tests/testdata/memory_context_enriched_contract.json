@@ -3,7 +3,7 @@
     {
       "source": "conversation_buffer",
       "memory_type": "short_term",
-      "content": "Short-term continuity: blackflame asked PC Principal to keep the Neo4j agent-memory contract test-focused in this Discord thread.",
+      "content": "Short-term continuity: blackflame asked Nolgia Agent to keep the Neo4j agent-memory contract test-focused in this Discord thread.",
       "facts": [
         {
           "kind": "message",
@@ -15,23 +15,23 @@
     {
       "source": "long_term_facts",
       "memory_type": "long_term",
-      "content": "Long-term durable knowledge: PC-Principal consumes typed gnosis context responses and must not call Neo4j directly.",
+      "content": "Long-term durable knowledge: nolgia-agent consumes typed gnosis context responses and must not call Neo4j directly.",
       "facts": [
         {
           "kind": "fact",
           "durability": "long_term",
-          "summary": "gnosis is the sole SDK and Neo4j gateway for Bromigos agents."
+          "summary": "gnosis is the sole SDK and Neo4j gateway for Nolgia agents."
         }
       ]
     },
     {
       "source": "entity_enrichment",
       "memory_type": "entities",
-      "content": "Entity enrichment: PC Principal is the Discord agent rendering reviewed memory context for Bromigos.",
+      "content": "Entity enrichment: Nolgia Agent is the Discord agent rendering reviewed memory context for Nolgia.",
       "facts": [
         {
           "kind": "entity",
-          "name": "PC Principal",
+          "name": "Nolgia Agent",
           "type": "agent"
         }
       ]
@@ -80,7 +80,7 @@
         {
           "kind": "trace_summary",
           "trace_id": "trace-contract-12",
-          "summary": "Service ordered enriched sections rendered generically in PC-Principal."
+          "summary": "Service ordered enriched sections rendered generically in nolgia-agent."
         }
       ]
     }

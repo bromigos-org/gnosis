@@ -8,7 +8,7 @@ prompt-safe `sections[]` rather than raw storage payloads.
 ## Layers
 
 ```
-        HTTP clients (PC-Principal, hermes agents via hermes-gnosis, MCP)
+        HTTP clients (Discord bots, hermes agents via hermes-gnosis, MCP)
                                   │
         ┌─────────────────────────▼─────────────────────────┐
         │  Gateway  (FastAPI: main.py + routes/*)            │  HTTP contracts

@@ -174,7 +174,7 @@ def test_matches_filters_when_metadata_and_scope_fields_combine() -> None:
     # Given: a record with scope tags and custom metadata.
     fields = MemoryFilterFields(
         user_id="789",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         created_at=datetime(2026, 6, 27, 1, 2, 3, tzinfo=UTC),
         metadata={"topic": "snacks", "score": 4},
     )
@@ -198,7 +198,7 @@ def test_matches_filters_when_or_and_not_reject_the_record() -> None:
     # Given: a record that fails both OR branches.
     fields = MemoryFilterFields(
         user_id="789",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         created_at=None,
         metadata={"topic": "games"},
     )

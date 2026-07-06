@@ -284,13 +284,13 @@ def test_federated_add_requires_promotion_provenance(
             "scope": _scope_payload(),
             "content": "promoted memory",
             "infer": False,
-            "metadata": {"promoted_from": "bromigos"},
+            "metadata": {"promoted_from": "nolgia"},
         },
     )
 
     # Then: the promoted write is accepted.
     assert accepted.status_code == 200
-    assert backend.memory_add_requests[0].metadata["promoted_from"] == "bromigos"
+    assert backend.memory_add_requests[0].metadata["promoted_from"] == "nolgia"
 
 
 def test_federation_token_is_rejected_on_non_memory_routes(
@@ -476,13 +476,13 @@ def test_promote_real_run_posts_provenance_and_reports_partial_failure(
     assert calls[0].headers["Authorization"] == f"Bearer {_PEER_TOKEN}"
     assert accepted.scope.tenant_id == "partner"
     assert accepted.scope.space_id == "federation"
-    assert accepted.scope.agent_id == "gnosis:bromigos"
+    assert accepted.scope.agent_id == "gnosis:nolgia"
     assert accepted.scope.session_id == "promote"
     assert accepted.scope.user_id == "789"
     assert accepted.scope.visibility == "private_user"
     assert accepted.infer is False
     assert accepted.content == "remember this"
-    assert accepted.metadata["promoted_from"] == "bromigos"
+    assert accepted.metadata["promoted_from"] == "nolgia"
     assert accepted.metadata["source_memory_id"] == _MEMORY_ID
     assert accepted.metadata["topic"] == "snacks"
     assert "shareable" not in accepted.metadata
@@ -817,9 +817,9 @@ def _federation_header() -> dict[str, str]:
 
 def _scope_payload() -> dict[str, str]:
     return {
-        "tenant_id": "bromigos",
+        "tenant_id": "nolgia",
         "space_id": "discord",
-        "agent_id": "pc-principal",
+        "agent_id": "nolgia-agent",
         "session_id": "guild:123:channel:456",
         "user_id": "789",
         "visibility": "channel",

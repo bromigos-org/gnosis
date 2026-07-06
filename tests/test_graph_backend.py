@@ -48,7 +48,7 @@ async def test_discord_message_upsert_and_context_retrieval() -> None:
     assert context.context == "message message-999: remember the plasma conduit"
     assert context.facts == [
         {
-            "id": "tenant:bromigos:message:message-999",
+            "id": "tenant:nolgia:message:message-999",
             "type": "message",
             "scope": "channel",
             "summary": "message message-999: remember the plasma conduit",
@@ -86,7 +86,7 @@ async def test_graph_context_does_not_cross_channel_scope() -> None:
     # Then: facts from sibling channels never leak into the response.
     assert context.context == "message message-1: alpha"
     assert [fact["id"] for fact in context.facts] == [
-        "tenant:bromigos:message:message-1",
+        "tenant:nolgia:message:message-1",
     ]
 
 
@@ -150,7 +150,7 @@ async def test_graph_context_ranks_top_active_channels_for_queried_user() -> Non
     ):
         _ = await store.ingest_event(event)
 
-    # When: PC-Principal asks for the mentioned user's top channels at guild scope.
+    # When: nolgia-agent asks for the mentioned user's top channels at guild scope.
     context = await store.get_context(
         GraphContextRequest(
             scope=_guild_scope(),
@@ -166,7 +166,7 @@ async def test_graph_context_ranks_top_active_channels_for_queried_user() -> Non
     )
     assert context.facts == [
         {
-            "id": "aggregate:bromigos:guild-123:black-dave:channel-1",
+            "id": "aggregate:nolgia:guild-123:black-dave:channel-1",
             "type": "channel_activity",
             "scope": "guild",
             "summary": "BlackDave active channel #1: general (2 messages)",
@@ -179,7 +179,7 @@ async def test_graph_context_ranks_top_active_channels_for_queried_user() -> Non
             "message_count": 2,
         },
         {
-            "id": "aggregate:bromigos:guild-123:black-dave:channel-2",
+            "id": "aggregate:nolgia:guild-123:black-dave:channel-2",
             "type": "channel_activity",
             "scope": "guild",
             "summary": "BlackDave active channel #2: bot-lab (1 message)",
@@ -236,7 +236,7 @@ async def test_message_delete_creates_tombstone() -> None:
     assert result.status == EventIngestStatus.ACCEPTED
     assert context.facts == [
         {
-            "id": "tenant:bromigos:message:message-999",
+            "id": "tenant:nolgia:message:message-999",
             "type": "message",
             "scope": "channel",
             "summary": "message message-999: deleted",
@@ -397,9 +397,9 @@ async def test_in_memory_executor_records_schema_bootstrap_before_operations() -
 
 def _scope(*, channel_id: str = "channel-456") -> MemoryScope:
     return MemoryScope(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         space_id="discord",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         session_id=f"guild:guild-123:channel:{channel_id}",
         user_id="user-789",
         visibility=MemoryVisibility.CHANNEL,
@@ -410,9 +410,9 @@ def _scope(*, channel_id: str = "channel-456") -> MemoryScope:
 
 def _guild_scope() -> MemoryScope:
     return MemoryScope(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         space_id="discord",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         session_id="guild:guild-123",
         user_id="user-789",
         visibility=MemoryVisibility.GUILD,
@@ -437,9 +437,9 @@ def _message_event(
 ) -> ClientEvent:
     event_values = values or _MessageEventValues()
     return ClientEvent(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         source_client=SourceClient.DISCORD,
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         event_id=event_values.event_id,
         event_type=event_values.event_type,
         occurred_at="2026-06-27T01:02:03Z",
@@ -479,9 +479,9 @@ def _channel_event(
     name: str,
 ) -> ClientEvent:
     return ClientEvent(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         source_client=SourceClient.DISCORD,
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         event_id=event_id,
         event_type=event_type,
         occurred_at="2026-06-27T01:02:03Z",

@@ -32,7 +32,7 @@ def test_validator_accepts_scoped_read_only_query() -> None:
 
     # Then: runtime scope parameters are injected and the generated query is kept.
     assert validated.cypher == plan.cypher
-    assert validated.parameters["tenant_id"] == "bromigos"
+    assert validated.parameters["tenant_id"] == "nolgia"
     assert validated.parameters["guild_id"] == "guild-123"
     assert validated.parameters["limit"] == 5
 
@@ -43,7 +43,7 @@ def test_validator_accepts_scoped_read_only_query() -> None:
         "MATCH (n) DETACH DELETE n RETURN n LIMIT $limit",
         "MERGE (n:Message {tenant_id: $tenant_id}) RETURN n LIMIT $limit",
         "CALL db.labels() YIELD label RETURN label LIMIT $limit",
-        "MATCH (n:Message {tenant_id: 'bromigos'}) RETURN n LIMIT $limit",
+        "MATCH (n:Message {tenant_id: 'nolgia'}) RETURN n LIMIT $limit",
         "MATCH (n:Message {tenant_id: $tenant_id}) RETURN n",
         "MATCH (n:Secret {tenant_id: $tenant_id}) RETURN n LIMIT $limit",
     ],
@@ -169,9 +169,9 @@ def test_validator_accepts_fully_scoped_message_query() -> None:
 
 def _scope() -> MemoryScope:
     return MemoryScope(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         space_id="discord",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         session_id="guild:guild-123:channel:channel-456",
         user_id="user-789",
         visibility=MemoryVisibility.CHANNEL,
@@ -184,9 +184,9 @@ def _memory_scope() -> MemoryScope:
     # The entity graph is per-user memory (LOCOMO-style), so its queries run
     # under a private-user scope with no guild/channel narrowing.
     return MemoryScope(
-        tenant_id="bromigos",
+        tenant_id="nolgia",
         space_id="memory",
-        agent_id="pc-principal",
+        agent_id="nolgia-agent",
         session_id="session-1",
         user_id="user-789",
         visibility=MemoryVisibility.PRIVATE_USER,
@@ -219,7 +219,7 @@ def test_validator_accepts_scoped_entity_relates_traversal() -> None:
     validated = SafeGraphQueryValidator().validate(plan, request)
 
     # Then: it is accepted with trusted runtime scope parameters injected.
-    assert validated.parameters["tenant_id"] == "bromigos"
+    assert validated.parameters["tenant_id"] == "nolgia"
     assert validated.parameters["user_id"] == "user-789"
     assert validated.parameters["name"] == "Alice"
 

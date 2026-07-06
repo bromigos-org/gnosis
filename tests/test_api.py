@@ -572,7 +572,7 @@ def test_diagnostics_returns_safe_readiness_details() -> None:
     # Then: tenant, non-secret config, and backend readiness are returned.
     assert response.status_code == 200
     assert response.json() == {
-        "tenant_id": "bromigos",
+        "tenant_id": "nolgia",
         "config": {
             "neo4j_uri": "bolt://neo4j.neo4j.svc.cluster.local:7687",
             "neo4j_username": "neo4j",
@@ -671,11 +671,11 @@ def test_write_message_when_request_is_scoped() -> None:
     # Then: the API accepts and forwards the typed request.
     assert response.status_code == 200
     assert response.json() == {"accepted": True}
-    assert backend.messages[0].scope.tenant_id == "bromigos"
+    assert backend.messages[0].scope.tenant_id == "nolgia"
 
 
 def test_write_message_when_scope_is_outside_policy() -> None:
-    # Given: an app configured for the bromigos tenant.
+    # Given: an app configured for the nolgia tenant.
     backend = RecordingBackend()
     client = TestClient(create_app(settings_factory=_settings, backend=backend))
 
@@ -713,7 +713,7 @@ def test_preview_extraction_when_request_is_scoped() -> None:
 
 
 def test_preview_extraction_when_scope_is_outside_policy() -> None:
-    # Given: an app configured for the bromigos tenant.
+    # Given: an app configured for the nolgia tenant.
     backend = RecordingBackend()
     client = TestClient(create_app(settings_factory=_settings, backend=backend))
 
@@ -930,7 +930,7 @@ def test_memory_context_requires_auth() -> None:
 
 
 def test_memory_context_when_scope_is_outside_policy() -> None:
-    # Given: an app configured for the bromigos tenant.
+    # Given: an app configured for the nolgia tenant.
     backend = RecordingBackend()
     client = TestClient(create_app(settings_factory=_settings, backend=backend))
 
@@ -1073,7 +1073,7 @@ def test_new_event_endpoint_requires_auth() -> None:
 
 
 def test_write_event_when_scope_is_outside_policy() -> None:
-    # Given: an app configured for the bromigos tenant.
+    # Given: an app configured for the nolgia tenant.
     backend = RecordingBackend()
     client = TestClient(create_app(settings_factory=_settings, backend=backend))
 
@@ -1177,7 +1177,7 @@ def test_write_event_batch_when_one_event_fails_policy() -> None:
             },
         ],
     }
-    assert [event.tenant_id for event in backend.events] == ["bromigos"]
+    assert [event.tenant_id for event in backend.events] == ["nolgia"]
 
 
 def test_write_event_batch_when_event_tenant_differs_from_scope_rejects_event() -> None:
@@ -1213,7 +1213,7 @@ def test_write_event_batch_when_event_tenant_differs_from_scope_rejects_event() 
             },
         ],
     }
-    assert [event.tenant_id for event in backend.events] == ["bromigos"]
+    assert [event.tenant_id for event in backend.events] == ["nolgia"]
 
 
 def test_get_graph_context_when_request_is_scoped() -> None:
@@ -1231,7 +1231,7 @@ def test_get_graph_context_when_request_is_scoped() -> None:
     # Then: the scoped graph context is returned.
     assert response.status_code == 200
     assert response.json() == {"context": "graph facts", "facts": []}
-    assert backend.graph_context_requests[0].scope.agent_id == "pc-principal"
+    assert backend.graph_context_requests[0].scope.agent_id == "nolgia-agent"
 
 
 def test_get_graph_context_when_payload_has_unknown_field() -> None:
@@ -1310,7 +1310,7 @@ def test_sdk_stats_rejects_export_operator_token() -> None:
 
 
 def test_sdk_stats_when_scope_is_outside_policy() -> None:
-    # Given: a read operator token scoped to the bromigos tenant.
+    # Given: a read operator token scoped to the nolgia tenant.
     backend = RecordingBackend()
     client = TestClient(create_app(settings_factory=_settings, backend=backend))
 
@@ -1513,7 +1513,7 @@ def test_graph_export_validates_max_limit() -> None:
 
 
 def test_graph_export_when_scope_is_outside_policy() -> None:
-    # Given: an export operator token scoped to the bromigos tenant.
+    # Given: an export operator token scoped to the nolgia tenant.
     backend = RecordingBackend()
     client = TestClient(create_app(settings_factory=_settings, backend=backend))
 
@@ -1539,7 +1539,7 @@ def test_graph_export_returns_scoped_redacted_graph() -> None:
                     id="message-1",
                     labels=["Message"],
                     properties={
-                        "tenant_id": "bromigos",
+                        "tenant_id": "nolgia",
                         "token": "abc123secretTOKEN456",
                     },
                 ),
@@ -1573,7 +1573,7 @@ def test_graph_export_returns_scoped_redacted_graph() -> None:
             {
                 "id": "message-1",
                 "labels": ["Message"],
-                "properties": {"tenant_id": "bromigos", "token": "[REDACTED]"},
+                "properties": {"tenant_id": "nolgia", "token": "[REDACTED]"},
             },
         ],
         "relationships": [
@@ -2201,7 +2201,7 @@ def test_skill_endpoints_when_requests_are_scoped() -> None:
     list_response = client.post(
         "/v1/skills",
         headers=_auth_header(),
-        json={"tenant_id": "bromigos", "agent_id": "pc-principal"},
+        json={"tenant_id": "nolgia", "agent_id": "nolgia-agent"},
     )
     proposal_response = client.post(
         "/v1/skills/proposals",
@@ -2220,8 +2220,8 @@ def test_skill_endpoints_when_requests_are_scoped() -> None:
         "skills": [
             {
                 "skill_id": "skill-1",
-                "tenant_id": "bromigos",
-                "agent_id": "pc-principal",
+                "tenant_id": "nolgia",
+                "agent_id": "nolgia-agent",
                 "name": "Summarize",
                 "description": "Summarize channels",
                 "status": "approved",
@@ -2245,7 +2245,7 @@ def test_skill_endpoint_when_token_is_missing() -> None:
     # When: a client lists skills without credentials.
     response = client.post(
         "/v1/skills",
-        json={"tenant_id": "bromigos", "agent_id": "pc-principal"},
+        json={"tenant_id": "nolgia", "agent_id": "nolgia-agent"},
     )
 
     # Then: bearer auth is required.
@@ -2253,7 +2253,7 @@ def test_skill_endpoint_when_token_is_missing() -> None:
 
 
 def test_skill_endpoint_when_tenant_is_outside_policy() -> None:
-    # Given: an app configured for the bromigos tenant.
+    # Given: an app configured for the nolgia tenant.
     backend = RecordingBackend()
     client = TestClient(create_app(settings_factory=_settings, backend=backend))
 
@@ -2261,7 +2261,7 @@ def test_skill_endpoint_when_tenant_is_outside_policy() -> None:
     response = client.post(
         "/v1/skills",
         headers=_auth_header(),
-        json={"tenant_id": "evil-corp", "agent_id": "pc-principal"},
+        json={"tenant_id": "evil-corp", "agent_id": "nolgia-agent"},
     )
 
     # Then: the API rejects the request before reaching the backend.
@@ -2274,7 +2274,7 @@ def test_skill_endpoint_when_tenant_is_outside_policy() -> None:
     [
         (
             "/v1/skills",
-            {"tenant_id": "evil-corp", "agent_id": "pc-principal"},
+            {"tenant_id": "evil-corp", "agent_id": "nolgia-agent"},
             "skill_list_requests",
         ),
         (
@@ -2282,7 +2282,7 @@ def test_skill_endpoint_when_tenant_is_outside_policy() -> None:
             {
                 "proposal_id": "proposal-1",
                 "tenant_id": "evil-corp",
-                "agent_id": "pc-principal",
+                "agent_id": "nolgia-agent",
                 "proposed_by": "789",
                 "name": "Summarize",
                 "description": "Summarize channels",
@@ -2296,7 +2296,7 @@ def test_skill_endpoint_when_tenant_is_outside_policy() -> None:
             {
                 "skill_id": "skill-1",
                 "tenant_id": "evil-corp",
-                "agent_id": "pc-principal",
+                "agent_id": "nolgia-agent",
                 "used_by": "789",
                 "used_at": "2026-06-27T01:02:05Z",
                 "scope": "agent_shared",
@@ -2621,7 +2621,7 @@ def test_get_context_when_request_is_scoped() -> None:
     # Then: the scoped context is returned.
     assert response.status_code == 200
     assert response.json() == {"context": "remembered facts"}
-    assert backend.context_requests[0].scope.agent_id == "pc-principal"
+    assert backend.context_requests[0].scope.agent_id == "nolgia-agent"
 
 
 @pytest.mark.anyio
@@ -2641,7 +2641,7 @@ async def test_neo4j_backend_writes_short_and_long_term_memory() -> None:
     # Then: short-term conversation and long-term fact stores both receive scope.
     assert response.accepted is True
     assert fake_client.short_term.messages[0].user_identifier == (
-        "bromigos:discord:channel:pc-principal:789"
+        "nolgia:discord:channel:nolgia-agent:789"
     )
     assert fake_client.long_term.facts[0].metadata["session_id"] == (
         "guild:123:channel:456"
@@ -2725,7 +2725,7 @@ async def test_neo4j_backend_memory_context_uses_graph_context_path() -> None:
         context="message message-999: visible graph note",
         facts=[
             {
-                "id": "tenant:bromigos:message:message-999",
+                "id": "tenant:nolgia:message:message-999",
                 "type": "message",
                 "scope": "channel",
                 "summary": "message message-999: visible graph note",
@@ -2758,7 +2758,7 @@ async def test_neo4j_backend_memory_context_uses_graph_context_path() -> None:
             content="message message-999: visible graph note",
             facts=[
                 {
-                    "id": "tenant:bromigos:message:message-999",
+                    "id": "tenant:nolgia:message:message-999",
                     "type": "message",
                     "scope": "channel",
                     "summary": "message message-999: visible graph note",
@@ -2780,12 +2780,12 @@ async def test_neo4j_backend_memory_context_uses_graph_context_path() -> None:
 async def test_neo4j_backend_memory_context_dedupes_graph_facts() -> None:
     # Given: a local Fact already represents one graph node summary.
     fact: JsonObject = {
-        "subject": "tenant:bromigos:message:message-999",
+        "subject": "tenant:nolgia:message:message-999",
         "predicate": "discord.message_created",
         "object": "message message-999: duplicate graph note",
         "metadata": {
-            "tenant_id": "bromigos",
-            "agent_id": "pc-principal",
+            "tenant_id": "nolgia",
+            "agent_id": "nolgia-agent",
             "session_id": "guild:123:channel:456",
             "user_id": "789",
             "visibility": "channel",
@@ -2801,14 +2801,14 @@ async def test_neo4j_backend_memory_context_dedupes_graph_facts() -> None:
         ),
         facts=[
             {
-                "id": "tenant:bromigos:message:message-999",
+                "id": "tenant:nolgia:message:message-999",
                 "type": "message",
                 "scope": "channel",
                 "summary": "message message-999: duplicate graph note",
                 "deleted": False,
             },
             {
-                "id": "tenant:bromigos:message:message-1000",
+                "id": "tenant:nolgia:message:message-1000",
                 "type": "message",
                 "scope": "channel",
                 "summary": "message message-1000: unique graph note",
@@ -2843,7 +2843,7 @@ async def test_neo4j_backend_memory_context_dedupes_graph_facts() -> None:
     assert "message message-999: duplicate graph note" not in graph_section.content
     assert graph_section.content == "message message-1000: unique graph note"
     assert [fact["id"] for fact in graph_section.facts] == [
-        "tenant:bromigos:message:message-1000",
+        "tenant:nolgia:message:message-1000",
     ]
 
 
@@ -3145,8 +3145,8 @@ def test_privacy_defaults_match_discord_scope_policy() -> None:
     )
     skill = SkillRecord(
         skill_id="skill-1",
-        tenant_id="bromigos",
-        agent_id="pc-principal",
+        tenant_id="nolgia",
+        agent_id="nolgia-agent",
         name="Summarize channel",
         description="Summarizes visible Discord channel context for review.",
         status=SkillStatus.APPROVED,
@@ -4384,7 +4384,7 @@ def _protected_post_endpoint_payloads() -> list[tuple[str, dict[str, object]]]:
         ("/v1/memory/consolidation/dry-run", _consolidation_dry_run_payload()),
         ("/v1/memory/consolidation/apply", _consolidation_apply_payload()),
         ("/v1/memory/graph/export", {"scope": _scope_payload(), "limit": 10}),
-        ("/v1/skills", {"tenant_id": "bromigos", "agent_id": "pc-principal"}),
+        ("/v1/skills", {"tenant_id": "nolgia", "agent_id": "nolgia-agent"}),
         ("/v1/skills/proposals", _skill_proposal_payload()),
         ("/v1/skills/usage", _skill_usage_payload()),
         (
@@ -4427,14 +4427,14 @@ def _protected_post_endpoint_payloads() -> list[tuple[str, dict[str, object]]]:
 
 def _scope_payload(
     *,
-    tenant_id: str = "bromigos",
+    tenant_id: str = "nolgia",
     guild_id: str | None = "123",
     channel_id: str | None = "456",
 ) -> dict[str, str]:
     payload = {
         "tenant_id": tenant_id,
         "space_id": "discord",
-        "agent_id": "pc-principal",
+        "agent_id": "nolgia-agent",
         "session_id": "guild:123:channel:456",
         "user_id": "789",
         "visibility": "channel",
@@ -4448,10 +4448,10 @@ def _scope_payload(
 
 def _tenant_scope_payload() -> dict[str, str]:
     return {
-        "tenant_id": "bromigos",
+        "tenant_id": "nolgia",
         "space_id": "tenant",
         "agent_id": "operator",
-        "session_id": "tenant:bromigos",
+        "session_id": "tenant:nolgia",
         "user_id": "operator",
         "visibility": "tenant",
     }
@@ -4543,9 +4543,9 @@ def _client_event_payload(
     subject: dict[str, str] | None = None,
 ) -> dict[str, object]:
     return {
-        "tenant_id": "bromigos",
+        "tenant_id": "nolgia",
         "source_client": "discord",
-        "agent_id": "pc-principal",
+        "agent_id": "nolgia-agent",
         "event_id": "discord-message-999",
         "event_type": event_type,
         "occurred_at": "2026-06-27T01:02:03Z",
@@ -4570,11 +4570,11 @@ def _client_event_payload(
     }
 
 
-def _skill_proposal_payload(*, tenant_id: str = "bromigos") -> dict[str, object]:
+def _skill_proposal_payload(*, tenant_id: str = "nolgia") -> dict[str, object]:
     return {
         "proposal_id": "proposal-1",
         "tenant_id": tenant_id,
-        "agent_id": "pc-principal",
+        "agent_id": "nolgia-agent",
         "proposed_by": "789",
         "name": "Summarize",
         "description": "Summarize channels",
@@ -4583,11 +4583,11 @@ def _skill_proposal_payload(*, tenant_id: str = "bromigos") -> dict[str, object]
     }
 
 
-def _skill_usage_payload(*, tenant_id: str = "bromigos") -> dict[str, object]:
+def _skill_usage_payload(*, tenant_id: str = "nolgia") -> dict[str, object]:
     return {
         "skill_id": "skill-1",
         "tenant_id": tenant_id,
-        "agent_id": "pc-principal",
+        "agent_id": "nolgia-agent",
         "used_by": "789",
         "used_at": "2026-06-27T01:02:05Z",
         "scope": "agent_shared",
