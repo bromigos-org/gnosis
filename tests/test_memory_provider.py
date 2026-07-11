@@ -235,9 +235,7 @@ async def test_add_memories_extraction_writes_units_alongside_verbatim() -> None
     assert "CREATE (f:Fact" in create_query
     assert create_params is not None
     assert create_params["predicate"] == "fact"
-    assert create_params["subject"] == (
-        "nolgia:discord:private_user:nolgia-agent:789"
-    )
+    assert create_params["subject"] == ("nolgia:discord:private_user:nolgia-agent:789")
     assert create_params["object"] == "Cartman ate cheesy poofs on 7 May 2023"
     assert create_params["embedding"] == [0.1, 0.2]
     stored_metadata = _JSON_OBJECT_ADAPTER.validate_json(
