@@ -64,3 +64,20 @@ flags. Full per-run detail: [docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
 ¹ Run 23 is the full-10-conversation measurement (excl-adv J, two judges); all
 other rows are the subset-3 dev gate. Runs 24–25 are queued LongMemEval_S
 experiments; ctx J column will be filled after measurement.
+
+**Note:** the LOCOMO run numbers above (Runs 1–25) are separate from the LongMemEval_S
+experiment labels (L-0 through L-31+) in gnosis-membench. LME_S experiment history:
+
+| LME_S Label | gnosis-membench | Status | Score | Notes |
+|---|---|---|---|---|
+| L-21 | Run 21 equivalent | Complete | — | Full-500 ingest; gemini-embedding-001 |
+| L-23 | — | Complete (2026-07-31) | 69.8% | Claude-Sonnet-4-6 backbone + judge; established competitive baseline |
+| L-25 | Run 25 partial | Complete (2026-08-05) | 72.4% | edu-v2.0 + relation_slots KU fix |
+| **L-25b** | — | **Complete (2026-08-06)** | **73.6%** | + singleton-only supersession; **current best**; gpt-4o backbone + judge |
+| L-27 | — | Rejected (2026-08-06) | 73.4% | Community graph: -0.2pp overall, SSA -5.3pp |
+| L-28 | — | Rejected (2026-08-06) | 71.8% | Stronger CoN recency clause: over-fires outside KU |
+| L-29 | — | Tied (2026-08-06) | 73.6% | knowledge_update route + recency injection: KU +4.2pp, SSA -5.3pp cancel |
+| L-30 | — | Rejected (2026-08-06) | 73.0% | Tighter KU router guide: temporal -2.4pp from over-restriction |
+| **L-31** | — | **In progress (2026-08-06)** | pending | Write-time SUPERSEDES + valid_to filter; structural KU fix |
+
+See [gnosis-membench RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md).

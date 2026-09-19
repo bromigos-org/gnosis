@@ -179,6 +179,11 @@ class Settings(BaseSettings):
     gnosis_scoped_dense_retrieval_enabled: bool = False
     gnosis_dense_scope_pool: int = Field(default=4000, ge=100, le=100_000)
     gnosis_hybrid_retrieval_enabled: bool = False
+    # Weight multiplier applied to the lexical (BM25) leg in RRF fusion.
+    # Dense weight is always 1.0; raising this above 1.0 gives BM25 more
+    # influence without changing the dense candidate ranking. Default 1.0 =
+    # equal-weight RRF (original behavior).
+    gnosis_rrf_lexical_weight: float = Field(default=1.0, ge=0.0, le=10.0)
     gnosis_graphqa_fusion_enabled: bool = False
     # The graph-QA planner is an LLM call that commonly takes ~10s on a
     # frontier model; a 5s budget timed out on every fusion request. 20s

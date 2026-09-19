@@ -30,9 +30,11 @@ Different business entities run separate deployments with separate tenants.
 ## Bi-temporal + append-only
 
 Facts carry two timestamps — `event_date` (when the thing happened, in metadata)
-and `created_at` (when written). Storage is append-only: contradictions are
-resolved at **read time** (deterministic newest-wins), never by mutating or
-deleting stored records. See supersession in [CAPABILITIES.md](CAPABILITIES.md).
+and `created_at` (when written). Storage is append-only: old facts are never
+deleted. When a new singleton-slot fact supersedes an old one, a `SUPERSEDES`
+edge is written and `old_fact.valid_to` is set — the old fact stays in the
+graph for audit and history but is excluded from active retrieval. See
+supersession in [CAPABILITIES.md](CAPABILITIES.md).
 
 ## Node labels
 
@@ -66,7 +68,7 @@ bot): `Guild`, `Channel`, `Role`, `Category`, `Link`, `Attachment`,
 
 ## Relationships
 
-6 relationship types.
+7 relationship types.
 
 | Relationship | Pattern | Meaning |
 |---|---|---|
@@ -76,17 +78,23 @@ bot): `Guild`, `Channel`, `Role`, `Category`, `Link`, `Attachment`,
 | `NEXT_MESSAGE` | `Message` → `Message` | turn ordering within a session |
 | `MENTIONS` | `Fact` → `Entity` | provenance: which entities a fact names |
 | `RELATES` | `Entity` → `Entity` | a directed `{relation, fact_id, event_date}` edge from an extracted `(head, relation, tail)` triple |
+| `SUPERSEDES` | `Fact` → `Fact` | write-time structural invalidation: `(new_fact)-[:SUPERSEDES]->(old_fact)` written when a new singleton-slot fact replaces an existing one; `old_fact.valid_to` is set at the same time (L-31) |
 
 `MENTIONS` and `RELATES` form the **entity knowledge graph**
 (`GNOSIS_ENTITY_GRAPH_ENABLED`) that the graph-QA and traversal read paths walk;
-they only exist when entity-graph materialization was on at ingest.
+they only exist when entity-graph materialization was on at ingest. `SUPERSEDES`
+exists on any fact with a singleton `relation_slot` — it does not require entity
+graph to be enabled.
 
 ## Key node properties
 
 **`Fact`**: `id`, `subject`, `predicate`, `object`, `created_at`, `confidence`,
-`embedding` (vector), `metadata` (JSON string — carries `event_date`, `entities`,
-`source_memory_ids`, `session_date`, plus the scope fields for the in-query
-scope re-check).
+`embedding` (vector), `valid_to` (datetime, set when superseded by a newer
+same-slot fact — L-31; `NULL` means the fact is still active), `metadata`
+(JSON string — carries `event_date`, `entities`, `source_memory_ids`,
+`session_date`, `relation_slots` (list of `"{head}:{relation_class}"` strings
+for singleton relations, used for SUPERSEDES matching), plus the scope fields
+for the in-query scope re-check).
 
 **`Entity`**: `id`, `name`, `normalized` (dedup key), `tenant_id`, `user_id`,
 `created_at`.

@@ -29,7 +29,7 @@ from gnosis.graph_query_qa import proxy_model_name
 
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
-EXTRACTION_VERSION: Final[str] = "edu-v1.1"
+EXTRACTION_VERSION: Final[str] = "edu-v2.0"
 
 _EXTRACTION_GUIDE: Final[str] = """
 You are a memory extraction system for a long-term conversational memory
@@ -103,6 +103,16 @@ Requirements:
     self-evident categories (e.g., 'laptop', 'refrigerator', 'headphones' —
     the category is already clear). Only add annotations you are confident
     about; never guess a category you do not know.
+15. Extract from BOTH user and assistant turns. Assistant turns carry
+    information just as important as user turns: recommendations the assistant
+    made, instructions or how-to guidance the assistant provided, facts the
+    assistant stated or explained, and commitments the assistant made for
+    future actions. For each such unit, attribute it using the speaker label
+    "assistant" (e.g., "The assistant recommended X", "The assistant explained
+    that Y", "The assistant committed to Z at the next session"). Never skip
+    assistant turns because they are responses rather than disclosures — a
+    recommendation, a committed reminder, or a how-to instruction from the
+    assistant is exactly as worth remembering as a fact the user volunteered.
 
 Return JSON only, in this exact format:
 {"facts": [{"text": "...", "source_turn_ids": [1], "entities": ["..."],
@@ -135,70 +145,118 @@ _RELATIONAL_EXTRACTION_GUIDE: Final[str] = (
     f"{_EXTRACTION_GUIDE}\n\n{_RELATIONS_GUIDE_ADDENDUM}"
 )
 
-# One-shot exemplar (system-adjacent, as EMem does): a six-turn dated exchange
-# demonstrating multi-turn units, relative-date resolution to an absolute
-# month, entity canonicalization, an undated ongoing preference, and
-# pleasantries producing no units.
+# One-shot exemplar (system-adjacent, as EMem does): a five-turn dated
+# user/assistant exchange demonstrating multi-turn units, relative-date
+# resolution to an absolute month, entity canonicalization, extraction from
+# BOTH user and assistant turns (including a recommendation, a stated fact,
+# and a commitment from the assistant), and an undated ongoing preference.
 _EXEMPLAR_INPUT: Final[str] = """
 Conversation date: 2024-03-16
-Speakers: Alice, Bob
+Speakers: user, assistant
 
 CONTEXT turns (reference only, do not extract):
 (none)
 
 NEW turns (extract from these):
-Turn 1: Alice: Hey Bob! Long time no see.
-Turn 2: Bob: Good to see you too, Alice! How have you been?
-Turn 3: Alice: Great - I just got back from Tokyo, where I presented our \
-robotics work at the International Robotics Symposium.
-Turn 4: Bob: That's fantastic. How did the talk go?
-Turn 5: Alice: Really well. The symposium organizers invited me to give a \
-keynote at its next edition, which happens next month in Osaka.
-Turn 6: Bob: Amazing. You know I hate long flights, but for a keynote like \
-that I would fly anywhere.
+Turn 1: user: I just got back from Tokyo, where I presented our robotics work \
+at the International Robotics Symposium. They invited me to give a keynote at \
+their next edition in Osaka next month.
+Turn 2: assistant: Congratulations! For your Osaka trip, I'd book hotels at \
+least three weeks out—April is cherry blossom season and prices spike. The \
+Shinkansen from Tokyo to Osaka takes about 2.5 hours.
+Turn 3: user: Good to know. Could you remind me to sort out the A/V \
+requirements for the Osaka venue before I leave?
+Turn 4: assistant: Absolutely—I'll flag the Osaka keynote venue A/V checklist \
+when we next speak.
+Turn 5: user: I hate long-haul flights, but for a keynote like this I would \
+fly anywhere.
 """.strip()
 
 _EXEMPLAR_OUTPUT: Final[str] = (
     '{"facts": ['
-    '{"text": "Alice presented her robotics work at the International '
-    'Robotics Symposium in Tokyo.", "source_turn_ids": [3], '
-    '"entities": ["Alice", "International Robotics Symposium", "Tokyo"], '
+    '{"text": "The user presented robotics work at the International Robotics '
+    'Symposium in Tokyo.", '
+    '"source_turn_ids": [1], '
+    '"entities": ["user", "International Robotics Symposium", "Tokyo"], '
     '"event_date": null, "temporal_state": "point_in_time", '
     '"supersedes_hint": null}, '
-    '{"text": "Alice was invited by the International Robotics Symposium '
-    "organizers to give a keynote at the symposium's next edition in Osaka "
-    'in April 2024.", "source_turn_ids": [3, 5], '
-    '"entities": ["Alice", "International Robotics Symposium", "Osaka"], '
+    '{"text": "The International Robotics Symposium invited the user to give a '
+    'keynote at its next edition in Osaka in April 2024.", '
+    '"source_turn_ids": [1], '
+    '"entities": ["user", "International Robotics Symposium", "Osaka"], '
     '"event_date": "2024-04-01", "temporal_state": "point_in_time", '
     '"supersedes_hint": null}, '
-    '{"text": "Bob hates long flights.", "source_turn_ids": [6], '
-    '"entities": ["Bob"], "event_date": null, "temporal_state": "ongoing", '
+    '{"text": "The assistant recommended booking Osaka hotels at least three '
+    'weeks in advance because April is cherry blossom season and prices spike.", '
+    '"source_turn_ids": [2], '
+    '"entities": ["assistant", "Osaka"], '
+    '"event_date": null, "temporal_state": "point_in_time", '
+    '"supersedes_hint": null}, '
+    '{"text": "The assistant stated that the Shinkansen from Tokyo to Osaka '
+    'takes approximately 2.5 hours.", '
+    '"source_turn_ids": [2], '
+    '"entities": ["assistant", "Tokyo", "Osaka"], '
+    '"event_date": null, "temporal_state": "ongoing", '
+    '"supersedes_hint": null}, '
+    '{"text": "The assistant committed to flagging the Osaka keynote venue A/V '
+    'checklist at the start of the next conversation.", '
+    '"source_turn_ids": [4], '
+    '"entities": ["assistant", "Osaka"], '
+    '"event_date": null, "temporal_state": "point_in_time", '
+    '"supersedes_hint": null}, '
+    '{"text": "The user dislikes long-haul flights.", '
+    '"source_turn_ids": [5], '
+    '"entities": ["user"], '
+    '"event_date": null, "temporal_state": "ongoing", '
     '"supersedes_hint": null}'
     "]}"
 )
 
 # The exemplar output for the entity-graph path: identical units, each also
-# carrying its extracted (head, relation, tail) triples - the third unit
-# demonstrates the empty list when a unit names only one entity.
+# carrying its extracted (head, relation, tail) triples. Assistant-attributed
+# units with no named entity-entity link emit an empty relations list.
 _RELATIONAL_EXEMPLAR_OUTPUT: Final[str] = (
     '{"facts": ['
-    '{"text": "Alice presented her robotics work at the International '
-    'Robotics Symposium in Tokyo.", "source_turn_ids": [3], '
-    '"entities": ["Alice", "International Robotics Symposium", "Tokyo"], '
+    '{"text": "The user presented robotics work at the International Robotics '
+    'Symposium in Tokyo.", '
+    '"source_turn_ids": [1], '
+    '"entities": ["user", "International Robotics Symposium", "Tokyo"], '
     '"event_date": null, "temporal_state": "point_in_time", '
-    '"supersedes_hint": null, "relations": [{"head": "Alice", '
-    '"relation": "presented at", '
+    '"supersedes_hint": null, '
+    '"relations": [{"head": "user", "relation": "presented at", '
     '"tail": "International Robotics Symposium"}]}, '
-    '{"text": "Alice was invited by the International Robotics Symposium '
-    "organizers to give a keynote at the symposium's next edition in Osaka "
-    'in April 2024.", "source_turn_ids": [3, 5], '
-    '"entities": ["Alice", "International Robotics Symposium", "Osaka"], '
+    '{"text": "The International Robotics Symposium invited the user to give a '
+    'keynote at its next edition in Osaka in April 2024.", '
+    '"source_turn_ids": [1], '
+    '"entities": ["user", "International Robotics Symposium", "Osaka"], '
     '"event_date": "2024-04-01", "temporal_state": "point_in_time", '
-    '"supersedes_hint": null, "relations": [{"head": "Alice", '
-    '"relation": "invited by", '
-    '"tail": "International Robotics Symposium"}]}, '
-    '{"text": "Bob hates long flights.", "source_turn_ids": [6], '
-    '"entities": ["Bob"], "event_date": null, "temporal_state": "ongoing", '
+    '"supersedes_hint": null, '
+    '"relations": [{"head": "International Robotics Symposium", '
+    '"relation": "invited", "tail": "user"}]}, '
+    '{"text": "The assistant recommended booking Osaka hotels at least three '
+    'weeks in advance because April is cherry blossom season and prices spike.", '
+    '"source_turn_ids": [2], '
+    '"entities": ["assistant", "Osaka"], '
+    '"event_date": null, "temporal_state": "point_in_time", '
+    '"supersedes_hint": null, "relations": []}, '
+    '{"text": "The assistant stated that the Shinkansen from Tokyo to Osaka '
+    'takes approximately 2.5 hours.", '
+    '"source_turn_ids": [2], '
+    '"entities": ["assistant", "Tokyo", "Osaka"], '
+    '"event_date": null, "temporal_state": "ongoing", '
+    '"supersedes_hint": null, '
+    '"relations": [{"head": "Tokyo", "relation": "connected to via Shinkansen", '
+    '"tail": "Osaka"}]}, '
+    '{"text": "The assistant committed to flagging the Osaka keynote venue A/V '
+    'checklist at the start of the next conversation.", '
+    '"source_turn_ids": [4], '
+    '"entities": ["assistant", "Osaka"], '
+    '"event_date": null, "temporal_state": "point_in_time", '
+    '"supersedes_hint": null, "relations": []}, '
+    '{"text": "The user dislikes long-haul flights.", '
+    '"source_turn_ids": [5], '
+    '"entities": ["user"], '
+    '"event_date": null, "temporal_state": "ongoing", '
     '"supersedes_hint": null, "relations": []}'
     "]}"
 )
@@ -443,7 +501,7 @@ def extraction_messages(
     new_turns: Sequence[ConversationTurn],
     emit_relations: bool = False,
 ) -> tuple[ChatCompletionMessageParam, ...]:
-    """Build the edu-v1 prompt: guide, one-shot exemplar, and the request.
+    """Build the extraction prompt: guide, one-shot exemplar, and the request.
 
     Turn numbering is continuous across CONTEXT and NEW turns so
     ``source_turn_ids`` are unambiguous; only NEW turn numbers are valid. With

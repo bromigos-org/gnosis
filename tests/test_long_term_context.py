@@ -1019,7 +1019,7 @@ async def test_chain_of_note_unchanged_while_widening_flags_off() -> None:
     )
     assert content.endswith(likelihood_tail)
     assert "speculative judgment" not in content
-    assert "enumerate every distinct item" not in content
+    assert "enumerate every distinct real-world item" not in content
 
 
 @pytest.mark.anyio
@@ -1116,9 +1116,11 @@ async def test_enumeration_clause_applies_on_aggregative_route_only() -> None:
     single_hop = await build("single_hop").get_memory_context(request)
 
     # Then: only the aggregative route reads with the enumeration clause.
-    assert "enumerate every distinct item" in aggregative.sections[0].content
-    assert "count the distinct occurrences" in aggregative.sections[0].content
-    assert "enumerate every distinct item" not in single_hop.sections[0].content
+    assert "enumerate every distinct real-world item" in aggregative.sections[0].content
+    assert "count unique items or events" in aggregative.sections[0].content
+    assert (
+        "enumerate every distinct real-world item" not in single_hop.sections[0].content
+    )
 
 
 @pytest.mark.anyio

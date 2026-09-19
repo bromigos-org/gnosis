@@ -60,6 +60,7 @@ type QueryRoute = Literal[
     "temporal",
     "unanswerable_risk",
     "aggregative",
+    "knowledge_update",
 ]
 
 _ROUTER_GUIDE: Final[str] = """
@@ -79,6 +80,13 @@ Routes:
 - aggregative: asks for a count, frequency, or synthesis across many memories
   (e.g. "What do they usually talk about?", "List all the hobbies mentioned.",
   "How many times did I do X?", "How many different Y did I attend?").
+- knowledge_update: asks for the CURRENT value of a fact the user has
+  changed or updated over time (e.g. "What is my current job?", "Where do I
+  live now?", "What's my marathon PR?", "How many bikes do I have?", "Which
+  car do I drive?"). Use when the correct answer is the user's MOST RECENTLY
+  mentioned value of something that plausibly changes. Do NOT use for stable
+  biographical facts ("what is my daughter's name?") or when the question
+  explicitly asks about a past state.
 - unanswerable_risk: presupposes or asks about something personal memories
   definitively do not contain — a private/obscure fact that could not
   realistically appear in casual personal conversation
@@ -104,6 +112,7 @@ _ROUTES: Final[tuple[QueryRoute, ...]] = (
     "temporal",
     "unanswerable_risk",
     "aggregative",
+    "knowledge_update",
 )
 
 
@@ -130,6 +139,8 @@ class RouteDecision:
     budget_multiplier: int
     supersession_enabled: bool
     sufficiency_check_enabled: bool
+    recency_injection_enabled: bool = False
+    filter_superseded: bool = False
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RouteDecision":
@@ -146,6 +157,8 @@ class RouteDecision:
             budget_multiplier=settings.gnosis_coverage_budget_multiplier,
             supersession_enabled=settings.gnosis_read_supersession_enabled,
             sufficiency_check_enabled=settings.gnosis_sufficiency_check_enabled,
+            recency_injection_enabled=False,
+            filter_superseded=False,
         )
 
     @classmethod
@@ -177,7 +190,10 @@ class RouteDecision:
             # likely single_hop with specific entity/keyword facts that fall
             # below dense top-20; BM25 should surface them. LOCOMO evidence:
             # global BM25 was neutral for single_hop (80.5→79.5, Run 6).
-            hybrid_retrieval=route in ("temporal", "aggregative", "single_hop"),
+            # Knowledge_update added (L-29): entity/value names in the update
+            # conversation are exact-match candidates; BM25 surfaces them.
+            hybrid_retrieval=route
+            in ("temporal", "aggregative", "single_hop", "knowledge_update"),
             graphqa_fusion=route == "multi_hop",
             verbatim_expansion=route == "multi_hop",
             abstention_prompt=route == "unanswerable_risk",
@@ -223,6 +239,22 @@ class RouteDecision:
                 route == "unanswerable_risk"
                 and settings.gnosis_sufficiency_check_enabled
             ),
+            # Recency injection fetches the top-N most recently created facts
+            # (by ingest timestamp) and merges them into the candidate set
+            # before the item budget cut. Knowledge-update questions target
+            # the current state of a changing fact; the newer value is often
+            # buried below the dense top-20 because its embedding similarity
+            # to the question is lower than the earlier, more directly-stated
+            # original fact. Injecting by recency guarantees the latest ingest
+            # is always a candidate regardless of embedding rank.
+            recency_injection_enabled=(route == "knowledge_update"),
+            # Structural supersession filter: exclude facts with valid_to set
+            # (marked superseded at write time via SUPERSEDES edges) from the
+            # vector and lexical candidate pools. For knowledge_update queries,
+            # this ensures the dense top-20 contains only current (non-
+            # superseded) facts so the newest value naturally ranks first
+            # without fighting stale facts in embedding space.
+            filter_superseded=(route == "knowledge_update"),
         )
 
 

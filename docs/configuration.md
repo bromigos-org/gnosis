@@ -76,6 +76,8 @@ applied per-route rather than globally.
 | `GNOSIS_RERANK_ENABLED` | `false` | listwise LLM reranker |
 | `GNOSIS_RERANK_MODEL` / `_CANDIDATE_CAP` | *(→ `GNOSIS_LLM`)* / `50` | reranker model / how many to reorder |
 | `GNOSIS_RECALL_FILTER_ENABLED` / `_CANDIDATES` | `false` / `30` | LLM recall filter (rejected on LOCOMO) |
+| `GNOSIS_COMMUNITY_GRAPH_ENABLED` | `false` | community graph / subgraph summaries for open-domain aggregation (tried L-27, rejected: -0.2pp overall, SSA -5.3pp) |
+| `GNOSIS_QUERY_REWRITE_ENABLED` | `false` | multi-query reformulation at retrieval time (tried L-7, rejected globally: MS -11.1pp; may be re-enabled per-route) |
 | `GNOSIS_SUFFICIENCY_CHECK_ENABLED` / `_MODEL` | `false` | sufficiency autorater signal |
 | `GNOSIS_ABSTENTION_PROMPT_ENABLED` | `false` | abstention grounding instruction |
 | `GNOSIS_FACT_VERBATIM_EXPANSION_ENABLED` / `_MAX` | `false` / `5` | render source turns under top facts |

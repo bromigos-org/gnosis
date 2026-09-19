@@ -146,6 +146,7 @@ def fact_freshness(fact: JsonObject) -> FactFreshness:
             str(fact.get("subject", "")),
             str(fact.get("predicate", "")),
             _metadata_entities(metadata),
+            metadata,
         ),
         event_date=_metadata_event_date(metadata),
         observation_date=_metadata_observation_date(metadata),
@@ -154,11 +155,13 @@ def fact_freshness(fact: JsonObject) -> FactFreshness:
 
 
 def memory_freshness(memory: StoredMemory) -> FactFreshness:
+    meta = dict(memory.metadata) if memory.metadata else None
     return FactFreshness(
         slot_key=slot_key(
             memory.subject,
             memory.predicate,
             _metadata_entities(memory.metadata),
+            meta,
         ),
         event_date=_metadata_event_date(memory.metadata),
         observation_date=_metadata_observation_date(memory.metadata),

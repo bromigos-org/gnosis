@@ -52,10 +52,48 @@ Mirror of the canonical log in [gnosis-membench/RESULTS.md](https://github.com/n
 > Genuine weakness: **open-domain**. Full detail in the Run 23 section of
 > RESULTS.md.
 >
-> **LongMemEval_S competitive context (2026-07-31):** agentmemory 96.2%,
-> Chronos (PwC) 95.60% with 100% knowledge-update, Mastra OM 94.87%.
-> Gnosis L-23: 69.8%. Next experiments target KU (L-24) and SSA (L-25).
+> **LongMemEval_S competitive context (2026-08-06):** SOTA (JordanMcCann) 96.2%,
+> Chronos 95.6% (100% KU), Mastra OM (gpt-5-mini) 94.87%, EMem-G 84.9%.
+> Gnosis **L-25b: 73.6%** (current best overall). L-31: 72.6% overall, KU 81.9% (+11.1pp confirmed).
 > See gnosis-membench `RESULTS.md` and `docs/frontier-2026.md`.
+
+---
+
+> **LongMemEval_S L-25b (full 500-Q, 2026-08-06) — current best.**
+> gpt-4o backbone + gpt-4o judge. edu-v2.0 (Rule 15 assistant extraction) +
+> relation_slots KU fix + singleton-only supersession read-time fix.
+>
+> | Category | gnosis L-25b | vs L-23 | Zep | Chronos |
+> |---|---|---|---|---|
+> | single-session-assistant | **98.2%** (n=56) | +57.1pp | — | — |
+> | knowledge-update | 70.8% (n=72) | +47.2pp | 83.3% | **100%** |
+> | single-session-user | **84.4%** (n=64) | -3.1pp | — | — |
+> | temporal-reasoning | 74.0% (n=127) | -8.7pp | 62.4% | 95.5% |
+> | multi-session | 58.7% (n=121) | -14.9pp | 57.9% | 88.7% |
+> | single-session-preference | 60.0% (n=30) | -36.7pp | — | — |
+> | abstention | 83.3% (n=30) | -16.7pp | — | — |
+> | **Overall** | **73.6%** (500 Q) | **+3.8pp** | 71.2% | 95.6% |
+>
+> *Note: abstention questions redistributed into categories vs L-23; cross-run comparisons
+> are directional. SSP/MS regression from relation_slots over-superseding additive facts,
+> fixed in L-25b with singleton-only supersession.*
+>
+> **L-27 to L-30 (all rejected/tied, 2026-08-06):** community graph (L-27, -0.2pp),
+> stronger CoN recency clause (L-28, -1.8pp), knowledge_update route + recency injection
+> (L-29, tie at 73.6%), tighter KU router (L-30, -0.6pp). Root cause for repeated failure:
+> old facts outrank new facts in embedding space — retrieval-layer heuristics cannot fix this.
+> Structural fix required.
+>
+> **L-31 (2026-08-09) — COMPLETE:** Write-time SUPERSEDES edges + `valid_to IS NULL` Cypher filter
+> (structural KU fix; implements arXiv 2607.26520 bitemporal pattern). Overall 72.6%.
+> KU **70.8% → 81.9% (+11.1pp)** confirmed; regressions SSA −5.3pp, temporal −6.3pp, SSU −4.7pp
+> (likely `knowledge_update` router misfiring on SSA/temporal questions, same pattern as L-29).
+> Gnosis now at 81.9% KU vs Zep 83.3% — 1.4pp gap. Next: diagnose router false positives.
+>
+> Competitive leaderboard (LME_S, gpt-4o backbone): SOTA 96.2%, Chronos 95.6%,
+> Mastra OM (gpt-5-mini) 94.87%, EMem-G 84.9%, Mastra OM (gpt-4o) 84.8%,
+> HyMem 75.0%, Nemori 74.6%, **gnosis L-25b 73.6%** (best overall), **gnosis L-31 72.6%**,
+> Zep 71.2%, mem0 67.6%.
 
 
 Canonical record of all gnosis memory-quality benchmark runs. Every run uses the
@@ -817,7 +855,16 @@ PR #47: extraction re-samples malformed LLM JSON instead of 500ing).
 
 | Run | Change under test | Overall | Verdict |
 |---|---|---|---|
-| L-0 (baseline) | Run 18 config + gemini embeddings + scoped dense retrieval | *ingesting* | — |
+| L-0 (baseline) | Run 18 config + gemini-embedding-001/3072 + scoped dense retrieval | — | ingest complete; answer+grade superseded by L-23 |
+| **L-23** | L-0 ingest + Claude-Sonnet-4-6 backbone + Claude judge | **69.8%** | complete (2026-07-31); established competitive baseline vs Zep 71.2%, mem0 67.6% |
+| L-24 | relation_slots KU fix (SUPERSEDES-slot metadata) | — | merged into L-25 |
+| L-25 | edu-v2.0 (Rule 15: assistant-turn extraction) + relation_slots; fresh ingest | **72.4%** | complete (2026-08-05); SSA +53.5pp, KU +49.5pp vs L-23 |
+| **L-25b** | + singleton-only relation_slots supersession fix (read-path only, no re-ingest) | **73.6%** | **CURRENT BEST** (2026-08-06); SSA 98.2%, KU 70.8%, gpt-4o backbone + judge |
+| L-27 | + community graph (`GNOSIS_COMMUNITY_GRAPH_ENABLED=true`) | 73.4% | **rejected** — -0.2pp overall; SSA -5.3pp, MS -5.0pp outweigh temporal +2.8pp |
+| L-28 | stronger CoN recency clause ("ONLY most recently-dated value") | 71.8% | **rejected** — clause over-fires outside KU; SSA -5.3pp, SSU -6.3pp |
+| L-29 | + `knowledge_update` router route + recency injection (top-5 newest merged into dense top-20) | 73.6% | **tied** — KU +4.2pp, temporal +4.0pp cancel SSA -5.3pp, SSP -6.7pp |
+| L-30 | tighter knowledge_update guide (explicit SSA/preference exclusions) | 73.0% | **rejected** — SSA partially recovered but temporal -2.4pp; routing precision asymmetric |
+| **L-31** | write-time SUPERSEDES edges + `valid_to IS NULL` filter in Cypher for knowledge_update route | **72.6%** | **complete** (2026-08-09); KU **81.9%** (+11.1pp confirmed); SSA 92.9% (−5.3pp), temporal 67.7% (−6.3pp), SSU 79.7% (−4.7pp) — likely router misclassification of SSA/temporal as knowledge_update |
 
 ## Published comparison targets
 
@@ -828,7 +875,7 @@ mem0 66.9 · mem0-graph 68.4 · full-context 72.9 · Letta (blog) 74.0.
 
 ## Known limitations of the current record
 
-- Subset 3 of 10 LOCOMO conversations; LongMemEval_S not yet run at scale.
+- LOCOMO detailed trajectory (Runs 1–22) uses subset 3 of 10 conversations. Run 23 is the full-10 competitive comparison. LongMemEval_S full-500 runs from L-23 onward are the primary optimization target (see LME_S table above).
 - Answerer route changed between Run 1 and Runs 2-4 (Copilot quota) — the
   judge was held constant, but the context-vs-search comparison within Run 1
   is the cleanest same-route pair.

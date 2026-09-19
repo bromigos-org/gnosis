@@ -303,6 +303,7 @@ from gnosis.memory_provider import (
     TURN_MEMORY_PREDICATE_PREFIX,
     UPDATE_MEMORY_CYPHER,
     VERBATIM_MEMORY_PREDICATE,
+    WRITE_TIME_SUPERSEDE_CYPHER,
     StoredMemory,
     fuse_memory_rankings,
     lexical_stored_memory,
@@ -539,7 +540,7 @@ from gnosis.sufficiency import (
     SufficiencyAssessor,
     bounded_reason,
 )
-from gnosis.supersession import drop_superseded
+from gnosis.supersession import drop_superseded, is_singleton_relation_class
 
 if TYPE_CHECKING:
     from gnosis.graph_types import CypherParameters
@@ -674,10 +675,12 @@ _CON_SPECULATIVE_CLAUSE: Final[str] = (
 # budget; this changes the reading behavior itself.
 _CON_ENUMERATION_CLAUSE: Final[str] = (
     " When the question asks which items, what things, or otherwise asks "
-    "for a list, enumerate every distinct item the relevant memories "
-    "support, not only the most prominent one. When the question asks how "
-    "many, count the distinct occurrences across the memories and state "
-    "the number."
+    "for a list, enumerate every distinct real-world item or event the "
+    "relevant memories support, not only the most prominent one. When "
+    "the question asks how many, count unique items or events — if the "
+    "same item, event, or person appears in multiple memories, count it "
+    "only once. Do not count the number of memory records; count the "
+    "number of distinct things those records describe."
 )
 _ENUMERATION_CLAUSE_ROUTES: Final[frozenset[str]] = frozenset(
     {"multi_hop", "aggregative"},
@@ -721,6 +724,10 @@ _CON_RECENCY_CLAUSE: Final[str] = (
 # ask about a SPECIFIC past event ("what happened X days ago?"), not the current
 # state, so preferring the most recent memory is wrong there.
 _RECENCY_CLAUSE_EXCLUDED_ROUTES: Final[frozenset[str]] = frozenset({"temporal"})
+# Number of most-recently-created facts injected for knowledge_update route
+# (L-29). Kept small so only the latest ingest is guaranteed a slot before
+# the budget cut, without flooding the context with unrelated recent facts.
+_RECENCY_INJECTION_LIMIT: Final[int] = 5
 # Absence-implies-unknown clause (GNOSIS_CON_ABSTENTION_ENABLED).
 # LME_S L-15 stable-wrong analysis identified two recurring absence-of-evidence
 # errors on abstention-category questions:
@@ -1649,6 +1656,28 @@ class Neo4jAgentMemoryBackend:
         )
         if not facts:
             facts = await _query_recent_facts(client, metadata)
+        # knowledge_update route: guarantee the most recently ingested facts
+        # are in the candidate pool. Updates about a changing fact rank low on
+        # embedding similarity (the update is phrased in a different context
+        # than the question) — injecting by ingest recency ensures the newest
+        # value is always a candidate before the budget cut. Deduplication by
+        # fact id prevents double-counting facts already in the dense ranking.
+        if decision.recency_injection_enabled:
+            recent = await _query_recent_facts(client, metadata)
+            existing_ids = {
+                fact_id for f in facts if isinstance(fact_id := f.get("id"), str)
+            }
+            injected = [
+                {**rf, "recency_injected": True}
+                for rf in recent[:_RECENCY_INJECTION_LIMIT]
+                if rf.get("id") not in existing_ids
+            ]
+            if injected:
+                _LOGGER.info(
+                    "knowledge_update recency injection",
+                    extra={"injected": len(injected), "dense": len(facts)},
+                )
+                facts = [*facts, *injected]
         # The directed bridge hop reads hop-1's dense evidence, so it runs
         # after the parallel retrieval legs, not among them.
         bridge_facts = await self._bridge_traversal_facts(
@@ -2052,7 +2081,7 @@ class Neo4jAgentMemoryBackend:
                 )
         return results
 
-    async def _add_extracted_fact(  # noqa: PLR0913 - One argument per fact field.
+    async def _add_extracted_fact(  # noqa: PLR0913, C901 - One argument per fact field; write-time supersession branch.
         self,
         client: MemoryClientContext,
         scope: MemoryScope,
@@ -2087,6 +2116,25 @@ class Neo4jAgentMemoryBackend:
             extraction_metadata["date"] = conversation_date
         if unit.temporal_state not in ("unknown", None):
             extraction_metadata["temporal_state"] = unit.temporal_state
+        if unit.supersedes_hint is not None:
+            extraction_metadata["supersedes_hint"] = unit.supersedes_hint
+        # Compute relation-class slots for precise supersession. Only singleton
+        # relations (works_at, lives_in, married_to, …) occupy a named slot so
+        # that a newer "Alice works at NVIDIA" displaces "Alice works at Google"
+        # without touching unrelated facts. Additive relations (likes, prefers,
+        # has_hobby) are intentionally excluded: they can have multiple concurrent
+        # values and a shared slot would cause silent data loss.
+        _rslots: list[JsonValue] = []
+        if unit.temporal_state in ("starts", "ongoing", "ends"):
+            for _rel in unit_relations(unit):
+                _head = _rel.head.strip().casefold()
+                _cls = "_".join(
+                    p for p in _rel.relation.strip().casefold().split() if p
+                )
+                if _head and _cls and is_singleton_relation_class(_cls):
+                    _rslots.append(f"{_head}:{_cls}")
+            if _rslots:
+                extraction_metadata["relation_slots"] = _rslots
         metadata = _write_metadata(scope, caller_metadata | extraction_metadata, None)
         # Provenance ids are gateway-generated fact UUIDs, added after
         # redaction because the opaque-value secret pattern matches UUIDs.
@@ -2108,6 +2156,26 @@ class Neo4jAgentMemoryBackend:
             },
         )
         await self._materialize_entity_graph(client, scope, memory_id, unit)
+        # Write-time supersession: mark same-slot older facts as superseded and
+        # link them with a SUPERSEDES edge from this new fact. This structural
+        # fix ensures that when the knowledge_update route filters by
+        # valid_to IS NULL, stale facts are excluded from the vector search
+        # instead of outranking the fresh value in embedding space (L-31).
+        if _rslots:
+            try:
+                _ = await _graph_write_query(client).execute_write(
+                    WRITE_TIME_SUPERSEDE_CYPHER,
+                    {
+                        "new_fact_id": memory_id,
+                        "scope_fragments": scope_read_fragments(scope),
+                        "slot_fragments": [json.dumps(s) for s in _rslots],
+                    },
+                )
+            except (RuntimeError, OSError, Neo4jError) as _supersede_err:
+                _LOGGER.warning(
+                    "write-time supersession failed; read-time still active",
+                    extra={"error_type": type(_supersede_err).__name__},
+                )
         stored = StoredMemory(
             memory_id=memory_id,
             subject=_user_identifier(scope),
@@ -2205,6 +2273,7 @@ class Neo4jAgentMemoryBackend:
                 client,
                 request.query,
                 scope_read_fragments(request.scope),
+                filter_superseded=decision.filter_superseded,
             )
             candidates = await self._hybrid_memory_candidates(
                 client,
@@ -2212,6 +2281,7 @@ class Neo4jAgentMemoryBackend:
                 scope_read_fragments(request.scope),
                 dense,
                 decision,
+                filter_superseded=decision.filter_superseded,
             )
         budget = self._search_match_budget(request)
         matches: list[StoredMemory] = []
@@ -2485,10 +2555,12 @@ class Neo4jAgentMemoryBackend:
         """
         if not query:
             return []
+        fs = decision.filter_superseded
         dense = await self._dense_memory_candidates(
             client,
             query,
             _metadata_fragments(scope_metadata),
+            filter_superseded=fs,
         )
         candidates = await self._hybrid_memory_candidates(
             client,
@@ -2496,6 +2568,7 @@ class Neo4jAgentMemoryBackend:
             _metadata_fragments(scope_metadata),
             dense,
             decision,
+            filter_superseded=fs,
         )
         return [
             fact
@@ -2508,6 +2581,7 @@ class Neo4jAgentMemoryBackend:
         client: MemoryClientContext,
         query: str,
         scope_fragments: list[JsonValue],
+        filter_superseded: bool = False,
     ) -> list[StoredMemory]:
         """Embedding-similarity candidates for one scope, best score first.
 
@@ -2519,6 +2593,10 @@ class Neo4jAgentMemoryBackend:
         failure on the scoped path - no embedder, embedding call failure, or
         the vector query itself - degrades to the SDK ranking with a warning
         rather than failing the read.
+
+        When filter_superseded is True (knowledge_update route), the Cypher
+        excludes facts where valid_to IS NOT NULL so structurally superseded
+        facts cannot crowd out the current value in the dense top-20.
         """
         if not self._app_settings.gnosis_scoped_dense_retrieval_enabled:
             return await self._sdk_dense_candidates(client, query)
@@ -2533,6 +2611,7 @@ class Neo4jAgentMemoryBackend:
                     "vector_pool": self._app_settings.gnosis_dense_scope_pool,
                     "scope_fragments": scope_fragments,
                     "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
+                    "filter_superseded": filter_superseded,
                 },
             )
         except (
@@ -2563,13 +2642,14 @@ class Neo4jAgentMemoryBackend:
         )
         return stored_memories_from_sdk(raw_records)
 
-    async def _hybrid_memory_candidates(
+    async def _hybrid_memory_candidates(  # noqa: PLR0913 - One knob per retrieval leg.
         self,
         client: MemoryClientContext,
         query: str,
         scope_fragments: list[JsonValue],
         dense: list[StoredMemory],
         decision: RouteDecision,
+        filter_superseded: bool = False,
     ) -> list[StoredMemory]:
         """Fuse the dense ranking with BM25 lexical candidates via RRF.
 
@@ -2584,16 +2664,22 @@ class Neo4jAgentMemoryBackend:
             client,
             query,
             scope_fragments,
+            filter_superseded=filter_superseded,
         )
         if not lexical:
             return dense
-        return fuse_memory_rankings(dense, lexical)
+        return fuse_memory_rankings(
+            dense,
+            lexical,
+            lexical_weight=self._app_settings.gnosis_rrf_lexical_weight,
+        )
 
     async def _lexical_memory_candidates(
         self,
         client: MemoryClientContext,
         query: str,
         scope_fragments: list[JsonValue],
+        filter_superseded: bool = False,
     ) -> list[StoredMemory]:
         """BM25 full-text candidates over Fact content, best score first.
 
@@ -2601,6 +2687,9 @@ class Neo4jAgentMemoryBackend:
         Lucene operators, and any full-text failure (index bootstrap or
         query) degrades to an empty lexical leg with a structured warning -
         the read never fails because of the lexical path.
+
+        When filter_superseded is True, the Cypher excludes structurally
+        superseded facts (valid_to IS NOT NULL) from the BM25 candidate pool.
         """
         lucene_query = sanitize_lucene_query(query)
         if not lucene_query:
@@ -2613,6 +2702,7 @@ class Neo4jAgentMemoryBackend:
                     "query": lucene_query,
                     "scope_fragments": scope_fragments,
                     "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
+                    "filter_superseded": filter_superseded,
                 },
             )
         except (
