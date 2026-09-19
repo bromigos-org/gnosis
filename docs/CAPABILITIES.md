@@ -52,14 +52,16 @@ Four principles shape every capability here.
 
 | Capability | Flag | Grounded in | Path | Status |
 |---|---|---|---|---|
-| Fact extraction (atomic dated units) | `GNOSIS_FACT_EXTRACTION_ENABLED` | EMem (2511.17208), EverMemOS | write | **kept** — +11.7 J, the largest lever |
+| Fact extraction — atomic dated units (edu-v2.0) | `GNOSIS_FACT_EXTRACTION_ENABLED` | EMem (2511.17208), EverMemOS, Memanto (2604.22085) | write | **kept** — +11.7 J; edu-v2.0 adds Rule 15 (assistant-turn extraction) |
+| **Write-time structural supersession (SUPERSEDES edges + valid\_to)** | *(part of extraction path)* | arXiv 2607.26520 (Graph-Native Bitemporal), arXiv 2607.21962 (Ground Truth First) | write | **new (L-31)** — structural KU fix; marks stale same-slot facts with `valid_to` at ingest; filters at retrieval |
+| Relation-class-aware supersession (relation_slots) | `GNOSIS_READ_SUPERSESSION_ENABLED` | "Don't Ask the LLM to Track Freshness" (2606.01435) | write+read | **kept** — KU fix; groups facts by entity+relation slot for newest-wins |
 | Entity-graph materialization | `GNOSIS_ENTITY_GRAPH_ENABLED` | HippoRAG 2 (2502.14802), Graphiti (2501.13956) | write | kept (drives graph recall) |
-| Bi-temporal fact model | *(always on)* | Zep/Graphiti (2501.13956) | write | kept (timestamps only, no write-time invalidation) |
+| Bi-temporal fact model with write-time SUPERSEDES | *(always on)* | Zep/Graphiti (2501.13956), arXiv 2607.26520 | write | kept — now includes deterministic `valid_to` invalidation at write time (L-31) |
 | Selective addition + dedup | `GNOSIS_FACT_DEDUPLICATION_ENABLED` | Selective memory addition (2505.16067) | write | kept |
 | Relevance-ranked dated assembly | *(baseline)* | — | read | kept — +18.5 J over verbatim RAG |
 | Hybrid retrieval (BM25 + dense, RRF) | `GNOSIS_HYBRID_RETRIEVAL_ENABLED` | RRF; EverMemOS (k=60) | read | routed (wash globally on short LOCOMO) |
 | Scope-narrowed dense retrieval | `GNOSIS_SCOPED_DENSE_RETRIEVAL_ENABLED` | correctness for multi-user stores | read | kept for shared stores |
-| **Adaptive per-query routing** | `GNOSIS_ADAPTIVE_ROUTING_ENABLED` | Adaptive-RAG (2403.14403) | read | **kept** — +2.9 J; the composition mechanism |
+| **Adaptive per-query routing (6 routes incl. knowledge_update)** | `GNOSIS_ADAPTIVE_ROUTING_ENABLED` | Adaptive-RAG (2403.14403) | read | **kept** — +2.9 J; the composition mechanism; L-29 adds knowledge_update route |
 | **Chain-of-Note (read-then-reason)** | `GNOSIS_CHAIN_OF_NOTE_ENABLED` | Chain-of-Note (2311.09210) | read | **kept** — adversarial 83.0 (peak) |
 | Read-time supersession (newest-wins) | `GNOSIS_READ_SUPERSESSION_ENABLED` | "Don't Ask the LLM to Track Freshness" (2606.01435) | read | kept (routed) |
 | Sufficiency signalling | `GNOSIS_SUFFICIENCY_CHECK_ENABLED` | Sufficient Context (2411.06037) | read | client hint |
@@ -69,6 +71,8 @@ Four principles shape every capability here.
 | Entity / bridge traversal | `GNOSIS_GRAPH_TRAVERSAL_ENABLED`, `GNOSIS_BRIDGE_TRAVERSAL_ENABLED` | Self-Ask (2210.03350), IRCoT (2212.10509), HippoRAG (2405.14831) | read | routed (fires rarely on LOCOMO) |
 | Listwise LLM reranker | `GNOSIS_RERANK_ENABLED` | RankGPT; Mnemis reranker ablation | read | **new**, default-off, unmeasured |
 | LLM recall filter | `GNOSIS_RECALL_FILTER_ENABLED` | EMem (2511.17208) | read | rejected on LOCOMO (flat, +6s/read) |
+| Community graph / subgraph summaries | `GNOSIS_COMMUNITY_GRAPH_ENABLED` | GraphRAG (2404.16130), Graphiti/Zep | read | **tried (L-27), rejected** — -0.2pp overall; SSA -5.3pp, MS -5.0pp; temporal +2.8pp, SSP +3.3pp; gains did not outweigh regressions |
+| Multi-query rewrite (query reformulation) | `GNOSIS_QUERY_REWRITE_ENABLED` | Adaptive-RAG | read | **tried (L-7), rejected** — helped T +5.3pp but hurt MS -11.1pp globally; routing may resurrect selectively |
 
 "Routed" = enabled per-query by the router for the categories it helps, not globally.
 
@@ -85,7 +89,7 @@ transcript into durable, individually-retrievable knowledge instead of a bag of
 messages.
 
 **Algorithm.** One extraction call per turn-pair, with a bounded context window
-of prior turns. The prompt (edu-v1) emits `{subject, predicate, object,
+of prior turns. The current prompt (edu-v2.0) emits `{subject, predicate, object,
 event_date, entities}` and, when the entity graph is enabled, `(head, relation,
 tail)` triples. `session_date` is consumed as the conversation date so relative
 references ("last week") resolve to absolute ranges. Extraction runs on a
@@ -93,11 +97,20 @@ bounded async queue (`GNOSIS_FACT_EXTRACTION_MODE=background`, drop-not-block) s
 it never blocks the write response; malformed model JSON is re-sampled rather
 than dropped.
 
+**Prompt versions.** `edu-v1` extracted only user-stated facts (human-only exemplar).
+`edu-v2.0` adds Rule 15 — explicitly extract from assistant turns (recommendations,
+commitments, stated facts, how-to guidance) with attribution "The assistant
+recommended/stated/committed …". The exemplar was replaced with a user+assistant
+exchange demonstrating 3 assistant-attributed extractions. Version is stored in each
+fact's `extraction_version` metadata, so old and new facts coexist without migration.
+
 **Research.** Event-centric fact units with an LLM recall filter beat
 Mem0/Zep/full-context at ~740 tokens in EMem
 ([arXiv 2511.17208](https://arxiv.org/abs/2511.17208)); EverMemOS's "MemCells"
 and the RL-trained extractor of Memory-R2 point the same way — *extraction
-quality dominates backbone size*.
+quality dominates backbone size*. Memanto ([arXiv 2604.22085](https://arxiv.org/abs/2604.22085))
+identifies the assistant-perspective extraction gap: SSA is suppressed when only
+user turns are extracted.
 
 **Impact.** +11.7 J on LOCOMO (temporal 42→84) — the single largest measured
 lever. With extraction off, gnosis is a dated-RAG store.
@@ -120,21 +133,41 @@ ICML 2025) and Graphiti/Zep
 ([arXiv 2501.13956](https://arxiv.org/abs/2501.13956)) — passages/entities as
 graph nodes for multi-hop recall.
 
-### Bi-temporal fact model
+### Bi-temporal fact model + write-time SUPERSEDES edges (L-31)
 
 **Approach.** Every fact carries two timestamps: `event_date` (when the thing
 happened) and `created_at` (when it was written). Reads date-anchor and, for
-supersession, reason over recency.
+supersession, reason over recency. As of L-31, gnosis also writes structural
+`SUPERSEDES` edges at ingest time and marks stale facts with `valid_to`.
 
-**Research & the deliberate divergence.** Zep/Graphiti
-([2501.13956](https://arxiv.org/abs/2501.13956)) propose bi-temporal *edge
-invalidation* — an LLM sets `invalid_at` at write time on contradiction. gnosis
-keeps the bi-temporal *timestamps* (cheap, already stored) but **rejects
-write-time invalidation**, because the freshness study "Don't Ask the LLM to
-Track Freshness" ([arXiv 2606.01435](https://arxiv.org/abs/2606.01435)) measured
-that approach at ~7% on FactConsolidation versus 78–94.8% for deterministic
-read-time newest-wins. gnosis does the latter (see [read-time
-supersession](#read-time-supersession--deterministic-newest-wins)).
+**Write-time structural supersession (L-31).** When a new extracted fact occupies
+the same `relation_slot` as an existing fact in scope (e.g. "alice:works_at"),
+gnosis writes a `(new_fact)-[:SUPERSEDES]->(old_fact)` edge in Neo4j and sets
+`old_fact.valid_to = datetime()`. For the `knowledge_update` retrieval route, the
+vector and BM25 Cypher queries filter `f.valid_to IS NULL` — so structurally
+superseded facts are *excluded from the embedding search* rather than just dropped
+after retrieval. This is the fix for the core KU problem: old facts outrank new
+facts in embedding space (the update is phrased in a different conversational
+context), so post-retrieval supersession could not help when the new fact was
+already below rank 20.
+
+**Research.** arXiv 2607.26520 (Graph-Native Bitemporal Memory) implements this
+pattern natively — immutable identity nodes + versioned content nodes with
+`valid_time`/`transaction_time` + write-time semantic edges. arXiv 2607.21962
+(Ground Truth First) provides the volatility-class taxonomy (singleton vs.
+additive relations) that determines which facts participate in supersession. The
+freshness study "Don't Ask the LLM to Track Freshness" (arXiv 2606.01435) validates
+append-only + deterministic invalidation over LLM-based write-time invalidation
+(94.8% vs 7%); gnosis's approach IS the deterministic variant, now applied at the
+DB query layer rather than only at the application layer.
+
+**Relation to the prior design.** Zep/Graphiti ([2501.13956](https://arxiv.org/abs/2501.13956))
+use an LLM to set `invalid_at` at write time. gnosis rejects LLM-based
+invalidation (the freshness study measures it at ~7%) and uses deterministic
+slot-matching instead: the `relation_slot` key `"alice:works_at"` is computed
+from the extracted `(head, relation_class)` triple, not from a model judgment call.
+Storage remains append-only — no facts are deleted or mutated beyond the `valid_to`
+timestamp on the superseded fact.
 
 ### Selective addition & non-destructive dedup
 
@@ -186,12 +219,23 @@ that lets independently-good features coexist without the interference that
 sinks global stacking.
 
 **Algorithm.** `GNOSIS_ADAPTIVE_ROUTING_ENABLED` sends the query to an LLM
-classifier that returns a route (single-hop, multi-hop, temporal, aggregative,
-unanswerable-risk, …). The resulting `RouteDecision` carries the effective
-read-path feature set — which retrieval legs run, the Chain-of-Note variant, the
-item-budget multiplier — so temporal queries route to dated/hybrid retrieval,
-multi-hop/aggregative queries route to graph traversal and expanded budgets, and
-so on. Routing failures degrade to the globally-configured flags.
+classifier that returns one of six routes. The resulting `RouteDecision` carries
+the effective read-path feature set — which retrieval legs run, the Chain-of-Note
+variant, the item-budget multiplier, the supersession filter — so temporal queries
+route to dated/hybrid retrieval, multi-hop/aggregative get graph traversal and
+expanded budgets, and knowledge-update gets structural `valid_to` filtering. Routing
+failures degrade to the globally-configured flags.
+
+**Routes (as of L-31):**
+
+| Route | When | Key features |
+|---|---|---|
+| `temporal` | asks WHEN, elapsed time, date ordering | hybrid BM25+dense; CoN off (verbatim date leakage); supersession off |
+| `multi_hop` | two or more chained facts needed | graph-QA fusion; verbatim expansion; dense-only |
+| `aggregative` | count/frequency/synthesis across memories | hybrid BM25+dense; expanded budget; supersession off |
+| `knowledge_update` | current value of a fact that changes over time | hybrid BM25+dense; `valid_to IS NULL` filter; **recency injection** (top-5 most-recently-ingested facts merged into dense top-20 before reranking); supersession on |
+| `unanswerable_risk` | topic definitively absent from personal memory | abstention prompt; sufficiency check; supersession off |
+| `single_hop` | everything else — one fact answers it | hybrid BM25+dense (L-20) |
 
 **Research.** Adaptive-RAG
 ([arXiv 2403.14403](https://arxiv.org/abs/2403.14403)) — match retrieval strategy
@@ -225,19 +269,43 @@ negative result kept in the record.
 
 **Approach.** When several facts fill the same "slot" (the same thing stated at
 different times), keep only the newest at read time — without ever mutating
-storage.
+storage. As of L-31, this is supplemented by a write-time structural layer (see
+[Bi-temporal fact model + write-time SUPERSEDES](#bi-temporal-fact-model--write-time-supersedes-edges-l-31)).
 
 **Algorithm.** `GNOSIS_READ_SUPERSESSION_ENABLED` runs a deterministic pass:
-same slot = same normalized subject plus normalized predicate (typed facts) or
-first entity (extracted facts); newest wins by `event_date`, else `created_at`;
-ties, cross-user, cross-scope, `said_*`, and no-entity facts are conservatively
-kept. Append-only storage is untouched — this is a *read-time* resolution.
+same slot = same normalized subject plus normalized predicate (typed facts); for
+extracted facts, the slot is the `relation_slots` metadata key written at ingest
+time — `"{normalized_head}:{normalized_relation_class}"` (e.g. `"alice:works_at"`).
+This makes supersession relation-class-aware: two facts about Alice's employer are
+correctly grouped and the newer one wins, even if they use different phrasings.
+Newest wins by `event_date`, else `created_at`; ties, cross-user, cross-scope,
+`said_*`, and no-entity facts are conservatively kept. Append-only storage is
+untouched — this is a *read-time* resolution.
+
+**Singleton-only restriction (L-25b).** Only *singleton* relation classes
+participate in slot supersession — relations where at most one value is true at
+a time: `works_at`, `lives_in`, `relationship_status`, `studies_at`, and similar
+biographical anchors. *Additive* relations — `likes`, `prefers`, `has_visited`,
+`owns` — can have multiple concurrent valid values and are excluded from
+supersession. The `is_singleton_relation_class()` predicate in `supersession.py`
+encodes this taxonomy (informed by arXiv:2607.21962 "Ground Truth First" volatility
+classes). This restriction fixed an over-supersession regression in L-25 (before
+the fix, preference and event-accumulation facts were incorrectly superseded).
+
+**L-31 structural layer.** Read-time supersession can only act on candidates that
+reach the application layer. If the new fact is below rank 20 in embedding space
+(because the old, stale phrasing matches the query better), it never enters the
+candidate pool and read-time supersession cannot help. The write-time SUPERSEDES
+edges + `valid_to` filter (L-31) solve this by excluding structurally superseded
+facts from the vector and BM25 Cypher queries for the `knowledge_update` route,
+so the current (non-superseded) fact naturally reaches the top-20.
 
 **Research.** "Don't Ask the LLM to Track Freshness"
 ([arXiv 2606.01435](https://arxiv.org/abs/2606.01435)): deterministic read-time
 newest-wins scores 78–94.8% on FactConsolidation where LLM write-time
 invalidation scores ~7%. This is a deliberate, measured reversal of the
-bi-temporal-invalidation orthodoxy.
+bi-temporal-invalidation orthodoxy. L-31 extends this into the query layer —
+deterministic `valid_to IS NULL` filtering rather than application-layer dropping.
 
 ### Reading aids (instruction-level)
 
@@ -370,9 +438,15 @@ review-first, non-transitive consent model is gnosis's own.
 | [2311.09210](https://arxiv.org/abs/2311.09210) | Chain-of-Note | read-then-reason reading instruction |
 | [2403.14403](https://arxiv.org/abs/2403.14403) | Adaptive-RAG | per-query routing (composition core) |
 | [2511.17208](https://arxiv.org/abs/2511.17208) | EMem | atomic fact units; recall filter |
+| [2604.22085](https://arxiv.org/abs/2604.22085) | Memanto | assistant-turn extraction gap (edu-v2.0 Rule 15) |
 | [2502.14802](https://arxiv.org/abs/2502.14802) | HippoRAG 2 (ICML 2025) | entity-graph recall |
 | [2405.14831](https://arxiv.org/abs/2405.14831) | HippoRAG / Graphiti approach | entity/bridge traversal |
 | [2501.13956](https://arxiv.org/abs/2501.13956) | Zep / Graphiti | bi-temporal model; federation |
+| [2607.26520](https://arxiv.org/abs/2607.26520) | Graph-Native Bitemporal Memory Store | write-time SUPERSEDES edges + valid_time/transaction_time model (L-31) |
+| [2607.21962](https://arxiv.org/abs/2607.21962) | Ground Truth First | validity intervals + volatility-class taxonomy (singleton vs. additive) |
+| [2608.04746](https://arxiv.org/abs/2608.04746) | Scrub Jay Episodic Memory | per-memory perishability score + temporal decay for retrieval |
+| [2608.00009](https://arxiv.org/abs/2608.00009) | AgentMemBench | GEM + CBS for multi-session memory; benchmark coverage |
+| [2607.16848](https://arxiv.org/abs/2607.16848) | Beyond Memory Leaderboards | retrieval budget comparability warning; leaderboard context |
 | [2606.01435](https://arxiv.org/abs/2606.01435) | "Don't Ask the LLM to Track Freshness" | read-time supersession (over invalidation) |
 | [2411.06037](https://arxiv.org/abs/2411.06037) | Sufficient Context | sufficiency signalling |
 | [2506.09038](https://arxiv.org/abs/2506.09038) | AbstentionBench | abstention prompting |

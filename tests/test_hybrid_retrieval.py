@@ -176,6 +176,7 @@ async def test_search_memories_hybrid_surfaces_lexical_only_keyword_hit() -> Non
         "query": "Zephyrine\\-9",
         "scope_fragments": ['"tenant_id": "nolgia"', '"user_id": "789"'],
         "candidate_limit": 100,
+        "filter_superseded": False,
     }
 
 

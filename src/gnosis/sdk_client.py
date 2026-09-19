@@ -447,28 +447,22 @@ class TextEmbedder(Protocol):
 _EMBEDDING_MAX_CHARS: Final[int] = 30_000
 
 
-@final
-class _TruncatingEmbedding:
-    """Wraps LiteLLMEmbeddingProvider, pre-truncating texts to 30 000 chars.
+class _TruncatingEmbedding(LiteLLMEmbeddingProvider):
+    """LiteLLMEmbeddingProvider that pre-truncates texts to 30 000 chars.
 
     Azure-proxied embedding models on the NVIDIA gateway reject inputs over
     8 192 tokens. LiteLLM's ``truncate`` kwarg is silently dropped for the
     ``openai`` provider prefix, so we pre-truncate at the character level
     (30 000 chars ≈ 7 500 tokens at ~4 chars/token, safely under the limit).
+    Inheriting from LiteLLMEmbeddingProvider ensures isinstance checks against
+    the EmbeddingProvider Protocol pass across all Python 3.12+ versions.
     """
 
-    def __init__(self, inner: LiteLLMEmbeddingProvider) -> None:
-        self._inner = inner
-        self.model = inner.model
-        self.dimensions = inner.dimensions
-
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        truncated = [t[:_EMBEDDING_MAX_CHARS] for t in texts]
-        return await self._inner.embed(truncated)
+        return await super().embed([t[:_EMBEDDING_MAX_CHARS] for t in texts])
 
     async def embed_one(self, text: str) -> list[float]:
-        result = await self.embed([text[:_EMBEDDING_MAX_CHARS]])
-        return result[0]
+        return await super().embed_one(text[:_EMBEDDING_MAX_CHARS])
 
 
 def build_memory_settings(settings: Settings) -> MemorySettings:
@@ -485,12 +479,10 @@ def build_memory_settings(settings: Settings) -> MemorySettings:
             api_key=settings.litellm_api_key,
         ),
         embedding=_TruncatingEmbedding(
-            LiteLLMEmbeddingProvider(
-                litellm_embedding_model(settings.gnosis_embedding),
-                dimensions=settings.gnosis_embedding_dimensions,
-                api_base=settings.litellm_base_url,
-                api_key=settings.litellm_api_key,
-            )
+            litellm_embedding_model(settings.gnosis_embedding),
+            dimensions=settings.gnosis_embedding_dimensions,
+            api_base=settings.litellm_base_url,
+            api_key=settings.litellm_api_key,
         ),
         memory=build_memory_config(settings),
     )

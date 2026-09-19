@@ -185,6 +185,26 @@ def test_unrouted_decision_defaults_all_off() -> None:
                 sufficiency_check_enabled=False,
             ),
         ),
+        # knowledge_update: hybrid BM25 for exact name matching + recency
+        # injection + structural supersession filter (valid_to IS NULL).
+        (
+            "knowledge_update",
+            RouteDecision(
+                route="knowledge_update",
+                hybrid_retrieval=True,
+                graphqa_fusion=False,
+                verbatim_expansion=False,
+                abstention_prompt=False,
+                graph_traversal=False,
+                bridge_traversal=False,
+                chain_of_note=False,
+                budget_multiplier=1,
+                supersession_enabled=False,
+                sufficiency_check_enabled=False,
+                recency_injection_enabled=True,
+                filter_superseded=True,
+            ),
+        ),
     ],
 )
 def test_route_feature_table(route: QueryRoute, expected: RouteDecision) -> None:

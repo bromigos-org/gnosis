@@ -158,15 +158,38 @@ MATCH (f:Fact {id: $memory_id})
 DETACH DELETE f
 """
 
+# Write-time SUPERSEDES: when a new fact occupies the same relation slot as an
+# existing fact in the same scope (e.g. "alice:works_at"), mark the older fact
+# with valid_to = now and link new→old with a SUPERSEDES edge. The slot match
+# uses JSON fragment containment on metadata (same pattern as scope fragment
+# reads). Only facts where valid_to IS NULL (not already superseded) are
+# targeted, keeping the write idempotent. The new fact's valid_to is never
+# touched here — it stays NULL until a future update supersedes it.
+WRITE_TIME_SUPERSEDE_CYPHER: Final[str] = """
+MATCH (new_fact:Fact {id: $new_fact_id})
+MATCH (old_fact:Fact)
+WHERE old_fact.metadata IS NOT NULL
+  AND old_fact.id <> $new_fact_id
+  AND old_fact.valid_to IS NULL
+  AND all(fragment IN $scope_fragments WHERE old_fact.metadata CONTAINS fragment)
+  AND any(slot_frag IN $slot_fragments WHERE old_fact.metadata CONTAINS slot_frag)
+MERGE (new_fact)-[:SUPERSEDES]->(old_fact)
+SET old_fact.valid_to = datetime()
+"""
+
 # Lexical (BM25) candidates for hybrid retrieval. Scoped exactly like the
 # other provider reads: parameterized metadata fragments narrow in-query and
 # the gateway re-checks scope on the deserialized records afterwards. The
 # query string must already be Lucene-sanitized (``sanitize_lucene_query``).
+# When $filter_superseded is true (knowledge_update route), facts with
+# valid_to set (structurally superseded at ingest) are excluded so the vector
+# search returns the most-relevant VALID facts instead of stale ones.
 LEXICAL_MEMORY_SEARCH_CYPHER: Final[str] = f"""
 CALL db.index.fulltext.queryNodes('{FACT_OBJECT_FULLTEXT_INDEX}', $query)
 YIELD node AS f, score
 WHERE f.metadata IS NOT NULL
   AND all(fragment IN $scope_fragments WHERE f.metadata CONTAINS fragment)
+  AND (NOT $filter_superseded OR f.valid_to IS NULL)
 {MEMORY_RETURN_CYPHER}
 ORDER BY score DESC
 LIMIT $candidate_limit
@@ -182,12 +205,15 @@ FACT_EMBEDDING_VECTOR_INDEX: Final[str] = "fact_embedding_idx"
 # nearest neighbours), narrow to scope in-query, keep the best
 # $candidate_limit. The gateway still re-checks scope on the deserialized
 # records afterwards, like every other provider read.
+# When $filter_superseded is true (knowledge_update route), facts with
+# valid_to set are excluded so only current (non-superseded) facts rank.
 SCOPED_DENSE_MEMORY_SEARCH_CYPHER: Final[str] = f"""
 CALL db.index.vector.queryNodes(
   '{FACT_EMBEDDING_VECTOR_INDEX}', $vector_pool, $embedding)
 YIELD node AS f, score
 WHERE f.metadata IS NOT NULL
   AND all(fragment IN $scope_fragments WHERE f.metadata CONTAINS fragment)
+  AND (NOT $filter_superseded OR f.valid_to IS NULL)
 WITH f, score
 ORDER BY score DESC
 LIMIT $candidate_limit
@@ -256,18 +282,21 @@ def fuse_memory_rankings(
     lexical: Sequence[StoredMemory],
     *,
     k: int = RRF_K,
+    lexical_weight: float = 1.0,
 ) -> list[StoredMemory]:
-    """Fuse the dense and lexical candidate rankings with standard RRF.
+    """Fuse the dense and lexical candidate rankings with weighted RRF.
 
-    Each ranking contributes ``1 / (k + rank)`` per memory (rank is 1-based
-    within that ranking; on a duplicate id the best rank wins) and the summed
-    scores decide the fused order. When both rankings carry the same memory
-    the dense record is kept as the representative so its vector similarity
-    survives into the response; ties keep dense-first arrival order.
+    Each ranking contributes ``weight / (k + rank)`` per memory (rank is
+    1-based within that ranking; on a duplicate id the best rank wins) and
+    the summed scores decide the fused order. Dense weight is always 1.0;
+    ``lexical_weight`` > 1.0 promotes BM25 hits relative to dense hits.
+    When both rankings carry the same memory the dense record is kept as
+    the representative so its vector similarity survives into the response;
+    ties keep dense-first arrival order.
     """
     fused_scores: dict[str, float] = {}
     representatives: dict[str, StoredMemory] = {}
-    for ranking in (dense, lexical):
+    for ranking, weight in ((dense, 1.0), (lexical, lexical_weight)):
         rank = 0
         seen: set[str] = set()
         for memory in ranking:
@@ -278,7 +307,7 @@ def fuse_memory_rankings(
             fused_scores[memory.memory_id] = fused_scores.get(
                 memory.memory_id,
                 0.0,
-            ) + 1.0 / (k + rank)
+            ) + weight / (k + rank)
             _ = representatives.setdefault(memory.memory_id, memory)
     arrival_order = {
         memory_id: position for position, memory_id in enumerate(fused_scores)
