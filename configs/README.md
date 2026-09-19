@@ -80,4 +80,4 @@ experiment labels (L-0 through L-31+) in gnosis-membench. LME_S experiment histo
 | L-30 | — | Rejected (2026-08-06) | 73.0% | Tighter KU router guide: temporal -2.4pp from over-restriction |
 | **L-31** | — | **In progress (2026-08-06)** | pending | Write-time SUPERSEDES + valid_to filter; structural KU fix |
 
-See [gnosis-membench RESULTS.md](https://github.com/blackflame007/gnosis-membench/blob/main/RESULTS.md).
+See [gnosis-membench RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md).

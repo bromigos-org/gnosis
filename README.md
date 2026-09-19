@@ -25,13 +25,13 @@ prompt-safe sections for agent consumption.
 ## Quick start
 
 The tracked [`compose.yaml`](compose.yaml) starts Neo4j 5.26+ and the published
-`ghcr.io/blackflame007/gnosis:latest` image. You need Docker Compose v2 and an
+`ghcr.io/nolgiainc/gnosis:latest` image. You need Docker Compose v2 and an
 OpenAI-compatible chat/embedding endpoint. The default compose points at Ollama on
 the host; set variables (or a `.env` next to the file) for LiteLLM, OpenAI, or
 another endpoint.
 
 ```bash
-git clone https://github.com/blackflame007/gnosis.git
+git clone https://github.com/nolgiainc/gnosis.git
 cd gnosis
 ollama pull llama3.2:latest
 ollama pull nomic-embed-text
@@ -200,11 +200,11 @@ uv run uvicorn gnosis.main:app --host localhost --port 8080
 - **Multi-session (60.3%):** +0.8pp from L-32; 39.7% remaining failure rate (48/121).
 - **Temporal (69.3%):** gap to L-25b (74.0%): 4.7pp — ingest-variation gap, not an L-33 regression.
 
-**L-31 (2026-08-09):** write-time SUPERSEDES edges + `valid_to IS NULL` filter. KU **70.8% → 80.6% (+9.8pp)**. Overall 71.0%; regressions confirmed as ingest variation (not SUPERSEDES logic). See [RESULTS.md](https://github.com/blackflame007/gnosis-membench/blob/main/RESULTS.md).
+**L-31 (2026-08-09):** write-time SUPERSEDES edges + `valid_to IS NULL` filter. KU **70.8% → 80.6% (+9.8pp)**. Overall 71.0%; regressions confirmed as ingest variation (not SUPERSEDES logic). See [RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md).
 
 **L-32 (2026-08-10):** enumeration clause fix (`GNOSIS_CON_ENUMERATION_ENABLED=true`) + 2-sub-query expansion for aggregative multi-session questions. MS **54.5% → 59.5% (+5.0pp)**. Overall **72.6%** (+1.6pp vs L-31). No re-ingest.
 
-**L-33 (2026-08-10) — COMPLETE:** extended aggregative pattern + 4 sub-queries (was 2) + set-based dedup in membench answer.py. Overall **74.2%** (+1.6pp vs L-32, **+0.6pp vs previous best L-25b**). MS **59.5% → 60.3%** (+0.8pp). KU flat (81.9%). No re-ingest. See [gnosis-membench RESULTS.md](https://github.com/blackflame007/gnosis-membench/blob/main/RESULTS.md).
+**L-33 (2026-08-10) — COMPLETE:** extended aggregative pattern + 4 sub-queries (was 2) + set-based dedup in membench answer.py. Overall **74.2%** (+1.6pp vs L-32, **+0.6pp vs previous best L-25b**). MS **59.5% → 60.3%** (+0.8pp). KU flat (81.9%). No re-ingest. See [gnosis-membench RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md).
 
 ### LOCOMO — Run 23 (full 10-conversation, 2026-07-04), GPT-5.5 judge
 
@@ -221,7 +221,7 @@ Open-domain is the primary LOCOMO gap (29.2 vs frontier ~74–77). The community
 feature (`GNOSIS_COMMUNITY_GRAPH_ENABLED`) targets this gap with cluster-level summaries.
 
 See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) and
-[gnosis-membench RESULTS.md](https://github.com/blackflame007/gnosis-membench/blob/main/RESULTS.md) for the full run ledger.
+[gnosis-membench RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md) for the full run ledger.
 
 ## Development
 
@@ -235,7 +235,7 @@ uv run pytest -q
 
 The Docker build runs on `main` push only. For feature work: keep optional flags
 default-off, ensure LLM-backed features degrade gracefully, and measure with
-[gnosis-membench](https://github.com/blackflame007/gnosis-membench) before making
+[gnosis-membench](https://github.com/nolgiainc/gnosis-membench) before making
 quality claims.
 
 ## Deployment
@@ -245,7 +245,7 @@ quality claims.
 - [`compose.yaml`](compose.yaml): minimal Neo4j + service stack for local use.
   Not a production topology or secret-management system.
 - [`.github/workflows/ci.yml`](.github/workflows/ci.yml): test gate on PRs; push
-  to `main` also builds and publishes `ghcr.io/blackflame007/gnosis:latest`.
+  to `main` also builds and publishes `ghcr.io/nolgiainc/gnosis:latest`.
 
 Kubernetes, ingress, secret management, and rollout policy are owned by your
 deployment environment. Keep all credentials and token classes in environment
@@ -253,7 +253,7 @@ secret-backed configuration.
 
 ## Related projects
 
-- [gnosis-membench](https://github.com/blackflame007/gnosis-membench) — benchmark
+- [gnosis-membench](https://github.com/nolgiainc/gnosis-membench) — benchmark
   harness for LOCOMO and LongMemEval experiments.
-- [hermes-gnosis](https://github.com/blackflame007/hermes-gnosis) — memory-provider
+- [hermes-gnosis](https://github.com/nolgiainc/hermes-gnosis) — memory-provider
   plugin for NousResearch Hermes agents.

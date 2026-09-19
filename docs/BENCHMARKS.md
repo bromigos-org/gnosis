@@ -1,6 +1,6 @@
 # Official benchmark results
 
-Mirror of the canonical log in [gnosis-membench/RESULTS.md](https://github.com/blackflame007/gnosis-membench/blob/main/RESULTS.md); the harness repo is the source of truth for new runs.
+Mirror of the canonical log in [gnosis-membench/RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md); the harness repo is the source of truth for new runs.
 
 > **LongMemEval_S L-23 (full 500-Q, 2026-07-31).** First full LME_S run.
 > Claude-Sonnet-4-6 as both backbone (queries gnosis `/v1/memory/context`) and judge
