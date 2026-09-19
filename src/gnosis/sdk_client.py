@@ -17,7 +17,7 @@ from typing import (
     Self,
     TypedDict,
     cast,
-    final,
+    override,
     runtime_checkable,
 )
 from uuid import UUID
@@ -458,9 +458,11 @@ class _TruncatingEmbedding(LiteLLMEmbeddingProvider):
     the EmbeddingProvider Protocol pass across all Python 3.12+ versions.
     """
 
+    @override
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         return await super().embed([t[:_EMBEDDING_MAX_CHARS] for t in texts])
 
+    @override
     async def embed_one(self, text: str) -> list[float]:
         return await super().embed_one(text[:_EMBEDDING_MAX_CHARS])
 

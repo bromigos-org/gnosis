@@ -55,16 +55,33 @@ _STATE_TEMPORAL_STATES = {"starts", "ongoing", "ends"}
 # Additive relations (likes, prefers, has_hobby, …) can have multiple concurrent
 # values and must NOT be given a shared slot — collisions cause preference and
 # multi-session facts to silently drop, which is worse than keeping both.
-_SINGLETON_RELATION_PREFIXES: frozenset[str] = frozenset({
-    # Employment / role
-    "works", "employed", "employs",
-    # Location / residence
-    "lives", "resides", "located", "based", "moved",
-    # Relationship status
-    "married", "engaged", "dating", "divorced", "separated", "widowed",
-    # Education (current enrolment)
-    "studies", "enrolled", "graduated", "attends", "attending",
-})
+_SINGLETON_RELATION_PREFIXES: frozenset[str] = frozenset(
+    {
+        # Employment / role
+        "works",
+        "employed",
+        "employs",
+        # Location / residence
+        "lives",
+        "resides",
+        "located",
+        "based",
+        "moved",
+        # Relationship status
+        "married",
+        "engaged",
+        "dating",
+        "divorced",
+        "separated",
+        "widowed",
+        # Education (current enrolment)
+        "studies",
+        "enrolled",
+        "graduated",
+        "attends",
+        "attending",
+    }
+)
 
 
 def is_singleton_relation_class(relation_class: str) -> bool:
@@ -74,7 +91,7 @@ def is_singleton_relation_class(relation_class: str) -> bool:
     discriminator ("works_at_nvidia" → "works" → singleton; "prefers_coffee"
     → "prefers" → additive).
     """
-    first_word = relation_class.split("_")[0] if relation_class else ""
+    first_word = relation_class.split("_", maxsplit=1)[0] if relation_class else ""
     return first_word in _SINGLETON_RELATION_PREFIXES
 
 
@@ -90,7 +107,7 @@ class FactFreshness:
     created_at: str | None
 
 
-def slot_key(
+def slot_key(  # noqa: C901, PLR0911 - one branch per relation class.
     subject: str,
     predicate: str,
     entities: Sequence[str],

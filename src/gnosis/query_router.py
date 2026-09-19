@@ -192,9 +192,8 @@ class RouteDecision:
             # global BM25 was neutral for single_hop (80.5→79.5, Run 6).
             # Knowledge_update added (L-29): entity/value names in the update
             # conversation are exact-match candidates; BM25 surfaces them.
-            hybrid_retrieval=route in (
-                "temporal", "aggregative", "single_hop", "knowledge_update"
-            ),
+            hybrid_retrieval=route
+            in ("temporal", "aggregative", "single_hop", "knowledge_update"),
             graphqa_fusion=route == "multi_hop",
             verbatim_expansion=route == "multi_hop",
             abstention_prompt=route == "unanswerable_risk",

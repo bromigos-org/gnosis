@@ -242,7 +242,7 @@ async def test_add_memories_extraction_writes_units_alongside_verbatim() -> None
         cast("str", create_params["metadata"]),
     )
     assert stored_metadata["extracted"] is True
-    assert stored_metadata["extraction_version"] == "edu-v1.1"
+    assert stored_metadata["extraction_version"] == "edu-v2.0"
     assert stored_metadata["extraction_model"] == "openai/gemma4"
     assert stored_metadata["event_date"] == "2023-05-07"
     assert stored_metadata["entities"] == ["Cartman"]

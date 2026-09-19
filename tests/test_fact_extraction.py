@@ -266,8 +266,22 @@ def test_extraction_messages_carry_guide_and_one_shot_exemplar() -> None:
     exemplar_output = _message(messages[2])["content"]
     assert isinstance(exemplar_output, str)
     exemplar = MemoryUnitExtraction.model_validate_json(exemplar_output)
-    assert [unit.source_turn_ids for unit in exemplar.facts] == [[3], [3, 5], [6]]
-    assert [unit.event_date for unit in exemplar.facts] == [None, "2024-04-01", None]
+    assert [unit.source_turn_ids for unit in exemplar.facts] == [
+        [1],
+        [1],
+        [2],
+        [2],
+        [4],
+        [5],
+    ]
+    assert [unit.event_date for unit in exemplar.facts] == [
+        None,
+        "2024-04-01",
+        None,
+        None,
+        None,
+        None,
+    ]
 
 
 def test_extraction_messages_omit_relations_by_default() -> None:
@@ -307,7 +321,7 @@ def test_extraction_messages_request_relations_when_enabled() -> None:
     exemplar = RelationalMemoryUnitExtraction.model_validate_json(exemplar_output)
     assert exemplar.facts[0].relations == [
         FactRelation(
-            head="Alice",
+            head="user",
             relation="presented at",
             tail="International Robotics Symposium",
         ),

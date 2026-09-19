@@ -295,7 +295,6 @@ from gnosis.memory_provider import (
     DELETE_MEMORY_CYPHER,
     EXTRACTED_FACT_PREDICATE,
     LEXICAL_MEMORY_SEARCH_CYPHER,
-    WRITE_TIME_SUPERSEDE_CYPHER,
     LOOKUP_LATEST_MEMORY_CYPHER,
     LOOKUP_MEMORIES_BY_IDS_CYPHER,
     LOOKUP_MEMORY_CYPHER,
@@ -304,6 +303,7 @@ from gnosis.memory_provider import (
     TURN_MEMORY_PREDICATE_PREFIX,
     UPDATE_MEMORY_CYPHER,
     VERBATIM_MEMORY_PREDICATE,
+    WRITE_TIME_SUPERSEDE_CYPHER,
     StoredMemory,
     fuse_memory_rankings,
     lexical_stored_memory,
@@ -1664,7 +1664,9 @@ class Neo4jAgentMemoryBackend:
         # fact id prevents double-counting facts already in the dense ranking.
         if decision.recency_injection_enabled:
             recent = await _query_recent_facts(client, metadata)
-            existing_ids = {f.get("id") for f in facts if isinstance(f.get("id"), str)}
+            existing_ids = {
+                fact_id for f in facts if isinstance(fact_id := f.get("id"), str)
+            }
             injected = [
                 {**rf, "recency_injected": True}
                 for rf in recent[:_RECENCY_INJECTION_LIMIT]
@@ -2079,7 +2081,7 @@ class Neo4jAgentMemoryBackend:
                 )
         return results
 
-    async def _add_extracted_fact(  # noqa: PLR0913 - One argument per fact field.
+    async def _add_extracted_fact(  # noqa: PLR0913, C901 - One argument per fact field; write-time supersession branch.
         self,
         client: MemoryClientContext,
         scope: MemoryScope,
@@ -2171,7 +2173,7 @@ class Neo4jAgentMemoryBackend:
                 )
             except (RuntimeError, OSError, Neo4jError) as _supersede_err:
                 _LOGGER.warning(
-                    "write-time supersession failed; read-time supersession still active",
+                    "write-time supersession failed; read-time still active",
                     extra={"error_type": type(_supersede_err).__name__},
                 )
         stored = StoredMemory(
@@ -2640,7 +2642,7 @@ class Neo4jAgentMemoryBackend:
         )
         return stored_memories_from_sdk(raw_records)
 
-    async def _hybrid_memory_candidates(
+    async def _hybrid_memory_candidates(  # noqa: PLR0913 - One knob per retrieval leg.
         self,
         client: MemoryClientContext,
         query: str,
