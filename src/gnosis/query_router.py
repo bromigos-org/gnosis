@@ -38,7 +38,7 @@ structured warning, so routing can never fail a read.
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar, Final, Literal, Protocol
 
 from openai import AsyncOpenAI
@@ -157,6 +157,40 @@ class RouteDecision:
             budget_multiplier=settings.gnosis_coverage_budget_multiplier,
             supersession_enabled=settings.gnosis_read_supersession_enabled,
             sufficiency_check_enabled=settings.gnosis_sufficiency_check_enabled,
+            recency_injection_enabled=False,
+            filter_superseded=False,
+        )
+
+    def without_llm(self) -> "RouteDecision":
+        """This decision with every leg that makes an LLM call switched off.
+
+        Graph-QA fusion plans Cypher with the LLM, the bridge hop names its
+        entities with it, and the sufficiency check is an autorater call; the
+        rest (dense, BM25, entity traversal, supersession, expansion, the
+        instruction sections) are LLM-free and stay as configured.
+        """
+        return replace(
+            self,
+            graphqa_fusion=False,
+            bridge_traversal=False,
+            sufficiency_check_enabled=False,
+        )
+
+    def for_as_of(self) -> "RouteDecision":
+        """This decision made safe for a point-in-time read.
+
+        Legs that walk structure built from records that may postdate the
+        read's moment are off: graph-QA fusion and entity/bridge traversal
+        (edges from later facts), recency injection (newest by write time),
+        and the write-time ``valid_to`` filter (stamped when a later fact
+        was written). Read-time supersession stays: it runs over records
+        already filtered to the moment (gnosis/point_in_time.py).
+        """
+        return replace(
+            self,
+            graphqa_fusion=False,
+            graph_traversal=False,
+            bridge_traversal=False,
             recency_injection_enabled=False,
             filter_superseded=False,
         )

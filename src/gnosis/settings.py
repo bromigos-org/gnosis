@@ -276,6 +276,12 @@ class Settings(BaseSettings):
     gnosis_mcp_agent_id: str = Field(default="mcp-client", min_length=1)
     gnosis_federation_token: str = ""
     gnosis_peers: list[PeerConfig] = Field(default_factory=list)
+    # Spaces whose requests never make an LLM call, whatever the request
+    # says: reads run with use_llm=false, and writes that would extract
+    # (infer=true adds, /v1/messages) are refused. For clients that must
+    # keep their records out of the configured (possibly hosted) model,
+    # e.g. a trading system's event memory. Empty: no space is restricted.
+    gnosis_llm_free_spaces: list[str] = Field(default_factory=list)
 
     @field_validator("gnosis_peers")
     @classmethod

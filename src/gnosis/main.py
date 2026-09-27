@@ -3,12 +3,13 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Final
 
-from fastapi import Depends, FastAPI, Response
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 
 from gnosis.auth import Authenticator, build_authenticator
 from gnosis.backend import (
     BackendCapabilityUnavailable,
+    BackendRequestError,
     MemoryBackend,
     Neo4jAgentMemoryBackend,
 )
@@ -193,7 +194,10 @@ def _register_context_routes(
         memory: Annotated[MemoryBackend, Depends(get_backend)],
     ) -> MemoryContextResponse:
         authenticator.require_scope(request.scope)
-        return await memory.get_memory_context(request)
+        try:
+            return await memory.get_memory_context(request)
+        except BackendRequestError as error:
+            raise HTTPException(status_code=400, detail=error.detail) from error
 
     @app.post(
         "/v1/graph/context",
