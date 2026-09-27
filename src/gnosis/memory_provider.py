@@ -222,6 +222,63 @@ LIMIT $candidate_limit
 """
 
 
+# Point-in-time variants (gnosis/point_in_time.py): the same candidate reads,
+# narrowed in-query to records observed at or before $as_of_epoch - the
+# top-level observed_at_epoch an append-only add stamps, else the write time.
+# The clause only fills the pool for old moments; the gateway's visibility
+# predicate on the deserialized record is the authority. Used only when a
+# request sets as_of, so reads without it run the unchanged queries above.
+_AS_OF_CLAUSE: Final[str] = (
+    "  AND coalesce(f.observed_at_epoch, "
+    "datetime(f.created_at).epochMillis / 1000.0) <= $as_of_epoch"
+)
+
+SCOPED_DENSE_MEMORY_SEARCH_AS_OF_CYPHER: Final[str] = f"""
+CALL db.index.vector.queryNodes(
+  '{FACT_EMBEDDING_VECTOR_INDEX}', $vector_pool, $embedding)
+YIELD node AS f, score
+WHERE f.metadata IS NOT NULL
+  AND all(fragment IN $scope_fragments WHERE f.metadata CONTAINS fragment)
+{_AS_OF_CLAUSE}
+WITH f, score
+ORDER BY score DESC
+LIMIT $candidate_limit
+{MEMORY_RETURN_CYPHER},
+       score AS score
+"""
+
+LEXICAL_MEMORY_SEARCH_AS_OF_CYPHER: Final[str] = f"""
+CALL db.index.fulltext.queryNodes('{FACT_OBJECT_FULLTEXT_INDEX}', $query)
+YIELD node AS f, score
+WHERE f.metadata IS NOT NULL
+  AND all(fragment IN $scope_fragments WHERE f.metadata CONTAINS fragment)
+{_AS_OF_CLAUSE}
+{MEMORY_RETURN_CYPHER}
+ORDER BY score DESC
+LIMIT $candidate_limit
+"""
+
+# An append-only verbatim add (MemoryAddRequest.append_only): a direct
+# parameterized CREATE, like extracted facts, so the SDK's write-time dedup
+# can never merge a distinct dated event into a near-duplicate; plus the
+# observation time as a top-level property for the as-of clause.
+CREATE_APPEND_ONLY_MEMORY_CYPHER: Final[str] = """
+CREATE (f:Fact {
+    id: $memory_id,
+    subject: $subject,
+    predicate: $predicate,
+    object: $object,
+    confidence: 1.0,
+    embedding: $embedding,
+    created_at: datetime(),
+    tenant_id: $tenant_id,
+    user_id: $user_id,
+    observed_at_epoch: $observed_at_epoch,
+    metadata: $metadata
+})
+"""
+
+
 def list_memories_cypher(narrowing_fragment: str) -> str:
     return f"""
 MATCH (f:Fact)

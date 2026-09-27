@@ -76,6 +76,44 @@ Body: `{scope}` -> `{memory_id, event: "DELETE"}`.
 
 Both edit routes verify that the memory belongs to the request scope (tenant + `user_id`) before touching it and answer `404 memory not found in scope` otherwise - the same answer for "missing" and "owned by someone else", so cross-scope existence never leaks. Both are gated behind `GNOSIS_MEMORY_EDIT_ENABLED` (default `false`); while disabled they return `403` with `Memory editing is disabled by service policy.`. Every applied edit emits a structured audit log entry (`memory update applied` / `memory delete applied`) with tenant, agent, user, and memory id.
 
+## Point-in-time and LLM-free reads
+
+Three additive request fields, each absent from a serialized request at its
+default, so existing clients are byte-identical:
+
+- **`as_of`** (ISO-8601 with an offset) on `POST /v1/memories/search`,
+  `/v1/memories/list` and `/v1/memory/context`. The read sees a memory only if
+  it was observed at or before `as_of`: its `metadata.observed_at` when the
+  writer supplied one (a back-loading client writes years after the fact),
+  else its `created_at`. A memory with no readable time is invisible (fail
+  closed); a naive timestamp is a `400`. Every candidate leg (dense, BM25, the
+  SDK fallback, the recency fallback, facts-to-verbatim expansion, a federated
+  merge) is filtered in the gateway before the recall filter, supersession
+  and the budget, so read-time newest-wins only compares memories visible
+  then. The dense leg always takes the scope-narrowed vector query in an
+  as-of variant (`observed_at_epoch`, else `created_at`, `<= $as_of_epoch`),
+  so an old moment still fills its budget. Legs that walk structure built
+  from memories that may postdate `as_of` do not run: graph-QA fusion,
+  entity and bridge traversal, knowledge-update recency injection, the
+  write-time `valid_to` filter (stamped when a later fact is written) and
+  community summaries. `/v1/memory/context` with `as_of` requires
+  `include_short_term`, `include_reasoning` and `include_graph` false
+  (`400` otherwise): those sections are not point-in-time.
+  (`gnosis/point_in_time.py`.)
+- **`use_llm: false`** on search and context: no model call runs for the
+  request - no router classification (the global flags apply), recall
+  filter, rerank, sufficiency check, graph-QA planner, bridge namer or query
+  rewrite. Context with `include_graph` true is a `400` (the graph section
+  plans its Cypher with a model). Embeddings still run (the configured
+  `GNOSIS_EMBEDDING`). `GNOSIS_LLM_FREE_SPACES` forces this for every read in
+  the listed spaces and refuses their extraction-mode writes.
+- **`append_only: true`** on a verbatim add (`content`, `infer: false`): a
+  direct parameterized `CREATE` instead of the SDK's `add_fact`, whose
+  write-time dedup merges a new fact into a same-subject, same-predicate fact
+  at cosine >= 0.95 and returns the old record - which silently drops a
+  distinct dated event that reads like an earlier one. The node also carries
+  `observed_at_epoch` from `metadata.observed_at` for the as-of queries.
+
 ## Filter DSL
 
 mem0-v2-style JSON:

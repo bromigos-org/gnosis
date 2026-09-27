@@ -18,6 +18,10 @@ def _is_false(value: bool) -> bool:
     return value is False
 
 
+def _is_true(value: bool) -> bool:
+    return value is True
+
+
 def _is_empty(value: Sized) -> bool:
     return len(value) == 0
 
@@ -215,6 +219,12 @@ class MemoryContextRequest(ContractModel):
     include_graph: bool = True
     max_items: int = Field(default=8, ge=1, le=100)
     graph_limit: int = Field(default=8, ge=1, le=100)
+    # Point-in-time read: only memories observed at or before this ISO-8601
+    # instant (with an offset) are visible (gnosis/point_in_time.py).
+    as_of: str | None = Field(default=None, min_length=1, exclude_if=_is_none)
+    # False: no LLM call runs for this request (router, recall filter,
+    # rerank, sufficiency, graph-QA planner, bridge namer, query rewrite).
+    use_llm: bool = Field(default=True, exclude_if=_is_true)
 
 
 class SufficiencyAssessment(ContractModel):
@@ -610,6 +620,9 @@ class MemoryAddRequest(ContractModel):
     content: str | None = Field(default=None, min_length=1)
     infer: bool = True
     metadata: JsonObject = Field(default_factory=dict)
+    # Verbatim adds only: write a new record even when a near-duplicate
+    # exists (no write-time dedup merge), for distinct dated events.
+    append_only: bool = Field(default=False, exclude_if=_is_false)
 
 
 class MemoryAddResult(ContractModel):
@@ -630,6 +643,8 @@ class MemorySearchRequest(ContractModel):
     limit: int = Field(default=8, ge=1, le=100)
     min_score: float | None = Field(default=None, ge=0, le=1)
     peers: list[str] = Field(default_factory=list, exclude_if=_is_empty)
+    as_of: str | None = Field(default=None, min_length=1, exclude_if=_is_none)
+    use_llm: bool = Field(default=True, exclude_if=_is_true)
 
 
 class MemoryRecord(ContractModel):
@@ -660,6 +675,7 @@ class MemoryListRequest(ContractModel):
     filters: JsonObject | None = None
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=50, ge=1, le=200)
+    as_of: str | None = Field(default=None, min_length=1, exclude_if=_is_none)
 
 
 class MemoryListResponse(ContractModel):

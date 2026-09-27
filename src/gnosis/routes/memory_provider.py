@@ -43,6 +43,7 @@ from gnosis.models import (
     MessageWriteRequest,
     MessageWriteResponse,
 )
+from gnosis.point_in_time import parse_as_of, record_visible_as_of
 from gnosis.settings import Settings
 
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
@@ -130,7 +131,16 @@ def register_memory_provider_routes(  # noqa: C901, PLR0915 - route grouping is 
             return local
         remote, peer_errors = await federation.search_peers(request)
         results = merged_search_results(local.results, remote, request.limit)
-        if isinstance(memory, RecallFilteringBackend):
+        if request.as_of is not None:
+            # A peer may run an older gnosis that ignores as_of: the moment
+            # is enforced here on everything merged, local and remote.
+            as_of = parse_as_of(request.as_of)
+            results = [r for r in results if record_visible_as_of(r, as_of)]
+        llm = (
+            request.use_llm
+            and request.scope.space_id not in settings.gnosis_llm_free_spaces
+        )
+        if llm and isinstance(memory, RecallFilteringBackend):
             # Federated searches run the recall filter here, once over the
             # merged result set; remote results are already shareable-only
             # and the filter can only remove or keep records.

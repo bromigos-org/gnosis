@@ -290,15 +290,18 @@ from gnosis.memory_filters import (
     parse_filters,
 )
 from gnosis.memory_provider import (
+    CREATE_APPEND_ONLY_MEMORY_CYPHER,
     CREATE_FACT_OBJECT_FULLTEXT_INDEX_CYPHER,
     CREATE_MEMORY_CYPHER,
     DELETE_MEMORY_CYPHER,
     EXTRACTED_FACT_PREDICATE,
+    LEXICAL_MEMORY_SEARCH_AS_OF_CYPHER,
     LEXICAL_MEMORY_SEARCH_CYPHER,
     LOOKUP_LATEST_MEMORY_CYPHER,
     LOOKUP_MEMORIES_BY_IDS_CYPHER,
     LOOKUP_MEMORY_CYPHER,
     RECENT_TURN_MEMORIES_CYPHER,
+    SCOPED_DENSE_MEMORY_SEARCH_AS_OF_CYPHER,
     SCOPED_DENSE_MEMORY_SEARCH_CYPHER,
     TURN_MEMORY_PREDICATE_PREFIX,
     UPDATE_MEMORY_CYPHER,
@@ -415,6 +418,13 @@ from gnosis.models import (
     SkillProposal,
     SkillUsage,
     SufficiencyAssessment,
+)
+from gnosis.point_in_time import (
+    as_of_epoch,
+    fact_visible_as_of,
+    memory_visible_as_of,
+    observed_epoch,
+    parse_as_of,
 )
 from gnosis.query_rewrite import LiteLLMQueryRewriter
 from gnosis.query_router import (
@@ -613,6 +623,21 @@ _SDK_GRAPH_UNAVAILABLE_DETAIL: Final[str] = "SDK graph export is unavailable."
 _QUERY_EMBEDDER_UNAVAILABLE_DETAIL: Final[str] = "SDK query embedder is unavailable."
 _MEMORY_UPDATE_FIELDS_DETAIL: Final[str] = "Memory updates require content or metadata."
 _MEMORY_ID_UNAVAILABLE_DETAIL: Final[str] = "SDK did not expose a stable memory id."
+_LLM_FREE_SPACE_EXTRACTION_DETAIL: Final[str] = (
+    "This space never calls an LLM (GNOSIS_LLM_FREE_SPACES): extraction-mode "
+    "writes are refused; add verbatim content with infer=false."
+)
+_APPEND_ONLY_VERBATIM_DETAIL: Final[str] = (
+    "append_only applies to verbatim content adds (content with infer=false)."
+)
+_AS_OF_SECTIONS_DETAIL: Final[str] = (
+    "as_of reads cover long-term facts only: set include_short_term, "
+    "include_reasoning and include_graph to false."
+)
+_LLM_FREE_GRAPH_DETAIL: Final[str] = (
+    "The graph section plans its Cypher with an LLM: set include_graph to false "
+    "for an LLM-free read."
+)
 _MEMORY_LIST_SCAN_LIMIT: Final[int] = 2000
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 _ABSTENTION_INSTRUCTION: Final[str] = (
@@ -883,6 +908,8 @@ class Neo4jAgentMemoryBackend:
         ] = {}
 
     async def add_message(self, request: MessageWriteRequest) -> MessageWriteResponse:
+        if not self._llm_allowed(request.scope, use_llm=True):
+            raise BackendRequestError(_LLM_FREE_SPACE_EXTRACTION_DETAIL)
         metadata = _scope_metadata(request.scope)
         policy = _message_extraction_policy(request, self._app_settings)
         _require_ingestion_sources_allowed(request, self._app_settings)
@@ -1115,7 +1142,14 @@ class Neo4jAgentMemoryBackend:
     ) -> MemoryContextResponse:
         sections: list[MemoryContextSection] = []
         long_term_facts = LongTermFactsContext()
-        decision = await self._route_decision(request.query)
+        as_of = _request_as_of(request.as_of)
+        llm = self._llm_allowed(request.scope, use_llm=request.use_llm)
+        _require_context_request_supported(
+            request, as_of_set=as_of is not None, llm=llm
+        )
+        decision = await self._route_decision(request.query, llm=llm)
+        if as_of is not None:
+            decision = decision.for_as_of()
         async with self._memory_client() as client:
             if request.include_short_term:
                 try:
@@ -1135,6 +1169,8 @@ class Neo4jAgentMemoryBackend:
                     request,
                     client,
                     decision,
+                    as_of=as_of,
+                    llm=llm,
                 )
                 _append_context_section(
                     sections,
@@ -1142,7 +1178,10 @@ class Neo4jAgentMemoryBackend:
                     long_term_facts.context,
                 )
 
-                if _long_term_enrichment_enabled(self._app_settings):
+                # The SDK's entity/preference context is not point-in-time.
+                if as_of is None and _long_term_enrichment_enabled(
+                    self._app_settings,
+                ):
                     long_term = await client.long_term.get_context(
                         request.query,
                         max_items=request.max_items,
@@ -1185,8 +1224,32 @@ class Neo4jAgentMemoryBackend:
                     ),
                 )
 
+        return await self._finish_context(
+            request,
+            sections,
+            decision,
+            as_of_set=as_of is not None,
+            llm=llm,
+        )
+
+    async def _finish_context(
+        self,
+        request: MemoryContextRequest,
+        sections: list[MemoryContextSection],
+        decision: RouteDecision,
+        *,
+        as_of_set: bool,
+        llm: bool,
+    ) -> MemoryContextResponse:
+        """Community summaries, sufficiency, query rewrite, instructions.
+
+        Community summaries are LLM-written over the whole graph, so an as-of
+        read never sees them (they may summarize later records); the query
+        rewrite is an LLM call whose retrieval is not point-in-time.
+        """
         if (
             request.include_long_term
+            and not as_of_set
             and decision.route == "aggregative"
             and self._app_settings.gnosis_community_graph_enabled
         ):
@@ -1196,11 +1259,23 @@ class Neo4jAgentMemoryBackend:
         sufficiency = await self._assess_sufficiency(
             request.query, sections, decision=decision
         )
-        sections = await self._rewrite_and_expand(request, sections, sufficiency)
+        if llm and not as_of_set:
+            sections = await self._rewrite_and_expand(request, sections, sufficiency)
         sections = self._with_abstention_instruction(sections, decision)
         return MemoryContextResponse(sections=sections, sufficiency=sufficiency)
 
-    async def _route_decision(self, query: str) -> RouteDecision:
+    def _llm_allowed(self, scope: MemoryScope, *, use_llm: bool) -> bool:
+        """Whether this request may make LLM calls.
+
+        False when the caller asked for an LLM-free read (``use_llm=false``)
+        or the scope's space is listed in GNOSIS_LLM_FREE_SPACES, which no
+        request can override.
+        """
+        return (
+            use_llm and scope.space_id not in self._app_settings.gnosis_llm_free_spaces
+        )
+
+    async def _route_decision(self, query: str, *, llm: bool = True) -> RouteDecision:
         """Resolve the effective read-path feature set for one query.
 
         The globally configured flags while GNOSIS_ADAPTIVE_ROUTING_ENABLED is
@@ -1211,6 +1286,10 @@ class Neo4jAgentMemoryBackend:
         a structured warning, so routing can never fail a read.
         """
         unrouted = RouteDecision.from_settings(self._app_settings)
+        if not llm:
+            # An LLM-free request is never classified: it reads with the
+            # globally configured flags, less every leg that calls a model.
+            return unrouted.without_llm()
         if not self._app_settings.gnosis_adaptive_routing_enabled or not query:
             return unrouted
         try:
@@ -1634,6 +1713,9 @@ class Neo4jAgentMemoryBackend:
         request: MemoryContextRequest,
         client: MemoryClientContext,
         decision: RouteDecision,
+        *,
+        as_of: datetime | None = None,
+        llm: bool = True,
     ) -> "LongTermFactsContext":
         """Render scoped long-term facts with the same read reach as search.
 
@@ -1650,12 +1732,22 @@ class Neo4jAgentMemoryBackend:
         """
         metadata = _scope_metadata(request.scope)
         facts, graph_facts, traversal_facts = await asyncio.gather(
-            self._query_ranked_facts(client, request.query, metadata, decision),
+            self._query_ranked_facts(
+                client,
+                request.query,
+                metadata,
+                decision,
+                as_of=as_of,
+            ),
             self._graphqa_fused_facts(request, decision),
             self._traversal_facts(client, request, metadata, decision),
         )
         if not facts:
-            facts = await _query_recent_facts(client, metadata)
+            facts = [
+                fact
+                for fact in await _query_recent_facts(client, metadata)
+                if fact_visible_as_of(fact, as_of)
+            ]
         # knowledge_update route: guarantee the most recently ingested facts
         # are in the candidate pool. Updates about a changing fact rank low on
         # embedding similarity (the update is phrased in a different context
@@ -1691,16 +1783,31 @@ class Neo4jAgentMemoryBackend:
             facts,
             [*graph_facts, *traversal_facts, *bridge_facts],
         )
-        facts = await self._recall_filtered_facts(request.query, facts)
+        # Every leg is filtered again before supersession and the budget: an
+        # as-of read's newest-wins only ever compares facts visible then.
+        facts = [fact for fact in facts if fact_visible_as_of(fact, as_of)]
+        if llm:
+            facts = await self._recall_filtered_facts(request.query, facts)
         facts = self._superseded_facts(facts, decision=decision)
-        facts = await self._reranked_facts(request.query, facts, route=decision.route)
+        if llm:
+            facts = await self._reranked_facts(
+                request.query,
+                facts,
+                route=decision.route,
+            )
         facts = _cut_with_graph_reserve(
             facts,
             request.max_items * decision.budget_multiplier,
         )
         if not facts:
             return LongTermFactsContext()
-        expansion = await self._verbatim_expansion(client, facts, metadata, decision)
+        expansion = await self._verbatim_expansion(
+            client,
+            facts,
+            metadata,
+            decision,
+            as_of=as_of,
+        )
         lines = ["### Long-Term Facts"]
         for fact in facts:
             lines.append(_fact_context_line(fact))
@@ -1721,6 +1828,8 @@ class Neo4jAgentMemoryBackend:
         facts: list[JsonObject],
         scope_metadata: Mapping[str, JsonValue],
         decision: RouteDecision,
+        *,
+        as_of: datetime | None = None,
     ) -> dict[str, list[str]]:
         """Map each top extracted fact to its source verbatim turn text(s).
 
@@ -1750,6 +1859,7 @@ class Neo4jAgentMemoryBackend:
             client,
             sorted(wanted_ids),
             scope_metadata,
+            as_of=as_of,
         )
         if not verbatim:
             return {}
@@ -1776,6 +1886,8 @@ class Neo4jAgentMemoryBackend:
         client: MemoryClientContext,
         memory_ids: list[str],
         scope_metadata: Mapping[str, JsonValue],
+        *,
+        as_of: datetime | None = None,
     ) -> dict[str, str]:
         """Batch-fetch source verbatim turns by id, re-checking scope.
 
@@ -1806,7 +1918,7 @@ class Neo4jAgentMemoryBackend:
         verbatim: dict[str, str] = {}
         for row in rows:
             memory = stored_memory_from_row(row)
-            if memory is None:
+            if memory is None or not memory_visible_as_of(memory, as_of):
                 continue
             fact = _fact_from_memory(memory)
             if not _fact_matches_scope(fact, scope_metadata):
@@ -1816,10 +1928,23 @@ class Neo4jAgentMemoryBackend:
 
     async def add_memories(self, request: MemoryAddRequest) -> MemoryAddResponse:
         _require_memory_add_mode(request)
+        if request.messages and not self._llm_allowed(request.scope, use_llm=True):
+            raise BackendRequestError(_LLM_FREE_SPACE_EXTRACTION_DETAIL)
+        if request.append_only and request.content is None:
+            raise BackendRequestError(_APPEND_ONLY_VERBATIM_DETAIL)
         metadata = _write_metadata(request.scope, request.metadata, None)
         results: list[MemoryAddResult] = []
         async with self._memory_client() as client:
-            if request.content is not None:
+            if request.content is not None and request.append_only:
+                results.append(
+                    await self._add_append_only_memory(
+                        client,
+                        request.scope,
+                        content=_redacted_text(request.content),
+                        metadata=metadata,
+                    ),
+                )
+            elif request.content is not None:
                 results.append(
                     await self._add_memory_fact(
                         client,
@@ -1898,6 +2023,56 @@ class Neo4jAgentMemoryBackend:
                 source_memory_ids=[result.memory_id for result in results],
             )
         return results
+
+    async def _add_append_only_memory(
+        self,
+        client: MemoryClientContext,
+        scope: MemoryScope,
+        *,
+        content: str,
+        metadata: JsonObject,
+    ) -> MemoryAddResult:
+        """Write one verbatim memory that no near-duplicate can absorb.
+
+        The SDK's add_fact merges a new fact into an existing one of the same
+        subject and predicate at cosine >= 0.95 and returns the old record,
+        which silently drops a distinct dated event whose text resembles an
+        earlier one ("X lists AAA" after "X lists BBB"). An append-only add
+        is a direct parameterized CREATE instead (the extracted-fact path's
+        pattern), with the caller's ``metadata.observed_at`` stamped as the
+        top-level ``observed_at_epoch`` the as-of candidate queries read.
+        """
+        memory_id = str(uuid4())
+        embedding = await _memory_embedding(client, content)
+        _ = await _graph_write_query(client).execute_write(
+            CREATE_APPEND_ONLY_MEMORY_CYPHER,
+            {
+                "memory_id": memory_id,
+                "subject": _user_identifier(scope),
+                "predicate": VERBATIM_MEMORY_PREDICATE,
+                "object": content,
+                "embedding": embedding,
+                "tenant_id": scope.tenant_id,
+                "user_id": scope.user_id,
+                "observed_at_epoch": observed_epoch(metadata),
+                "metadata": json.dumps(metadata),
+            },
+        )
+        stored = StoredMemory(
+            memory_id=memory_id,
+            subject=_user_identifier(scope),
+            predicate=VERBATIM_MEMORY_PREDICATE,
+            content=content,
+            metadata=metadata,
+            created_at=None,
+            updated_at=None,
+        )
+        return MemoryAddResult(
+            memory_id=memory_id,
+            content=content,
+            event="ADD",
+            metadata=public_memory_metadata(stored),
+        )
 
     async def _add_memory_fact(
         self,
@@ -2267,13 +2442,18 @@ class Neo4jAgentMemoryBackend:
         request: MemorySearchRequest,
     ) -> MemorySearchResponse:
         filters = _parsed_memory_filters(request.filters)
-        decision = await self._route_decision(request.query)
+        as_of = _request_as_of(request.as_of)
+        llm = self._llm_allowed(request.scope, use_llm=request.use_llm)
+        decision = await self._route_decision(request.query, llm=llm)
+        if as_of is not None:
+            decision = decision.for_as_of()
         async with self._memory_client() as client:
             dense = await self._dense_memory_candidates(
                 client,
                 request.query,
                 scope_read_fragments(request.scope),
                 filter_superseded=decision.filter_superseded,
+                as_of=as_of,
             )
             candidates = await self._hybrid_memory_candidates(
                 client,
@@ -2282,11 +2462,16 @@ class Neo4jAgentMemoryBackend:
                 dense,
                 decision,
                 filter_superseded=decision.filter_superseded,
+                as_of=as_of,
             )
-        budget = self._search_match_budget(request)
+        budget = self._search_match_budget(request, llm=llm)
         matches: list[StoredMemory] = []
         for memory in candidates:
             if not memory_matches_scope(memory, request.scope):
+                continue
+            # Before the recall filter and supersession, so neither ever sees
+            # a record observed after the read's moment.
+            if not memory_visible_as_of(memory, as_of):
                 continue
             if not matches_filters(filters, memory_filter_fields(memory)):
                 continue
@@ -2295,7 +2480,8 @@ class Neo4jAgentMemoryBackend:
             matches.append(memory)
             if len(matches) == budget:
                 break
-        matches = await self._recall_filtered_matches(request, matches)
+        if llm:
+            matches = await self._recall_filtered_matches(request, matches)
         matches = self._superseded_matches(matches)
         return MemorySearchResponse(
             results=[
@@ -2543,6 +2729,8 @@ class Neo4jAgentMemoryBackend:
         query: str,
         scope_metadata: Mapping[str, JsonValue],
         decision: RouteDecision,
+        *,
+        as_of: datetime | None = None,
     ) -> list[JsonObject]:
         """Long-term fact candidates ranked by embedding similarity.
 
@@ -2561,6 +2749,7 @@ class Neo4jAgentMemoryBackend:
             query,
             _metadata_fragments(scope_metadata),
             filter_superseded=fs,
+            as_of=as_of,
         )
         candidates = await self._hybrid_memory_candidates(
             client,
@@ -2569,11 +2758,13 @@ class Neo4jAgentMemoryBackend:
             dense,
             decision,
             filter_superseded=fs,
+            as_of=as_of,
         )
         return [
             fact
             for memory in candidates
-            if _fact_matches_scope(fact := _fact_from_memory(memory), scope_metadata)
+            if memory_visible_as_of(memory, as_of)
+            and _fact_matches_scope(fact := _fact_from_memory(memory), scope_metadata)
         ]
 
     async def _dense_memory_candidates(
@@ -2582,6 +2773,8 @@ class Neo4jAgentMemoryBackend:
         query: str,
         scope_fragments: list[JsonValue],
         filter_superseded: bool = False,
+        *,
+        as_of: datetime | None = None,
     ) -> list[StoredMemory]:
         """Embedding-similarity candidates for one scope, best score first.
 
@@ -2597,22 +2790,41 @@ class Neo4jAgentMemoryBackend:
         When filter_superseded is True (knowledge_update route), the Cypher
         excludes facts where valid_to IS NOT NULL so structurally superseded
         facts cannot crowd out the current value in the dense top-20.
+
+        A point-in-time read (``as_of``) always takes the scoped vector query,
+        in its as-of variant, whatever the scoped flag says: the SDK's global
+        ranking cannot be narrowed to the moment, and an old moment's records
+        would starve behind later ones. Its degradation to the SDK ranking is
+        still safe - the gateway filters every candidate to the moment - only
+        less complete.
         """
-        if not self._app_settings.gnosis_scoped_dense_retrieval_enabled:
+        if (
+            as_of is None
+            and not self._app_settings.gnosis_scoped_dense_retrieval_enabled
+        ):
             return await self._sdk_dense_candidates(client, query)
+        statement = SCOPED_DENSE_MEMORY_SEARCH_CYPHER
+        parameters: dict[str, JsonValue] = {
+            "vector_pool": self._app_settings.gnosis_dense_scope_pool,
+            "scope_fragments": scope_fragments,
+            "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
+            "filter_superseded": filter_superseded,
+        }
+        if as_of is not None:
+            statement = SCOPED_DENSE_MEMORY_SEARCH_AS_OF_CYPHER
+            parameters = {
+                "vector_pool": self._app_settings.gnosis_dense_scope_pool,
+                "scope_fragments": scope_fragments,
+                "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
+                "as_of_epoch": as_of_epoch(as_of),
+            }
         try:
             embedding = _required_query_embedding(
                 await _memory_embedding(client, query),
             )
             rows = await client.query.cypher(
-                SCOPED_DENSE_MEMORY_SEARCH_CYPHER,
-                {
-                    "embedding": embedding,
-                    "vector_pool": self._app_settings.gnosis_dense_scope_pool,
-                    "scope_fragments": scope_fragments,
-                    "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
-                    "filter_superseded": filter_superseded,
-                },
+                statement,
+                {"embedding": embedding, **parameters},
             )
         except (
             RuntimeError,
@@ -2650,6 +2862,8 @@ class Neo4jAgentMemoryBackend:
         dense: list[StoredMemory],
         decision: RouteDecision,
         filter_superseded: bool = False,
+        *,
+        as_of: datetime | None = None,
     ) -> list[StoredMemory]:
         """Fuse the dense ranking with BM25 lexical candidates via RRF.
 
@@ -2665,6 +2879,7 @@ class Neo4jAgentMemoryBackend:
             query,
             scope_fragments,
             filter_superseded=filter_superseded,
+            as_of=as_of,
         )
         if not lexical:
             return dense
@@ -2680,6 +2895,8 @@ class Neo4jAgentMemoryBackend:
         query: str,
         scope_fragments: list[JsonValue],
         filter_superseded: bool = False,
+        *,
+        as_of: datetime | None = None,
     ) -> list[StoredMemory]:
         """BM25 full-text candidates over Fact content, best score first.
 
@@ -2694,17 +2911,24 @@ class Neo4jAgentMemoryBackend:
         lucene_query = sanitize_lucene_query(query)
         if not lucene_query:
             return []
+        statement = LEXICAL_MEMORY_SEARCH_CYPHER
+        parameters: dict[str, JsonValue] = {
+            "query": lucene_query,
+            "scope_fragments": scope_fragments,
+            "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
+            "filter_superseded": filter_superseded,
+        }
+        if as_of is not None:
+            statement = LEXICAL_MEMORY_SEARCH_AS_OF_CYPHER
+            parameters = {
+                "query": lucene_query,
+                "scope_fragments": scope_fragments,
+                "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
+                "as_of_epoch": as_of_epoch(as_of),
+            }
         try:
             await self._ensure_fulltext_index(client)
-            rows = await client.query.cypher(
-                LEXICAL_MEMORY_SEARCH_CYPHER,
-                {
-                    "query": lucene_query,
-                    "scope_fragments": scope_fragments,
-                    "candidate_limit": _MEMORY_SEARCH_CANDIDATE_LIMIT,
-                    "filter_superseded": filter_superseded,
-                },
-            )
+            rows = await client.query.cypher(statement, parameters)
         except (
             RuntimeError,
             OSError,
@@ -2785,8 +3009,13 @@ class Neo4jAgentMemoryBackend:
         """
         return self._app_settings.gnosis_recall_filter_enabled and not request.peers
 
-    def _search_match_budget(self, request: MemorySearchRequest) -> int:
-        if not self._search_recall_filter_active(request):
+    def _search_match_budget(
+        self,
+        request: MemorySearchRequest,
+        *,
+        llm: bool = True,
+    ) -> int:
+        if not llm or not self._search_recall_filter_active(request):
             return request.limit
         return max(
             request.limit,
@@ -2810,6 +3039,7 @@ class Neo4jAgentMemoryBackend:
 
     async def list_memories(self, request: MemoryListRequest) -> MemoryListResponse:
         filters = _parsed_memory_filters(request.filters)
+        as_of = _request_as_of(request.as_of)
         narrowing = build_cypher_filter(filters)
         parameters: dict[str, JsonValue] = {
             "scope_fragments": scope_read_fragments(request.scope),
@@ -2826,6 +3056,7 @@ class Neo4jAgentMemoryBackend:
             for row in rows
             if (memory := stored_memory_from_row(row)) is not None
             and memory_matches_scope(memory, request.scope)
+            and memory_visible_as_of(memory, as_of)
             and matches_filters(filters, memory_filter_fields(memory))
         ]
         start = (request.page - 1) * request.page_size
@@ -3469,6 +3700,34 @@ def _parsed_memory_filters(filters: JsonObject | None) -> MemoryFilter | None:
         return parse_filters(filters)
     except FilterValidationError as error:
         raise BackendRequestError(error.detail) from error
+
+
+def _request_as_of(value: str | None) -> datetime | None:
+    """A request's ``as_of``, or a 400 when it is not an offset timestamp."""
+    try:
+        return parse_as_of(value)
+    except ValueError as error:
+        raise BackendRequestError(str(error)) from error
+
+
+def _require_context_request_supported(
+    request: MemoryContextRequest,
+    *,
+    as_of_set: bool,
+    llm: bool,
+) -> None:
+    """Refuse context sections that cannot honour the request's constraints.
+
+    Fail closed rather than silently dropping a section: short-term turns,
+    reasoning traces and the graph section are not point-in-time, and the
+    graph section plans its Cypher with an LLM.
+    """
+    if as_of_set and (
+        request.include_short_term or request.include_reasoning or request.include_graph
+    ):
+        raise BackendRequestError(_AS_OF_SECTIONS_DETAIL)
+    if not llm and request.include_graph:
+        raise BackendRequestError(_LLM_FREE_GRAPH_DETAIL)
 
 
 def _meets_min_score(memory: StoredMemory, min_score: float | None) -> bool:

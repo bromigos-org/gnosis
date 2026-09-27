@@ -41,6 +41,7 @@ YAML config file → code defaults**.
 | `GNOSIS_CONVERSATION_TTL_DAYS` | *(none)* | optional message TTL |
 | `GNOSIS_AUDIT_READ` | `false` | write a `MemoryReadAudit` per read |
 | `GNOSIS_MEMORY_EDIT_ENABLED` | `false` | allow `PATCH`/`DELETE /v1/memories/{id}` |
+| `GNOSIS_LLM_FREE_SPACES` | `[]` | JSON list of `space_id`s that never call an LLM: reads run as `use_llm=false` whatever the request says, extraction-mode writes (`infer=true`, `/v1/messages`) are refused (see [provider-surface.md](provider-surface.md), "Point-in-time and LLM-free reads") |
 
 ## Fact extraction (write path)
 
