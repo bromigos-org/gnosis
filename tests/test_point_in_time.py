@@ -529,6 +529,66 @@ async def test_append_only_requires_verbatim_content() -> None:
         )
 
 
+# ── a memory is reachable by the scope and ids that wrote it ──────────────
+
+
+@pytest.mark.anyio
+async def test_a_memory_is_found_by_the_scope_and_ids_that_wrote_it() -> None:
+    # Given: a user_id and a join id of 24+ characters mixing letters and
+    # digits - the shape the opaque-value redaction took for a credential, so
+    # the memory was stored under "[REDACTED]" and no scope could reach it.
+    user_id = "arbiter-roundtrip-1790524864"
+    item_id = "okx-announcements-1790524864-aaa"
+    scope = _scope().model_copy(update={"user_id": user_id})
+    client = FakeMemoryClient()
+    backend = _backend(client, Settings())
+
+    _ = await backend.add_memories(
+        MemoryAddRequest(
+            scope=scope,
+            content="OKX to list AAA/USDT (ref a1b2c3d4e5f6g7h8i9j0k1l2m3n4)",
+            infer=False,
+            append_only=True,
+            metadata={"observed_at": _EARLY_SEEN, "item_id": item_id},
+        ),
+    )
+
+    # Then: the scope and the id are stored as written; the content is not.
+    _, params = client.graph.writes[0]
+    stored = cast("dict[str, JsonValue]", json.loads(cast("str", params["metadata"])))
+    assert stored["user_id"] == user_id
+    assert stored["item_id"] == item_id
+    assert params["object"] == "OKX to list AAA/USDT (ref [REDACTED])"
+
+    # When: retrieval hands the stored row back, searched by that scope and
+    # filtered by that id.
+    client.query.dense = [
+        {
+            "id": _EARLY,
+            "subject": params["subject"],
+            "predicate": params["predicate"],
+            "object": params["object"],
+            "metadata": params["metadata"],
+            "created_at": _WRITTEN,
+            "updated_at": None,
+            "score": 0.9,
+        },
+    ]
+    response = await backend.search_memories(
+        MemorySearchRequest(
+            scope=scope,
+            query="okx listing",
+            filters={"metadata.item_id": item_id},
+            as_of=_AS_OF,
+            use_llm=False,
+        ),
+    )
+
+    # Then: found, with its join id intact.
+    assert [r.memory_id for r in response.results] == [_EARLY]
+    assert response.results[0].metadata["item_id"] == item_id
+
+
 # ── fakes ─────────────────────────────────────────────────────────────────
 
 

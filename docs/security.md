@@ -55,6 +55,17 @@ Redaction runs before anything leaves the gateway:
 - Prompt-facing content is redacted; provenance (source ids, internal scope tags)
   is kept **out of the prompt** and available only through audit read paths.
 - Export, dedup, and consolidation responses are redacted.
+- Identifiers are not secrets. Scope fields (`tenant_id`, `space_id`,
+  `agent_id`, `session_id`, `user_id`, `visibility`, `guild_id`,
+  `channel_id`) and metadata members named `id`, `*_id`, `*_ids` or `*_uuid`
+  skip the opaque-value heuristic (24+ characters mixing letters and digits),
+  which would otherwise store them as `[REDACTED]` and leave the record
+  unreachable by the scope or filter that wrote it. They still lose explicit
+  credential shapes (Bearer, `sk-`, Discord tokens, `KEY=value`); sensitive
+  names (`token_id`, `secret_id`) are still redacted whole; `*_key` members
+  are not identifiers; and content is redacted as before. Member names are
+  never rewritten. Records written before this rule keep their redacted
+  scope and stay unreachable.
 - Reasoning traces are stored for audit and reuse, but hidden chain-of-thought is
   kept out of prompt recall and out of public/federated memory.
 

@@ -31,6 +31,18 @@ _SENSITIVE_KEY_NAMES = {
     "secret",
     "token",
 }
+# Identifiers are opaque by construction: scope fields (``user_id``,
+# ``session_id``, ...), memory and source ids, a caller's join ids. The
+# opaque-value pattern takes any 24+ character mix of letters and digits for
+# a credential, and an identifier rewritten to ``[REDACTED]`` makes its record
+# unreachable by the very scope or filter that wrote it. Values under an
+# identifier key therefore skip that one heuristic; the explicit credential
+# shapes (Bearer, ``sk-``, Discord tokens, ``KEY=value``) and the sensitive
+# key names still apply, and free text is redacted as before. ``*_key`` names
+# are deliberately not identifiers: api, access, private and signing keys are
+# named that way.
+_IDENTIFIER_KEY_NAMES = frozenset({"id", "ids", "uuid", "uuids", "visibility"})
+_IDENTIFIER_KEY_SUFFIXES = ("_id", "_ids", "_uuid", "_uuids")
 
 
 def redact_secrets(value: JsonValue) -> JsonValue:
@@ -42,32 +54,58 @@ def redact_secrets(value: JsonValue) -> JsonValue:
         case list():
             return [redact_secrets(item) for item in value]
         case dict():
-            return {
-                key: _REDACTED if _is_sensitive_key(key) else redact_secrets(item)
-                for key, item in value.items()
-            }
+            return {key: _redact_member(key, item) for key, item in value.items()}
 
 
-def _redact_text(value: str) -> str:
+def is_identifier_key(key: object) -> bool:
+    """Whether a member's name marks its value as an identifier.
+
+    ``id``, ``ids``, ``uuid``, ``*_id``, ``*_ids``, ``*_uuid`` (camelCase and
+    kebab-case alike) and ``visibility``; never a sensitive name such as
+    ``token_id`` or ``secret_id``, which stays fully redacted.
+    """
+    if not isinstance(key, str) or _is_sensitive_key(key):
+        return False
+    normalized = _normalized_key(key)
+    return normalized in _IDENTIFIER_KEY_NAMES or normalized.endswith(
+        _IDENTIFIER_KEY_SUFFIXES,
+    )
+
+
+def _redact_member(key: str, value: JsonValue) -> JsonValue:
+    if _is_sensitive_key(key):
+        return _REDACTED
+    if is_identifier_key(key):
+        return _redact_identifier(value)
+    return redact_secrets(value)
+
+
+def _redact_identifier(value: JsonValue) -> JsonValue:
+    match value:
+        case str():
+            return _redact_text(value, opaque=False)
+        case list():
+            return [_redact_identifier(item) for item in value]
+        case _:
+            return redact_secrets(value)
+
+
+def _redact_text(value: str, *, opaque: bool = True) -> str:
     assignment = _redact_assignment(value)
     if assignment is not None:
         return assignment
-    if _is_full_match(value, _BEARER_PATTERN):
-        return _REDACTED
-    if _is_full_match(value, _DISCORD_TOKEN_PATTERN):
-        return _REDACTED
-    if _is_full_match(value, _SK_PATTERN):
-        return _REDACTED
-    if _is_full_match(value, _OPAQUE_VALUE_PATTERN):
+    patterns = [_BEARER_PATTERN, _DISCORD_TOKEN_PATTERN, _SK_PATTERN]
+    if opaque:
+        patterns.append(_OPAQUE_VALUE_PATTERN)
+    if any(_is_full_match(value, pattern) for pattern in patterns):
         return _REDACTED
     redacted = _SECRET_ASSIGNMENT_PATTERN.sub(
         lambda match: f"{match.group(1)}={_REDACTED}",
         value,
     )
-    redacted = _BEARER_PATTERN.sub(_REDACTED, redacted)
-    redacted = _DISCORD_TOKEN_PATTERN.sub(_REDACTED, redacted)
-    redacted = _SK_PATTERN.sub(_REDACTED, redacted)
-    return _OPAQUE_VALUE_PATTERN.sub(_REDACTED, redacted)
+    for pattern in patterns:
+        redacted = pattern.sub(_REDACTED, redacted)
+    return redacted
 
 
 def _redact_assignment(value: str) -> str | None:
@@ -80,15 +118,19 @@ def _is_full_match(value: str, pattern: re.Pattern[str]) -> bool:
     return bool(pattern.fullmatch(value.strip()))
 
 
-def _is_sensitive_key(key: object) -> bool:
-    if not isinstance(key, str):
-        return False
+def _normalized_key(key: str) -> str:
     normalized = re.sub(
         r"(?<=[a-z0-9])(?=[A-Z])",
         "_",
         key,
     )
-    normalized = re.sub(r"[^a-z0-9]+", "_", normalized.lower()).strip("_")
+    return re.sub(r"[^a-z0-9]+", "_", normalized.lower()).strip("_")
+
+
+def _is_sensitive_key(key: object) -> bool:
+    if not isinstance(key, str):
+        return False
+    normalized = _normalized_key(key)
     return (
         any(part in _SENSITIVE_KEY_NAMES for part in normalized.split("_") if part)
         or normalized in _SENSITIVE_KEY_NAMES
