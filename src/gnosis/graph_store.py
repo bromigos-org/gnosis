@@ -25,6 +25,7 @@ from gnosis.graph_events import (
     plan_event,
 )
 from gnosis.graph_memory_store import InMemoryGraphExecutor
+from gnosis.graph_probe import AsyncClosable
 from gnosis.graph_query_execution import plan_graph_query, rows_to_graph_nodes
 from gnosis.graph_query_qa import GraphQueryPlanner
 from gnosis.graph_query_validation import (
@@ -101,6 +102,11 @@ class Neo4jGraphExecutor:
         await self._bootstrap_schema()
         async with self.driver_factory() as driver:
             await driver.verify_connectivity()
+
+    async def close(self) -> None:
+        """Close the process-scoped driver, if the factory owns one."""
+        if isinstance(self.driver_factory, AsyncClosable):
+            await self.driver_factory.close()
 
     async def readiness(self) -> BackendReadiness:
         try:
@@ -236,6 +242,10 @@ class DirectNeo4jGraphStore:
 
     async def readiness(self) -> BackendReadiness:
         return await self.executor.readiness()
+
+    async def close(self) -> None:
+        if isinstance(self.executor, AsyncClosable):
+            await self.executor.close()
 
     async def ingest_event(self, event: ClientEvent) -> EventIngestResult:
         await self.require_available()

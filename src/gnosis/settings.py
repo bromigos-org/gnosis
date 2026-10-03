@@ -139,6 +139,11 @@ class Settings(BaseSettings):
     neo4j_uri: str = Field(default="", min_length=1)
     neo4j_username: str = Field(default="neo4j", min_length=1)
     neo4j_password: str = Field(default="", min_length=1)
+    # Per driver, per process. Each uvicorn worker holds two long-lived drivers
+    # (the SDK memory client's and the structured graph store's), so Neo4j
+    # sees at most workers x 2 x this many connections; 50 is the SDK's own
+    # default and far above what one worker keeps in flight.
+    neo4j_max_connection_pool_size: int = Field(default=50, ge=1)
     litellm_base_url: str = Field(default="", min_length=1)
     litellm_api_key: str = Field(default="", min_length=1)
     gnosis_llm: str = Field(default="openai/gemma4", min_length=1)

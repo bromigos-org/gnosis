@@ -28,6 +28,7 @@ YAML config file → code defaults**.
 | `GNOSIS_LLM` | `openai/gemma4` | extraction / routing / graph-QA model. **Set a capable model** — `gemma4` is not adequate for extraction. |
 | `GNOSIS_EMBEDDING` | `local-qwen3-embedding-0.6b` | embedding model |
 | `GNOSIS_EMBEDDING_DIMENSIONS` | `1024` | embedding dim (e.g. 3072 for `gemini-embedding-001`) |
+| `NEO4J_MAX_CONNECTION_POOL_SIZE` | `50` | connection pool size of each long-lived Neo4j driver. Each worker process holds two (the memory SDK client's and the structured graph store's), so Neo4j sees at most workers × 2 × this many Bolt connections |
 | `GNOSIS_CONFIG_FILE` | *(unset → `configs/default.yaml`)* | YAML config path; `""` opts out |
 
 ## Write behavior

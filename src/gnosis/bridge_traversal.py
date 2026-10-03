@@ -32,7 +32,6 @@ import time
 from dataclasses import dataclass
 from typing import Final, Protocol
 
-from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
@@ -41,6 +40,7 @@ from openai.types.chat import (
 
 from gnosis.graph_query_qa import proxy_model_name
 from gnosis.graph_types import CypherParameters
+from gnosis.llm_clients import shared_openai_client
 from gnosis.models import JsonValue
 
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
@@ -110,12 +110,15 @@ class LiteLLMBridgeNamer:
         ``temperature``/``max_tokens``.
         """
         start = time.perf_counter()
-        async with AsyncOpenAI(api_key=self.api_key, base_url=self.base_url) as client:
-            response = await client.chat.completions.create(
-                messages=_messages(query, evidence),
-                model=proxy_model_name(self.model),
-                max_completion_tokens=_MAX_COMPLETION_TOKENS,
-            )
+        client = shared_openai_client(
+            api_key=self.api_key,
+            base_url=self.base_url,
+        )
+        response = await client.chat.completions.create(
+            messages=_messages(query, evidence),
+            model=proxy_model_name(self.model),
+            max_completion_tokens=_MAX_COMPLETION_TOKENS,
+        )
         content = response.choices[0].message.content
         _LOGGER.info(
             "bridge namer answered",

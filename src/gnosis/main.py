@@ -1,7 +1,7 @@
 import logging
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
-from typing import Annotated, Final
+from typing import Annotated, Final, Protocol, runtime_checkable
 
 from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
@@ -20,6 +20,7 @@ from gnosis.federation import (
     PeerTokenUnavailableError,
     UnknownPeerError,
 )
+from gnosis.llm_clients import close_shared_openai_clients
 from gnosis.mcp_server import BearerTokenMiddleware, build_mcp_server
 from gnosis.models import (
     ContextRequest,
@@ -46,6 +47,11 @@ _MEMORY_CONTEXT_ROUTE: Final = "/v1/memory/context"
 _LEGACY_CONTEXT_SUCCESSOR_LINK: Final = (
     f'<{_MEMORY_CONTEXT_ROUTE}>; rel="successor-version"'
 )
+
+
+@runtime_checkable
+class _StartupCapableBackend(Protocol):
+    async def startup(self) -> None: ...
 
 
 def _legacy_context_warning() -> Callable[[], None]:
@@ -89,6 +95,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+        # Process-scoped resources (the Neo4j drivers, the schema setup, the
+        # LiteLLM HTTP clients) open once here, per uvicorn worker, and close
+        # once on the way out, instead of per request.
+        if isinstance(memory_backend, _StartupCapableBackend):
+            await memory_backend.startup()
         try:
             if mcp_server is None:
                 yield
@@ -96,7 +107,10 @@ def create_app(
                 async with mcp_server.session_manager.run():
                     yield
         finally:
-            await memory_backend.shutdown()
+            try:
+                await memory_backend.shutdown()
+            finally:
+                await close_shared_openai_clients()
 
     app = FastAPI(title="gnosis", lifespan=lifespan)
     _register_exception_handlers(app)

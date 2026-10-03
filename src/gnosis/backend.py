@@ -219,7 +219,11 @@ from gnosis.fact_extraction import (
     extract_memory_units,
     unit_relations,
 )
-from gnosis.graph_probe import StructuredGraphStore, direct_neo4j_driver_factory
+from gnosis.graph_probe import (
+    AsyncClosable,
+    StructuredGraphStore,
+    direct_neo4j_driver_factory,
+)
 from gnosis.graph_query_qa import LiteLLMGraphQueryPlanner
 from gnosis.graph_store import DirectNeo4jGraphStore, Neo4jGraphExecutor
 from gnosis.ingestion_policy import (
@@ -523,6 +527,7 @@ from gnosis.sdk_client import (
     MemoryConfigKwargs,
     MemoryGraphLike,
     ReasoningMemory,
+    SharedMemoryClient,
     ShortTermMemory,
     StatsCapableMemoryClient,
     TextEmbedder,
@@ -897,8 +902,12 @@ class Neo4jAgentMemoryBackend:
             max_pending=settings.gnosis_fact_extraction_max_pending,
         )
         self._event_fact_promoter: EventFactPromoter = EventFactPromoter()
+        self._shared_memory_client: SharedMemoryClient = SharedMemoryClient(
+            self._open_memory_client,
+        )
         self._fulltext_index_ready: bool = False
         self._entity_graph_schema_ready: bool = False
+        self._community_index_ready: bool = False
         self._dedup_candidates: dict[str, DedupCandidateState] = {}
         self._dedup_idempotency: dict[str, DedupIdempotencyRecord] = {}
         self._consolidation_dry_runs: dict[str, ConsolidationDryRunState] = {}
@@ -1021,16 +1030,43 @@ class Neo4jAgentMemoryBackend:
             _ = await client.flush()
         return BufferFlushResponse(flushed=True, status=await self.buffer_status())
 
+    async def startup(self) -> None:
+        """Open the process's Neo4j connections and run schema setup once.
+
+        Connects the shared SDK client (the SDK's schema setup and vector
+        index check run here, not per request) and bootstraps the structured
+        graph schema. Best-effort: with Neo4j unreachable the app still
+        starts, ``/ready`` reports it, and the first request that needs the
+        graph retries the connection.
+        """
+        try:
+            _ = await self._shared_memory_client.acquire()
+            await self._graph_store.require_available()
+        except Exception as error:  # noqa: BLE001 - startup warm-up must not crash the app
+            _LOGGER.warning(
+                "neo4j warm-up at startup failed (%s: %s); connecting on first use",
+                type(error).__name__,
+                str(error)[:300],
+                extra={"error_type": type(error).__name__},
+            )
+
     async def shutdown(self) -> None:
-        await self._extraction_queue.drain(
-            drain_window_seconds=_EXTRACTION_DRAIN_TIMEOUT_SECONDS,
-        )
-        if self._app_settings.gnosis_write_mode != "buffered":
-            return
-        async with self._memory_client() as client:
-            if not isinstance(client, BufferPendingCapableMemoryClient):
-                raise BackendCapabilityUnavailable(_SDK_BUFFER_WAIT_UNAVAILABLE_DETAIL)
-            _ = await client.wait_for_pending()
+        try:
+            await self._extraction_queue.drain(
+                drain_window_seconds=_EXTRACTION_DRAIN_TIMEOUT_SECONDS,
+            )
+            if self._app_settings.gnosis_write_mode != "buffered":
+                return
+            async with self._memory_client() as client:
+                if not isinstance(client, BufferPendingCapableMemoryClient):
+                    raise BackendCapabilityUnavailable(
+                        _SDK_BUFFER_WAIT_UNAVAILABLE_DETAIL,
+                    )
+                _ = await client.wait_for_pending()
+        finally:
+            await self._shared_memory_client.close()
+            if isinstance(self._graph_store, AsyncClosable):
+                await self._graph_store.close()
 
     async def _buffer_write_error_count(self) -> int:
         async with self._memory_client() as client:
@@ -1543,7 +1579,12 @@ class Neo4jAgentMemoryBackend:
         try:
             async with self._memory_client() as client:
                 graph_write = _graph_write_query(client)
-                _ = await graph_write.execute_write(_CREATE_COMMUNITY_INDEX_CYPHER, {})
+                if not self._community_index_ready:
+                    _ = await graph_write.execute_write(
+                        _CREATE_COMMUNITY_INDEX_CYPHER,
+                        {},
+                    )
+                    self._community_index_ready = True
                 for record in records:
                     for cypher, params in community_write_statements(
                         tenant_id=tenant_id,
@@ -3688,6 +3729,10 @@ class Neo4jAgentMemoryBackend:
         )
 
     def _memory_client(self) -> MemoryClientContext:
+        """Borrow the process's shared SDK client for one ``async with`` block."""
+        return self._shared_memory_client.borrow()
+
+    def _open_memory_client(self) -> MemoryClientContext:
         if self._memory_client_factory is not None:
             return self._memory_client_factory(self._settings)
         return _memory_client_context(MemoryClient(self._settings))

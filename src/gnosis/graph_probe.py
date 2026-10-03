@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, Self, override
+from typing import TYPE_CHECKING, Protocol, Self, override, runtime_checkable
 
 from neo4j.exceptions import Neo4jError
 
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
             uri: str,
             *,
             auth: tuple[str, str],
+            max_connection_pool_size: int,
         ) -> "AsyncNeo4jRawDriver": ...
 
     AsyncGraphDatabase: AsyncGraphDatabaseType
@@ -72,6 +73,13 @@ class DirectNeo4jDriverFactory(Protocol):
     def __call__(self) -> AsyncNeo4jDriver: ...
 
 
+@runtime_checkable
+class AsyncClosable(Protocol):
+    """A process-scoped resource the app closes once at shutdown."""
+
+    async def close(self) -> None: ...
+
+
 class ConnectivityNeo4jDriverFactory(Protocol):
     def __call__(self) -> ConnectivityNeo4jDriver: ...
 
@@ -108,7 +116,9 @@ class DirectNeo4jProbe:
 
 
 @dataclass(frozen=True, slots=True)
-class DirectNeo4jDriverContext:
+class BorrowedNeo4jDriver:
+    """A request's handle on the process-wide driver; leaving it closes nothing."""
+
     driver: AsyncNeo4jRawDriver
 
     async def verify_connectivity(self) -> None:
@@ -132,15 +142,37 @@ class DirectNeo4jDriverContext:
         exc_tb: object,
     ) -> None:
         _ = (exc_type, exc_val, exc_tb)
-        await self.driver.close()
 
 
-def direct_neo4j_driver_factory(settings: Settings) -> DirectNeo4jDriverFactory:
-    def create_driver() -> DirectNeo4jDriverContext:
-        driver = AsyncGraphDatabase.driver(
-            settings.neo4j_uri,
-            auth=(settings.neo4j_username, settings.neo4j_password),
-        )
-        return DirectNeo4jDriverContext(driver=driver)
+@dataclass(slots=True)
+class SharedNeo4jDriverFactory:
+    """One Neo4j driver per process for the structured graph store.
 
-    return create_driver
+    A driver is a connection pool meant to live as long as the application;
+    building one per query (and closing it after) paid a fresh Bolt handshake
+    and authentication on every graph read, write and readiness probe. The
+    driver is created on first use (construction does not connect) and closed
+    by :meth:`close` at shutdown; every call hands out a non-closing borrow.
+    """
+
+    settings: Settings
+    _driver: AsyncNeo4jRawDriver | None = None
+
+    def __call__(self) -> BorrowedNeo4jDriver:
+        if self._driver is None:
+            self._driver = AsyncGraphDatabase.driver(
+                self.settings.neo4j_uri,
+                auth=(self.settings.neo4j_username, self.settings.neo4j_password),
+                max_connection_pool_size=(self.settings.neo4j_max_connection_pool_size),
+            )
+        return BorrowedNeo4jDriver(driver=self._driver)
+
+    async def close(self) -> None:
+        driver = self._driver
+        self._driver = None
+        if driver is not None:
+            await driver.close()
+
+
+def direct_neo4j_driver_factory(settings: Settings) -> SharedNeo4jDriverFactory:
+    return SharedNeo4jDriverFactory(settings=settings)

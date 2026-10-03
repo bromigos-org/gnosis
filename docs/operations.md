@@ -44,6 +44,18 @@ minimal safe defaults. Full reference: [configuration.md](configuration.md).
 - `GET /ready` — readiness (dependencies reachable). Use it as the k8s readiness
   probe so traffic only arrives once Neo4j and the LLM endpoint are up.
 
+## Connections and startup
+
+Each worker process opens its Neo4j connections once, at startup: the memory
+SDK client (its driver, schema setup and vector-index check) and the structured
+graph store's driver (its schema bootstrap). Every request borrows those; none
+opens a driver or re-runs a schema check. The LiteLLM HTTP clients are likewise
+one per endpoint per process. All of them close when the worker shuts down.
+If Neo4j is unreachable at startup the worker still starts, `/ready` reports it,
+and the first request that needs the graph connects. Size the pools with
+`NEO4J_MAX_CONNECTION_POOL_SIZE` ([configuration.md](configuration.md)). Schema
+changes made out of band (a dropped index) are re-applied on the next restart.
+
 ## Write path & the extraction worker
 
 - `GNOSIS_WRITE_MODE=sync` returns after the write; `buffered` acks fast and

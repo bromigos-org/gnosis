@@ -23,7 +23,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Final, Protocol
 
-from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
@@ -32,6 +31,7 @@ from openai.types.chat import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from gnosis.graph_query_qa import proxy_model_name
+from gnosis.llm_clients import shared_openai_client
 from gnosis.models import JsonObject
 from gnosis.settings import Settings
 
@@ -85,15 +85,18 @@ class LiteLLMReranker:
         candidates: Sequence[str],
     ) -> RerankResult | None:
         start = time.perf_counter()
-        async with AsyncOpenAI(api_key=self.api_key, base_url=self.base_url) as client:
-            response = await client.beta.chat.completions.parse(
-                messages=_messages(query, candidates),
-                model=proxy_model_name(self.model),
-                # gpt-5.x endpoints reject `temperature`/`max_tokens`; cap via
-                # max_completion_tokens only, as the sufficiency check does.
-                max_completion_tokens=_MAX_COMPLETION_TOKENS,
-                response_format=RerankResult,
-            )
+        client = shared_openai_client(
+            api_key=self.api_key,
+            base_url=self.base_url,
+        )
+        response = await client.beta.chat.completions.parse(
+            messages=_messages(query, candidates),
+            model=proxy_model_name(self.model),
+            # gpt-5.x endpoints reject `temperature`/`max_tokens`; cap via
+            # max_completion_tokens only, as the sufficiency check does.
+            max_completion_tokens=_MAX_COMPLETION_TOKENS,
+            response_format=RerankResult,
+        )
         result = response.choices[0].message.parsed
         if result is None:
             _LOGGER.info("rerank returned no content", extra={"model": self.model})
