@@ -19,7 +19,6 @@ import time
 from dataclasses import dataclass
 from typing import ClassVar, Final, Protocol
 
-from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
@@ -28,6 +27,7 @@ from openai.types.chat import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from gnosis.graph_query_qa import proxy_model_name
+from gnosis.llm_clients import shared_openai_client
 
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
@@ -87,19 +87,22 @@ class LiteLLMSufficiencyAssessor:
         context: str,
     ) -> SufficiencyVerdict | None:
         start = time.perf_counter()
-        async with AsyncOpenAI(api_key=self.api_key, base_url=self.base_url) as client:
-            response = await client.beta.chat.completions.parse(
-                messages=_messages(query, context),
-                model=proxy_model_name(self.model),
-                # temperature=0: binary sufficient/insufficient verdict must be
-                # deterministic — non-determinism here cascades to different
-                # context sections reaching the answer model on repeated calls.
-                # Note: gpt-5.x endpoints reject `temperature` and `max_tokens`;
-                # temperature=0 is only sent for models that accept it.
-                temperature=0,
-                max_completion_tokens=_MAX_COMPLETION_TOKENS,
-                response_format=SufficiencyVerdict,
-            )
+        client = shared_openai_client(
+            api_key=self.api_key,
+            base_url=self.base_url,
+        )
+        response = await client.beta.chat.completions.parse(
+            messages=_messages(query, context),
+            model=proxy_model_name(self.model),
+            # temperature=0: binary sufficient/insufficient verdict must be
+            # deterministic — non-determinism here cascades to different
+            # context sections reaching the answer model on repeated calls.
+            # Note: gpt-5.x endpoints reject `temperature` and `max_tokens`;
+            # temperature=0 is only sent for models that accept it.
+            temperature=0,
+            max_completion_tokens=_MAX_COMPLETION_TOKENS,
+            response_format=SufficiencyVerdict,
+        )
         verdict = response.choices[0].message.parsed
         if verdict is None:
             _LOGGER.info(

@@ -41,7 +41,6 @@ import time
 from dataclasses import dataclass, replace
 from typing import ClassVar, Final, Literal, Protocol
 
-from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
@@ -50,6 +49,7 @@ from openai.types.chat import (
 from pydantic import BaseModel, ConfigDict
 
 from gnosis.graph_query_qa import proxy_model_name
+from gnosis.llm_clients import shared_openai_client
 from gnosis.settings import Settings
 
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
@@ -304,18 +304,21 @@ class LiteLLMQueryRouter:
 
     async def classify(self, query: str) -> RouteVerdict | None:
         start = time.perf_counter()
-        async with AsyncOpenAI(api_key=self.api_key, base_url=self.base_url) as client:
-            # A plain completion parsed leniently, NOT structured output: the
-            # LiteLLM gpt-5.5 route answers a single-enum-property JSON schema
-            # with the bare enum value ("temporal"), which the strict SDK
-            # parser rejects. gpt-5.x endpoints also reject `temperature` and
-            # `max_tokens`, so this call sends neither and caps via
-            # max_completion_tokens.
-            response = await client.chat.completions.create(
-                messages=_messages(query),
-                model=proxy_model_name(self.model),
-                max_completion_tokens=_MAX_COMPLETION_TOKENS,
-            )
+        client = shared_openai_client(
+            api_key=self.api_key,
+            base_url=self.base_url,
+        )
+        # A plain completion parsed leniently, NOT structured output: the
+        # LiteLLM gpt-5.5 route answers a single-enum-property JSON schema
+        # with the bare enum value ("temporal"), which the strict SDK
+        # parser rejects. gpt-5.x endpoints also reject `temperature` and
+        # `max_tokens`, so this call sends neither and caps via
+        # max_completion_tokens.
+        response = await client.chat.completions.create(
+            messages=_messages(query),
+            model=proxy_model_name(self.model),
+            max_completion_tokens=_MAX_COMPLETION_TOKENS,
+        )
         content = response.choices[0].message.content
         route = parse_route(content)
         if route is None:

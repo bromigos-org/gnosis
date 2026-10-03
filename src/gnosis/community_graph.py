@@ -43,7 +43,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, cast
 
-from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
@@ -52,6 +51,7 @@ from openai.types.chat import (
 
 from gnosis.graph_query_qa import proxy_model_name
 from gnosis.graph_types import CypherParameters
+from gnosis.llm_clients import shared_openai_client
 
 if TYPE_CHECKING:
     from gnosis.models import JsonValue
@@ -217,12 +217,15 @@ async def summarize_community(
     if not entity_names:
         return None
     try:
-        async with AsyncOpenAI(api_key=api_key, base_url=base_url) as client:
-            response = await client.chat.completions.create(
-                messages=_summary_messages(entity_names, fact_snippets),
-                model=proxy_model_name(model),
-                max_completion_tokens=_MAX_SUMMARY_TOKENS,
-            )
+        client = shared_openai_client(
+            api_key=api_key,
+            base_url=base_url,
+        )
+        response = await client.chat.completions.create(
+            messages=_summary_messages(entity_names, fact_snippets),
+            model=proxy_model_name(model),
+            max_completion_tokens=_MAX_SUMMARY_TOKENS,
+        )
         content = response.choices[0].message.content
         if content:
             return " ".join(content.split())

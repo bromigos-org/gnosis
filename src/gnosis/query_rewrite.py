@@ -33,7 +33,6 @@ import logging
 from dataclasses import dataclass
 from typing import ClassVar, Final, Literal
 
-from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
@@ -42,6 +41,7 @@ from openai.types.chat import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from gnosis.graph_query_qa import proxy_model_name
+from gnosis.llm_clients import shared_openai_client
 
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
@@ -106,17 +106,18 @@ class LiteLLMQueryRewriter:
         retrieval only.
         """
         try:
-            async with AsyncOpenAI(
-                api_key=self.api_key, base_url=self.base_url
-            ) as client:
-                response = await client.beta.chat.completions.parse(
-                    messages=_rewrite_messages(
-                        original_query, retrieved_context, insufficiency_reason
-                    ),
-                    model=proxy_model_name(self.model),
-                    max_completion_tokens=_MAX_REWRITE_TOKENS,
-                    response_format=RewriteResult,
-                )
+            client = shared_openai_client(
+                api_key=self.api_key,
+                base_url=self.base_url,
+            )
+            response = await client.beta.chat.completions.parse(
+                messages=_rewrite_messages(
+                    original_query, retrieved_context, insufficiency_reason
+                ),
+                model=proxy_model_name(self.model),
+                max_completion_tokens=_MAX_REWRITE_TOKENS,
+                response_format=RewriteResult,
+            )
             result = response.choices[0].message.parsed
             if result is None:
                 _LOGGER.info(

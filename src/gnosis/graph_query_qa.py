@@ -3,7 +3,6 @@ import time
 from dataclasses import dataclass
 from typing import ClassVar, Final, Protocol
 
-from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
@@ -12,6 +11,7 @@ from openai.types.chat import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from gnosis.graph_types import CypherParameters
+from gnosis.llm_clients import shared_openai_client
 from gnosis.models import GraphContextRequest
 
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
@@ -84,16 +84,19 @@ class LiteLLMGraphQueryPlanner:
 
     async def plan_query(self, request: GraphContextRequest) -> GraphQueryPlan | None:
         start = time.perf_counter()
-        async with AsyncOpenAI(api_key=self.api_key, base_url=self.base_url) as client:
-            response = await client.beta.chat.completions.parse(
-                messages=_messages(request),
-                model=proxy_model_name(self.model),
-                temperature=0,
-                # Structured-output plans truncated at the old 700-token cap
-                # raised LengthFinishReasonError and wasted the whole call.
-                max_tokens=1500,
-                response_format=GraphQueryPlan,
-            )
+        client = shared_openai_client(
+            api_key=self.api_key,
+            base_url=self.base_url,
+        )
+        response = await client.beta.chat.completions.parse(
+            messages=_messages(request),
+            model=proxy_model_name(self.model),
+            temperature=0,
+            # Structured-output plans truncated at the old 700-token cap
+            # raised LengthFinishReasonError and wasted the whole call.
+            max_tokens=1500,
+            response_format=GraphQueryPlan,
+        )
         plan = response.choices[0].message.parsed
         if plan is None:
             _LOGGER.info(

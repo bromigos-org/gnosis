@@ -8,7 +8,8 @@ configuration and the small handle helpers (graph write access, embedding,
 graph export conversion) that adapt SDK objects for the backend.
 """
 
-from collections.abc import Awaitable, Sequence
+import asyncio
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from typing import (
     Final,
@@ -474,6 +475,7 @@ def build_memory_settings(settings: Settings) -> MemorySettings:
             uri=settings.neo4j_uri,
             username=settings.neo4j_username,
             password=SecretStr(settings.neo4j_password),
+            max_connection_pool_size=settings.neo4j_max_connection_pool_size,
         ),
         llm=LiteLLMProvider(
             settings.gnosis_llm,
@@ -518,6 +520,77 @@ def litellm_embedding_model(model: str) -> str:
 
 def memory_client_context(client: object) -> MemoryClientContext:
     return cast("MemoryClientContext", client)
+
+
+class SharedMemoryClient:
+    """One connected SDK client per process, borrowed by every request.
+
+    ``MemoryClient`` is built to be opened once: ``connect()`` creates a Neo4j
+    driver (its own connection pool), runs the SDK's schema setup (about 34
+    ``CREATE ... IF NOT EXISTS`` / ``SHOW`` queries) and validates the vector
+    index, and ``close()`` tears the driver down again. Opening one per request
+    paid all of that on every read and write and never reused a pooled
+    connection. This holder opens the client on first use (or at startup via
+    :meth:`acquire`), hands the same connected client to every borrower, and
+    closes it once at shutdown.
+
+    A failed open is not cached: the next borrower retries, as a per-request
+    client would have. The SDK's memory surfaces keep no per-call state, so
+    concurrent requests share the client the way they share its driver pool.
+    """
+
+    def __init__(self, open_client: Callable[[], MemoryClientContext]) -> None:
+        self._open_client: Callable[[], MemoryClientContext] = open_client
+        self._context: MemoryClientContext | None = None
+        self._client: MemoryClientContext | None = None
+        self._lock: asyncio.Lock = asyncio.Lock()
+
+    @property
+    def connected(self) -> bool:
+        return self._client is not None
+
+    async def acquire(self) -> MemoryClientContext:
+        """Return the connected client, opening it if this is the first use."""
+        if self._client is not None:
+            return self._client
+        async with self._lock:
+            if self._client is None:
+                context = self._open_client()
+                self._client = await context.__aenter__()
+                self._context = context
+            return self._client
+
+    def borrow(self) -> MemoryClientContext:
+        """An ``async with`` handle that yields the shared client, never closing it."""
+        # Typed as the client because ``async with`` yields the shared client
+        # itself; call sites stay ``async with self._memory_client() as client``.
+        handle = cast("object", _BorrowedMemoryClient(self))
+        return cast("MemoryClientContext", handle)
+
+    async def close(self) -> None:
+        """Close the shared client (process shutdown); a later borrow reopens."""
+        async with self._lock:
+            context = self._context
+            self._context = None
+            self._client = None
+        if context is not None:
+            await context.__aexit__(None, None, None)
+
+
+class _BorrowedMemoryClient:
+    def __init__(self, shared: SharedMemoryClient) -> None:
+        self._shared: SharedMemoryClient = shared
+
+    async def __aenter__(self) -> MemoryClientContext:
+        return await self._shared.acquire()
+
+    async def __aexit__(
+        self,
+        exc_type: object,
+        exc_val: object,
+        exc_tb: object,
+    ) -> None:
+        _ = (exc_type, exc_val, exc_tb)
 
 
 def graph_write_query(client: MemoryClientContext) -> GraphWriteQuery:

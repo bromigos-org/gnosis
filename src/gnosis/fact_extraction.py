@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import ClassVar, Final, Literal, Protocol
 
-from openai import AsyncOpenAI, OpenAIError
+from openai import OpenAIError
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageParam,
@@ -26,6 +26,7 @@ from openai.types.chat import (
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from gnosis.graph_query_qa import proxy_model_name
+from gnosis.llm_clients import shared_openai_client
 
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
@@ -368,20 +369,23 @@ class LiteLLMMemoryUnitExtractor:
             if self.emit_relations
             else MemoryUnitExtraction
         )
-        async with AsyncOpenAI(api_key=self.api_key, base_url=self.base_url) as client:
-            response = await client.beta.chat.completions.parse(
-                messages=extraction_messages(
-                    conversation_date=conversation_date,
-                    context_turns=context_turns,
-                    new_turns=new_turns,
-                    emit_relations=self.emit_relations,
-                ),
-                model=proxy_model_name(self.model),
-                # gpt-5.x endpoints reject `temperature` and `max_tokens`, so
-                # this call sends neither and caps via max_completion_tokens.
-                max_completion_tokens=_MAX_COMPLETION_TOKENS,
-                response_format=response_format,
-            )
+        client = shared_openai_client(
+            api_key=self.api_key,
+            base_url=self.base_url,
+        )
+        response = await client.beta.chat.completions.parse(
+            messages=extraction_messages(
+                conversation_date=conversation_date,
+                context_turns=context_turns,
+                new_turns=new_turns,
+                emit_relations=self.emit_relations,
+            ),
+            model=proxy_model_name(self.model),
+            # gpt-5.x endpoints reject `temperature` and `max_tokens`, so
+            # this call sends neither and caps via max_completion_tokens.
+            max_completion_tokens=_MAX_COMPLETION_TOKENS,
+            response_format=response_format,
+        )
         parsed = response.choices[0].message.parsed
         if parsed is None:
             _LOGGER.info(

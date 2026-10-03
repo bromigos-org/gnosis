@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Final, Protocol
 
-from openai import AsyncOpenAI, OpenAIError
+from openai import OpenAIError
 from openai.types.chat import (
     ChatCompletionMessageParam,
     ChatCompletionSystemMessageParam,
@@ -23,6 +23,7 @@ from openai.types.chat import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from gnosis.graph_query_qa import proxy_model_name
+from gnosis.llm_clients import shared_openai_client
 
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
@@ -69,15 +70,18 @@ class LiteLLMRecallFilter:
         candidates: Sequence[str],
     ) -> RecallSelection | None:
         start = time.perf_counter()
-        async with AsyncOpenAI(api_key=self.api_key, base_url=self.base_url) as client:
-            response = await client.beta.chat.completions.parse(
-                messages=_messages(query, candidates),
-                model=proxy_model_name(self.model),
-                # gpt-5.x endpoints reject `temperature` and `max_tokens`, so
-                # this call sends neither and caps via max_completion_tokens.
-                max_completion_tokens=_MAX_COMPLETION_TOKENS,
-                response_format=RecallSelection,
-            )
+        client = shared_openai_client(
+            api_key=self.api_key,
+            base_url=self.base_url,
+        )
+        response = await client.beta.chat.completions.parse(
+            messages=_messages(query, candidates),
+            model=proxy_model_name(self.model),
+            # gpt-5.x endpoints reject `temperature` and `max_tokens`, so
+            # this call sends neither and caps via max_completion_tokens.
+            max_completion_tokens=_MAX_COMPLETION_TOKENS,
+            response_format=RecallSelection,
+        )
         selection = response.choices[0].message.parsed
         if selection is None:
             _LOGGER.info(
