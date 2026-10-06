@@ -1,8 +1,9 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Self, override
+from typing import Self, cast, override
 
 import pytest
+from neo4j import Record
 
 from gnosis.graph_query_qa import GraphQueryPlan, GraphQueryPlanner
 from gnosis.graph_store import Neo4jGraphExecutor
@@ -97,6 +98,40 @@ async def test_dynamic_graph_query_falls_back_when_rows_have_bad_shape() -> None
     nodes = await executor.get_context(request)
 
     # Then: malformed dynamic rows do not suppress fallback context.
+    assert len(nodes) == 1
+    assert nodes[0].summary == "general-chat"
+
+
+@pytest.mark.anyio
+async def test_dynamic_graph_query_accepts_neo4j_records() -> None:
+    # Given: the real driver returns neo4j.Record rows (keys() is a list).
+    # The driver protocol types rows as dicts; a Record is what really arrives.
+    record = cast("dict[str, JsonValue]", cast("object", Record(_graph_row())))
+    driver = RecordingCypherDriver(rows_by_query=[[record]])
+    planner = StaticGraphQueryPlanner(
+        plan=GraphQueryPlan(
+            cypher="""
+            MATCH (ch:Channel {tenant_id: $tenant_id})
+            WHERE ch.guild_id = $guild_id AND ch.channel_id = $channel_id
+            RETURN ch.id AS id, 'graph_query' AS type,
+              coalesce(ch.name, ch.channel_id) AS summary, false AS deleted
+            LIMIT $limit
+            """,
+            parameters={},
+            answer_kind="channels_by_guild",
+        ),
+    )
+    executor = Neo4jGraphExecutor(
+        driver_factory=RecordingDriverFactory(driver),
+        embedding_dimensions=3,
+        graph_query_planner=planner,
+    )
+    request = GraphContextRequest(scope=_scope(), query="Which channel?", limit=5)
+
+    # When: graph context is requested.
+    nodes = await executor.get_context(request)
+
+    # Then: the record rows are read, not rejected with a TypeError.
     assert len(nodes) == 1
     assert nodes[0].summary == "general-chat"
 

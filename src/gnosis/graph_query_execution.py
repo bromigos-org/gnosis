@@ -56,7 +56,10 @@ def rows_to_graph_nodes(
 
 
 def _rows_have_graph_query_shape(rows: Sequence[dict[str, JsonValue]]) -> bool:
-    return all(row.keys() >= _GRAPH_QUERY_ROW_KEYS for row in rows)
+    # The Neo4j driver returns `neo4j.Record`s, whose keys() is a list, not a
+    # set view: `keys() >= frozenset` raised TypeError and failed the whole
+    # /v1/memory/context request with a 500. issubset takes any iterable.
+    return all(_GRAPH_QUERY_ROW_KEYS.issubset(row.keys()) for row in rows)
 
 
 def _error_context(
