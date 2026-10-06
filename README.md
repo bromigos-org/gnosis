@@ -1,5 +1,29 @@
 # gnosis
 
+> **About this copy (bromigos-org/gnosis).** This repository is a GitHub fork of
+> [nolgiainc/gnosis](https://github.com/nolgiainc/gnosis). Gnosis began in this
+> org, moved to nolgiainc in July 2026, and this fork was created on 2026-07-25.
+> It is **active, not a stale mirror**: the Bromigos self-hosted Gnosis deployment
+> builds from this fork's `main`, and research work done here has been synced
+> upstream (the `sync/fork-research-*` merges).
+>
+> As of 2026-10-05 the two have diverged:
+>
+> - **Only here:** point-in-time reads (`as_of`), LLM-free requests and
+>   append-only adds (ade7be0); identifier-named fields keep their values under
+>   redaction (f24d1fe); one Neo4j driver and LiteLLM client per process
+>   (7d53281); graph-QA accepts `neo4j.Record` rows (ed38719).
+> - **Only upstream:** dependency bumps, a graph-QA fix that gates the LLM Cypher
+>   planner off by default and pins every node to the caller's tenant, and CI
+>   security gates (gitleaks, Dependabot, Trivy).
+>
+> The rest of this README and `docs/` are upstream's and describe upstream's
+> setup (its clone URL, `ghcr.io/nolgiainc/gnosis` image and CI). GitHub Actions
+> have never run in this fork, and `.github/workflows/ci.yml` still targets
+> upstream's registries. Bromigos operators can find how this fork is deployed
+> and what depends on it in the network systems map, `docs/SYSTEMS.md` in the
+> private `bromigos-org/platform` repository.
+
 **gnosis** is a self-hosted memory service for AI agents. It exposes an
 authenticated, tenant-scoped HTTP gateway backed by a Neo4j graph/vector store and
 an OpenAI-compatible LLM/embedding endpoint. Clients interact over HTTP or the
