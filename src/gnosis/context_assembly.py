@@ -29,6 +29,7 @@ from gnosis.memory_provider import (
     TURN_MEMORY_PREDICATE_PREFIX,
     VERBATIM_MEMORY_PREDICATE,
     StoredMemory,
+    space_matches,
 )
 from gnosis.models import (
     ContextRequest,
@@ -308,13 +309,23 @@ def fact_matches_scope(
         for field_name, scope_value in scope_metadata.items()
         if field_name in _FACT_SCOPE_FIELDS
     }
-    return all(
-        metadata.get(field_name) == requested_value
-        for field_name, requested_value in requested_scope.items()
-    ) and all(
-        requested_scope.get(field_name) == fact_value
-        for field_name, fact_value in metadata.items()
-        if field_name in _FACT_SCOPE_FIELDS
+    requested_space = scope_metadata.get("space_id")
+    return (
+        all(
+            metadata.get(field_name) == requested_value
+            for field_name, requested_value in requested_scope.items()
+        )
+        and all(
+            requested_scope.get(field_name) == fact_value
+            for field_name, fact_value in metadata.items()
+            if field_name in _FACT_SCOPE_FIELDS
+        )
+        # space_id stays out of the Cypher fragments (_FACT_READ_EXCLUDED_FIELDS)
+        # so facts with no space_id still match there; it is enforced here.
+        and space_matches(
+            metadata,
+            requested_space if isinstance(requested_space, str) else None,
+        )
     )
 
 

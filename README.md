@@ -14,7 +14,9 @@
 >   (ade7be0); identifier-named fields keep their values under redaction
 >   (f24d1fe); one Neo4j driver and LiteLLM client per process (7d53281);
 >   graph-QA accepts `neo4j.Record` rows, and its per-row tenant filter tests
->   Record keys rather than values.
+>   Record keys rather than values; `space_id` scopes every memory read,
+>   update, delete and supersession, not only tenant + user (see
+>   `docs/security.md`, "Scope enforcement").
 >
 > Images: `.github/workflows/ci.yml` builds and pushes
 > `ghcr.io/bromigos-org/gnosis` (`sha-<commit>` and `:latest`, Trivy-gated) on
