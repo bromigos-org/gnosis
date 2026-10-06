@@ -7,22 +7,24 @@
 > builds from this fork's `main`, and research work done here has been synced
 > upstream (the `sync/fork-research-*` merges).
 >
-> As of 2026-10-05 the two have diverged:
+> As of 2026-10-05 this fork carries everything upstream has (merged through
+> 4417d57, including the graph-QA tenant pinning of 9449416) plus:
 >
-> - **Only here:** point-in-time reads (`as_of`), LLM-free requests and
->   append-only adds (ade7be0); identifier-named fields keep their values under
->   redaction (f24d1fe); one Neo4j driver and LiteLLM client per process
->   (7d53281); graph-QA accepts `neo4j.Record` rows (ed38719).
-> - **Only upstream:** dependency bumps, a graph-QA fix that gates the LLM Cypher
->   planner off by default and pins every node to the caller's tenant, and CI
->   security gates (gitleaks, Dependabot, Trivy).
+> - point-in-time reads (`as_of`), LLM-free requests and append-only adds
+>   (ade7be0); identifier-named fields keep their values under redaction
+>   (f24d1fe); one Neo4j driver and LiteLLM client per process (7d53281);
+>   graph-QA accepts `neo4j.Record` rows, and its per-row tenant filter tests
+>   Record keys rather than values.
 >
-> The rest of this README and `docs/` are upstream's and describe upstream's
-> setup (its clone URL, `ghcr.io/nolgiainc/gnosis` image and CI). GitHub Actions
-> have never run in this fork, and `.github/workflows/ci.yml` still targets
-> upstream's registries. Bromigos operators can find how this fork is deployed
-> and what depends on it in the network systems map, `docs/SYSTEMS.md` in the
-> private `bromigos-org/platform` repository.
+> Images: `.github/workflows/ci.yml` builds and pushes
+> `ghcr.io/bromigos-org/gnosis` (`sha-<commit>` and `:latest`, Trivy-gated) on
+> every push to `main`, and writes the digest to the job summary. The homelab
+> deploys it pinned by digest (`bromigos-org/homelab` `helm/gnosis/values.yaml`
+> `image.digest`). Upstream's Artifact Registry job is removed here. The rest
+> of this README and `docs/` are upstream's and describe upstream's setup.
+> Bromigos operators can find how this fork is deployed and what depends on it
+> in the network systems map, `docs/SYSTEMS.md` in the private
+> `bromigos-org/platform` repository.
 
 **gnosis** is a self-hosted memory service for AI agents. It exposes an
 authenticated, tenant-scoped HTTP gateway backed by a Neo4j graph/vector store and

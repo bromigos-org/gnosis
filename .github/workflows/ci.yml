@@ -10,9 +10,8 @@ on:
 # a group per commit instead: GitHub holds at most one pending run per group
 # and a newer run evicts the pending one, so a shared main group would drop
 # intermediate merges along with their post-merge tests and immutable
-# sha-<sha> image. Every main commit therefore runs, and the moving :latest
-# tag is kept monotonic by the tag-resolution step in artifact-registry rather
-# than by queueing.
+# sha-<sha> image. Every main commit therefore runs. The homelab deploys by
+# digest, not :latest, so an out-of-order :latest move cannot roll it back.
 concurrency:
   group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -46,6 +45,14 @@ jobs:
       - name: Tests
         run: uv run pytest -q
 
+  # bromigos-org fork: the homelab gnosis Deployment (bromigos-org/homelab
+  # helm/gnosis) pulls ghcr.io/bromigos-org/gnosis pinned by digest. This job
+  # publishes the immutable sha-<sha> tag, gates it on the Trivy scan, then
+  # moves :latest. To roll a build, copy the digest from the job summary into
+  # homelab helm/gnosis/values.yaml image.digest. Upstream's Artifact Registry
+  # job (nolgiainc GCP projects) is dropped here: this fork cannot and must not
+  # push there. Runs on Blacksmith, never the homelab runners: this repo is
+  # public, and a fork PR must not run in a privileged homelab pod.
   docker:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test
@@ -53,6 +60,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      IMAGE: ghcr.io/bromigos-org/gnosis
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -68,108 +77,34 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Push the immutable sha- tag only; :latest moves after the image scan.
+      # linux/amd64: the homelab pins gnosis to an amd64 node.
       - name: Build and push
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64
           push: true
-          tags: ghcr.io/nolgiainc/gnosis:sha-${{ github.sha }}
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
 
-      # Trivy gate (sec-platform): fails on a CRITICAL with a fix available,
-      # reports HIGH into the job summary. Allowlist: .trivyignore.yaml.
+      # Trivy gate: fails on a CRITICAL with a fix available, reports HIGH
+      # into the job summary. Allowlist: .trivyignore.yaml.
       - name: Scan image
-        run: .github/scripts/image-scan.sh "ghcr.io/nolgiainc/gnosis@${{ steps.build.outputs.digest }}" "ghcr gnosis sha-${{ github.sha }}"
+        run: .github/scripts/image-scan.sh "${IMAGE}@${{ steps.build.outputs.digest }}" "ghcr gnosis sha-${{ github.sha }}"
 
       - name: Promote :latest
-        run: docker buildx imagetools create --tag ghcr.io/nolgiainc/gnosis:latest "ghcr.io/nolgiainc/gnosis@${{ steps.build.outputs.digest }}"
+        run: docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}@${{ steps.build.outputs.digest }}"
 
-  # Push the image the agent fleet actually deploys (NOL-404). Provisioned
-  # agents pull the same-project Artifact Registry gnosis:latest (infra
-  # envs/*/agents.tf gnosis_image_repository; gnosis_image_tag defaults to
-  # "latest"), NOT ghcr.io — the ghcr job above only feeds the chart's
-  # non-GCP default. Before this job, AR was refreshed by a manually
-  # dispatched mirror in nolgia-agent images.yml, and prod silently ran a
-  # month-stale build. Mirrors hermes-agent nolgia-images.yml: keyless WIF
-  # auth as gha-public-images (infra envs/*/wif.tf binds this repo's main),
-  # which can push to the `public-builds` repository and nothing else (AC-05,
-  # 2026-10-02: this repo is public, so its CI must not write to `nolgia`).
-  # Rollout is NOT done here: the agent-provisioner reconciler installs
-  # :latest with pullPolicy Always; running pods pick it up on their next
-  # roll.
-  artifact-registry:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
-    # stays hosted: needs docker daemon
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    permissions:
-      contents: read
-      id-token: write
-    strategy:
-      # Envs are independent: prod auth failing must not cancel stg.
-      fail-fast: false
-      matrix:
-        include:
-          - env: stg
-            project: nolgia-web-stg
-          - env: prod
-            project: nolgia-web-prd
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
-        with:
-          workload_identity_provider: ${{ matrix.env == 'stg' && 'projects/198519101960/locations/global/workloadIdentityPools/github-actions/providers/github' || 'projects/725349205404/locations/global/workloadIdentityPools/github-actions/providers/github' }}
-          service_account: gha-public-images@${{ matrix.project }}.iam.gserviceaccount.com
-
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Runs are no longer serialized, so an older commit's build can finish
-      # after a newer one. Always publish the immutable sha- tag; only move
-      # :latest when this commit is still main's tip, so a slow run cannot roll
-      # the fleet back to an earlier build. :latest moves only after the image
-      # scan below passes, because it is what the fleet pulls.
-      - name: Resolve image tags
-        id: tags
-        env:
-          GH_TOKEN: ${{ github.token }}
-          IMAGE: us-west1-docker.pkg.dev/${{ matrix.project }}/public-builds/gnosis
-          SHA: ${{ github.sha }}
+      - name: Record digest
         run: |
-          set -euo pipefail
-          tip="$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)"
-          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "sha_tag=${IMAGE}:sha-${SHA}" >> "$GITHUB_OUTPUT"
-          if [ "$tip" = "$SHA" ]; then
-            echo "promote=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "promote=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::main moved to ${tip}; publishing sha-${SHA} only, leaving :latest alone"
-          fi
-
-      - name: Build and push
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.tags.outputs.sha_tag }}
-          # Per-env scopes so the two matrix legs keep independent warm
-          # caches instead of racing one scope.
-          cache-from: type=gha,scope=gnosis-ar-${{ matrix.env }}
-          cache-to: type=gha,mode=max,scope=gnosis-ar-${{ matrix.env }}
-
-      # Trivy gate (sec-platform): fails on a CRITICAL with a fix available,
-      # reports HIGH into the job summary. Allowlist: .trivyignore.yaml.
-      - name: Scan image
-        run: .github/scripts/image-scan.sh "${{ steps.tags.outputs.image }}@${{ steps.build.outputs.digest }}" "gnosis ${{ matrix.env }} sha-${{ github.sha }}"
-
-      - name: Promote :latest
-        if: steps.tags.outputs.promote == 'true'
-        run: docker buildx imagetools create --tag "${{ steps.tags.outputs.image }}:latest" "${{ steps.tags.outputs.image }}@${{ steps.build.outputs.digest }}"
+          {
+            echo "### ghcr.io/bromigos-org/gnosis"
+            echo ""
+            echo "- tag: \`sha-${{ github.sha }}\`"
+            echo "- digest: \`${{ steps.build.outputs.digest }}\`"
+            echo ""
+            echo "Pin it in bromigos-org/homelab helm/gnosis/values.yaml (image.digest)."
+          } >> "$GITHUB_STEP_SUMMARY"
