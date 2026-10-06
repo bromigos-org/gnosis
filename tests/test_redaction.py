@@ -166,7 +166,7 @@ def test_sensitive_names_win_over_identifier_suffixes() -> None:
 
 
 def test_key_names_are_not_identifiers() -> None:
-    access = "AKIA1234567890ABCDEFGHIJKL"
+    access = "a1" * 13  # opaque-shaped (24+ letters and digits), not a credential
     payload: JsonObject = {"access_key": access, "signing_key": access}
 
     assert redact_secrets(payload) == {
