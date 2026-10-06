@@ -6,7 +6,7 @@ This document records the agreed contract for the `/v1/memories` provider surfac
 
 - All routes use the existing bearer service token (`GNOSIS_TOKEN`).
 - Requests carry the existing `MemoryScope` (`tenant_id`, `space_id`, `agent_id`, `session_id`, `user_id`, `visibility`, optional `guild_id`, `channel_id`). Tenant enforcement matches the existing routes: a scope for another tenant is rejected with `403` before the backend runs.
-- Scoping semantics: `scope.user_id` (with the tenant) is the read filter for search and list. `agent_id` and caller `metadata` are write-side tags stored on records.
+- Scoping semantics: `scope.user_id` and `scope.space_id` (with the tenant) are the filter for search, list, update and delete: a record stamped with another `space_id` is invisible (and `404` for update/delete by id); records with no `space_id` stay visible to their tenant + user. `agent_id` and caller `metadata` are write-side tags stored on records.
 - **Federation token class.** `POST /v1/memories`, `POST /v1/memories/search`, and `POST /v1/memories/list` additionally accept `GNOSIS_FEDERATION_TOKEN` (constant-time compared like every token class; the empty default disables it). Federated callers get the mandatory `metadata.shareable == true` filter conjunct injected on reads, must carry `metadata.promoted_from` on adds (`403` otherwise), cannot name `peers` in a search (`403`, prevents federation loops), and receive `403` on every other route - including `PATCH`/`DELETE /v1/memories/{memory_id}` and `POST /v1/memories/promote`.
 
 ## Endpoints

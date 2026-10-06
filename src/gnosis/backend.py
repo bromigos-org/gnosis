@@ -326,6 +326,7 @@ from gnosis.memory_provider import (
     scope_read_fragments,
     scored_stored_memory_from_row,
     session_read_fragments,
+    space_fragment,
     stored_memories_from_sdk,
     stored_memory_from_row,
     stored_memory_from_sdk,
@@ -2392,6 +2393,7 @@ class Neo4jAgentMemoryBackend:
                     {
                         "new_fact_id": memory_id,
                         "scope_fragments": scope_read_fragments(scope),
+                        "space_fragment": space_fragment(scope.space_id),
                         "slot_fragments": [json.dumps(s) for s in _rslots],
                     },
                 )

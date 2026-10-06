@@ -37,7 +37,12 @@ Every record carries the six-field scope spine (`tenant_id`, `space_id`,
 `agent_id`, `session_id`, `user_id`, `visibility`). The gateway:
 
 - **Isolates by `tenant_id`** — the hard boundary between deployments/businesses.
-- **Keys long-term recall by `tenant_id` + `user_id`.** `agent_id` and
+- **Keys long-term recall by `tenant_id` + `user_id` + `space_id`.** A record
+  stamped with a `space_id` is reachable only from that space: search, list,
+  context, update and delete by id, and write-time supersession from another
+  space never touch it, even under the same tenant and user. Records with no
+  `space_id` (event facts, and writes from before spaces were stamped) stay
+  visible to every space of their tenant and user. `agent_id` and
   `session_id` are write-side audit tags; they are stored and available in
   filtered views but do **not** partition recall.
 - **Re-checks scope on every deserialized fact** during read assembly (including

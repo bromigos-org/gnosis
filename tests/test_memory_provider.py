@@ -39,6 +39,11 @@ from gnosis.fact_extraction import (  # noqa: E402
     MemoryUnitExtractor,
     RelationalMemoryUnit,
 )
+from gnosis.memory_provider import (  # noqa: E402
+    WRITE_TIME_SUPERSEDE_CYPHER,
+    space_fragment,
+    space_matches,
+)
 from gnosis.models import (  # noqa: E402
     BackendReadiness,
     ClientEvent,
@@ -1085,6 +1090,173 @@ async def test_delete_memory_when_sdk_wraps_writes_in_a_delegating_proxy() -> No
     assert write_params == {"memory_id": _MEMORY_ID}
 
 
+# --- space isolation -------------------------------------------------------
+# Same tenant, same user, different space_id. Before the space check, Gnosis
+# isolated memories by tenant + user only, so a cleanup of one space deleted
+# another space's memories (2026-10-06: a client deleting "its own space"
+# under user `operator` deleted VECTOR's desktop memories).
+
+_OTHER_SPACE = "vector"
+_LEGACY_MEMORY_ID = "00000000-0000-0000-0000-0000000000dd"
+
+
+@pytest.mark.anyio
+async def test_search_memories_drops_results_from_another_space() -> None:
+    # Given: same tenant + user results in this space, another space, no space.
+    client = FakeMemoryClient()
+    client.long_term.search_results = [
+        _fact("this space", _scope_metadata() | {"similarity": 0.9}),
+        _fact(
+            "other space",
+            _scope_metadata(space_id=_OTHER_SPACE) | {"similarity": 0.99},
+        ),
+        _fact("no space", _scope_metadata(space_id=None) | {"similarity": 0.8}),
+    ]
+    backend = _backend(client)
+
+    # When: the caller searches its own space.
+    response = await backend.search_memories(
+        MemorySearchRequest(scope=_scope(), query="poofs"),
+    )
+
+    # Then: the other space's record never returns; unspaced records still do.
+    assert [result.content for result in response.results] == [
+        "this space",
+        "no space",
+    ]
+
+
+@pytest.mark.anyio
+async def test_list_memories_drops_rows_from_another_space() -> None:
+    # Given: rows in this space, another space and with no space.
+    client = FakeMemoryClient()
+    client.query.rows = [
+        _memory_row(_MEMORY_ID, "mine", "2026-06-29T00:00:00+00:00"),
+        _memory_row(
+            _OTHER_MEMORY_ID,
+            "theirs",
+            "2026-06-28T00:00:00+00:00",
+            space_id=_OTHER_SPACE,
+        ),
+        _memory_row(
+            _LEGACY_MEMORY_ID,
+            "legacy",
+            "2026-06-27T00:00:00+00:00",
+            space_id=None,
+        ),
+    ]
+    backend = _backend(client)
+
+    # When: the caller lists its own space.
+    response = await backend.list_memories(MemoryListRequest(scope=_scope()))
+
+    # Then: totals and results exclude the other space.
+    assert response.total == 2
+    assert [result.content for result in response.results] == ["mine", "legacy"]
+
+
+@pytest.mark.anyio
+async def test_delete_memory_refuses_a_record_in_another_space() -> None:
+    # Given: the id names a memory of the same tenant + user in another space.
+    client = FakeMemoryClient()
+    client.query.rows = [
+        _memory_row(
+            _MEMORY_ID,
+            "VECTOR's memory",
+            "2026-06-27T00:00:00+00:00",
+            space_id=_OTHER_SPACE,
+        ),
+    ]
+    backend = _backend(client)
+
+    # When / Then: it is reported as not found and nothing is written.
+    with pytest.raises(MemoryNotFoundError):
+        _ = await backend.delete_memory(
+            _MEMORY_ID,
+            MemoryDeleteRequest(scope=_scope()),
+        )
+    assert _graph(client).writes == []
+
+
+@pytest.mark.anyio
+async def test_update_memory_refuses_a_record_in_another_space() -> None:
+    # Given: the id names a memory of the same tenant + user in another space.
+    client = FakeMemoryClient()
+    client.query.rows = [
+        _memory_row(
+            _MEMORY_ID,
+            "VECTOR's memory",
+            "2026-06-27T00:00:00+00:00",
+            space_id=_OTHER_SPACE,
+        ),
+    ]
+    backend = _backend(client)
+
+    # When / Then: it is reported as not found and nothing is written.
+    with pytest.raises(MemoryNotFoundError):
+        _ = await backend.update_memory(
+            _MEMORY_ID,
+            MemoryUpdateRequest(scope=_scope(), content="overwrite"),
+        )
+    assert _graph(client).writes == []
+
+
+@pytest.mark.anyio
+async def test_delete_memory_still_reaches_a_record_with_no_space() -> None:
+    # Given: a record written before spaces were stamped (no space_id).
+    client = FakeMemoryClient()
+    client.query.rows = [
+        _memory_row(
+            _LEGACY_MEMORY_ID,
+            "legacy",
+            "2026-06-27T00:00:00+00:00",
+            space_id=None,
+        ),
+    ]
+    backend = _backend(client)
+
+    # When: its tenant + user deletes it.
+    response = await backend.delete_memory(
+        _LEGACY_MEMORY_ID,
+        MemoryDeleteRequest(scope=_scope()),
+    )
+
+    # Then: the delete goes through as before.
+    assert response.memory_id == _LEGACY_MEMORY_ID
+    assert len(_graph(client).writes) == 1
+
+
+def test_space_matches_rules() -> None:
+    # A stamped record matches only its own space; an unstamped one matches all.
+    assert space_matches({"space_id": "discord"}, "discord")
+    assert not space_matches({"space_id": "vector"}, "discord")
+    assert not space_matches({"space_id": None}, "discord")
+    assert space_matches({"tenant_id": "nolgia"}, "discord")
+    assert space_matches({"space_id": "vector"}, None)
+
+
+@pytest.mark.parametrize(
+    ("stored_space", "expected"),
+    [("discord", True), ("vector", False), ("discord-2", False), (None, True)],
+)
+def test_supersession_condition_matches_the_stored_json(
+    stored_space: str | None,
+    *,
+    expected: bool,
+) -> None:
+    # Given: metadata serialized the way the writer stores it.
+    stored = json.dumps(_scope_metadata(space_id=stored_space))
+    fragment = space_fragment("discord")
+
+    # When: the Cypher space condition is evaluated (CONTAINS == substring).
+    matched = '"space_id": ' not in stored or fragment in stored
+
+    # Then: only same-space and unspaced facts can be superseded.
+    assert matched is expected
+    assert "$space_fragment" in WRITE_TIME_SUPERSEDE_CYPHER
+    assert '"space_id": ' in WRITE_TIME_SUPERSEDE_CYPHER
+
+
 def _graph(client: "FakeMemoryClient") -> "FakeGraphWriter":
     graph = client.graph
     assert graph is not None
@@ -1147,15 +1319,22 @@ def _scope() -> MemoryScope:
     )
 
 
-def _scope_metadata(*, user_id: str = "789") -> dict[str, JsonValue]:
-    return {
+def _scope_metadata(
+    *,
+    user_id: str = "789",
+    space_id: str | None = "discord",
+) -> dict[str, JsonValue]:
+    metadata: dict[str, JsonValue] = {
         "tenant_id": "nolgia",
-        "space_id": "discord",
+        "space_id": space_id,
         "agent_id": "nolgia-agent",
         "session_id": "guild:123:channel:456",
         "user_id": user_id,
         "visibility": "private_user",
     }
+    if space_id is None:
+        del metadata["space_id"]
+    return metadata
 
 
 def _fact(content: str, metadata: dict[str, JsonValue]) -> Fact:
@@ -1168,15 +1347,16 @@ def _fact(content: str, metadata: dict[str, JsonValue]) -> Fact:
     )
 
 
-def _memory_row(
+def _memory_row(  # noqa: PLR0913 - One knob per stored metadata field.
     memory_id: str,
     content: str,
     created_at: str,
     *,
     user_id: str = "789",
     topic: str | None = None,
+    space_id: str | None = "discord",
 ) -> JsonObject:
-    metadata = _scope_metadata(user_id=user_id)
+    metadata = _scope_metadata(user_id=user_id, space_id=space_id)
     if topic is not None:
         metadata["topic"] = topic
     return {

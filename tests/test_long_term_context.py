@@ -236,6 +236,67 @@ async def test_fact_context_does_not_cross_tenant_or_channel_scope() -> None:
 
 
 @pytest.mark.anyio
+async def test_fact_context_does_not_cross_space() -> None:
+    # Given: same tenant + user facts in this space, another space, no space.
+    requested_scope = _scope()
+    same_space = _scope_metadata(requested_scope) | {"space_id": "discord"}
+    other_space = _scope_metadata(requested_scope) | {"space_id": "vector"}
+    no_space = _scope_metadata(requested_scope)
+    client = RecordingMemoryClient(
+        query=RecordingQuery(
+            rows=[
+                {
+                    "f": _fact_row(
+                        subject="tenant:nolgia:message:same-space",
+                        predicate="discord.message_created",
+                        object_value="same space note",
+                        metadata=same_space,
+                    ),
+                },
+                {
+                    "f": _fact_row(
+                        subject="tenant:nolgia:message:other-space",
+                        predicate="discord.message_created",
+                        object_value="other space note",
+                        metadata=other_space,
+                    ),
+                },
+                {
+                    "f": _fact_row(
+                        subject="tenant:nolgia:message:no-space",
+                        predicate="discord.message_created",
+                        object_value="unspaced note",
+                        metadata=no_space,
+                    ),
+                },
+            ],
+        ),
+    )
+    backend = Neo4jAgentMemoryBackend(
+        _settings(),
+        memory_client_factory=MemoryClientFactory(client),
+        graph_store=RecordingGraphStore(),
+    )
+
+    # When: context is requested for the "discord" space.
+    response = await backend.get_memory_context(
+        MemoryContextRequest(
+            scope=requested_scope,
+            query="channel recall",
+            include_short_term=False,
+            include_reasoning=False,
+            include_graph=False,
+        ),
+    )
+
+    # Then: the other space's fact is never rendered; unspaced facts still are.
+    content = "\n".join(section.content for section in response.sections)
+    assert "same space note" in content
+    assert "unspaced note" in content
+    assert "other space note" not in content
+
+
+@pytest.mark.anyio
 async def test_fact_context_dates_prefer_stored_session_date() -> None:
     # Given: one fact tagged with a stored session date and one without any tag.
     scope = _scope()

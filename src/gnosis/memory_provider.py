@@ -8,7 +8,7 @@ semantics on the deserialized records before anything leaves the service.
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Final
@@ -158,20 +158,32 @@ MATCH (f:Fact {id: $memory_id})
 DETACH DELETE f
 """
 
+SPACE_ID_KEY: Final[str] = "space_id"
+
+# Matches records in the writer's space and records with no space_id (see
+# space_matches). The key probe is the serialized key, as metadata is stored
+# as a JSON string.
+_SPACE_SCOPE_CONDITION: Final[str] = (
+    "(NOT old_fact.metadata CONTAINS '\"space_id\": '"
+    " OR old_fact.metadata CONTAINS $space_fragment)"
+)
+
 # Write-time SUPERSEDES: when a new fact occupies the same relation slot as an
-# existing fact in the same scope (e.g. "alice:works_at"), mark the older fact
+# existing fact in the same scope (tenant, user and space; e.g.
+# "alice:works_at"), mark the older fact
 # with valid_to = now and link new→old with a SUPERSEDES edge. The slot match
 # uses JSON fragment containment on metadata (same pattern as scope fragment
 # reads). Only facts where valid_to IS NULL (not already superseded) are
 # targeted, keeping the write idempotent. The new fact's valid_to is never
 # touched here — it stays NULL until a future update supersedes it.
-WRITE_TIME_SUPERSEDE_CYPHER: Final[str] = """
-MATCH (new_fact:Fact {id: $new_fact_id})
+WRITE_TIME_SUPERSEDE_CYPHER: Final[str] = f"""
+MATCH (new_fact:Fact {{id: $new_fact_id}})
 MATCH (old_fact:Fact)
 WHERE old_fact.metadata IS NOT NULL
   AND old_fact.id <> $new_fact_id
   AND old_fact.valid_to IS NULL
   AND all(fragment IN $scope_fragments WHERE old_fact.metadata CONTAINS fragment)
+  AND {_SPACE_SCOPE_CONDITION}
   AND any(slot_frag IN $slot_fragments WHERE old_fact.metadata CONTAINS slot_frag)
 MERGE (new_fact)-[:SUPERSEDES]->(old_fact)
 SET old_fact.valid_to = datetime()
@@ -427,7 +439,28 @@ def memory_matches_scope(memory: StoredMemory, scope: MemoryScope) -> bool:
     return (
         memory.metadata.get("tenant_id") == scope.tenant_id
         and memory.metadata.get("user_id") == scope.user_id
+        and space_matches(memory.metadata, scope.space_id)
     )
+
+
+def space_matches(metadata: Mapping[str, object], space_id: str | None) -> bool:
+    """Whether a stored record's space is visible to a request's space.
+
+    A record stamped with a ``space_id`` belongs to that space only: reads,
+    updates, deletes and supersession from any other space never reach it,
+    even under the same tenant and user. Records with no ``space_id`` (event
+    facts, and writes from before spaces were stamped) stay visible to every
+    space of their tenant and user, as before. ``space_id`` None (no space in
+    the caller's scope metadata) keeps the tenant + user check alone.
+    """
+    if space_id is None or SPACE_ID_KEY not in metadata:
+        return True
+    return metadata.get(SPACE_ID_KEY) == space_id
+
+
+def space_fragment(space_id: str) -> str:
+    """The metadata JSON fragment that pins a record to ``space_id``."""
+    return _metadata_json_fragment(SPACE_ID_KEY, space_id)
 
 
 def memory_filter_fields(memory: StoredMemory) -> MemoryFilterFields:
