@@ -1,17 +1,32 @@
 # gnosis documentation
 
+Start with the guide that matches your job.
+
+- **To run gnosis and connect an agent,** read [getting-started.md](getting-started.md).
+- **To learn what gnosis does and why,** read [CAPABILITIES.md](CAPABILITIES.md).
+- **To deploy and operate it,** read [operations.md](operations.md), then
+  [security.md](security.md).
+- **To change the code,** read [development.md](development.md).
+
+## Guides
+
 | Doc | What it covers |
 |---|---|
-| [getting-started.md](getting-started.md) | Run gnosis (the bundled `compose.yaml`) and wire a real project to it — a hermes agent via [hermes-gnosis](https://github.com/nolgiainc/hermes-gnosis) — plus the direct HTTP path. **Start here to use gnosis.** |
-| [CAPABILITIES.md](CAPABILITIES.md) | Every technique/algorithm — write path, read path, federation, policy — each with its approach, peer-reviewed basis, flag, and measured status. **Start here for "what does gnosis do and how."** |
-| [architecture.md](architecture.md) | Layers, the read/write request flow, graph-QA planning, and the module map. |
-| [data-model.md](data-model.md) | The Neo4j graph schema: node labels, relationships, properties, the scope spine, and the bi-temporal/append-only model. |
-| [configuration.md](configuration.md) | Complete settings reference — every `GNOSIS_*` env var and YAML key, grouped, with defaults and the preferred config. |
-| [security.md](security.md) | Trust boundary, the six token classes, scope enforcement, redaction, review-first ops, and federation safety. |
-| [operations.md](operations.md) | Deploying and running gnosis — requirements, config, health probes, the extraction worker, operator workflows, backup, and scale. |
-| [development.md](development.md) | Contributing: setup, the four CI gates, tests, running locally, the feature-flag pattern, measuring changes, and conventions. |
-| [provider-surface.md](provider-surface.md) | The HTTP contract: `/v1/memories` add/search/list/promote/edit, the filter DSL, storage model, and MCP. |
-| [BENCHMARKS.md](BENCHMARKS.md) | Every measured run, per-category history, configs, and honest deviations (LOCOMO + LongMemEval). |
+| [getting-started.md](getting-started.md) | Bring gnosis up and connect a hermes agent or any HTTP client |
+| [operations.md](operations.md) | Requirements, health probes, the extraction worker, backup and scale |
+| [development.md](development.md) | Setup, the four CI gates, tests and measuring a change |
 
-Configs (the preferred config and one file per measured run) live in
-[`../configs/`](../configs/README.md).
+## Reference
+
+| Doc | What it covers |
+|---|---|
+| [configuration.md](configuration.md) | Every setting, its default and the preferred config |
+| [provider-surface.md](provider-surface.md) | The `/v1/memories` contract, the filter DSL and the MCP server |
+| [security.md](security.md) | Token classes, scope enforcement, redaction and federation |
+| [architecture.md](architecture.md) | Layers, request flow and the module map |
+| [data-model.md](data-model.md) | Neo4j labels, relationships, properties and the scope fields |
+| [CAPABILITIES.md](CAPABILITIES.md) | Each technique, its flag, its research basis and its measured status |
+| [BENCHMARKS.md](BENCHMARKS.md) | Every measured LOCOMO and LongMemEval run |
+
+The config files live in [`../configs/`](../configs/README.md). There is one
+preferred config, plus one file per measured run.

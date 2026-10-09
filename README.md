@@ -1,89 +1,126 @@
 # gnosis
 
-> **About this copy (bromigos-org/gnosis).** This repository is a GitHub fork of
-> [nolgiainc/gnosis](https://github.com/nolgiainc/gnosis). Gnosis began in this
-> org, moved to nolgiainc in July 2026, and this fork was created on 2026-07-25.
-> It is **active, not a stale mirror**: the Bromigos self-hosted Gnosis deployment
-> builds from this fork's `main`, and research work done here has been synced
-> upstream (the `sync/fork-research-*` merges).
->
-> As of 2026-10-05 this fork carries everything upstream has (merged through
-> 4417d57, including the graph-QA tenant pinning of 9449416) plus:
->
-> - point-in-time reads (`as_of`), LLM-free requests and append-only adds
->   (ade7be0); identifier-named fields keep their values under redaction
->   (f24d1fe); one Neo4j driver and LiteLLM client per process (7d53281);
->   graph-QA accepts `neo4j.Record` rows, and its per-row tenant filter tests
->   Record keys rather than values; `space_id` scopes every memory read,
->   update, delete and supersession, not only tenant + user (see
->   `docs/security.md`, "Scope enforcement").
->
-> Images: `.github/workflows/ci.yml` builds and pushes
-> `ghcr.io/bromigos-org/gnosis` (`sha-<commit>` and `:latest`, Trivy-gated) on
-> every push to `main`, and writes the digest to the job summary. The homelab
-> deploys it pinned by digest (`bromigos-org/homelab` `helm/gnosis/values.yaml`
-> `image.digest`). Upstream's Artifact Registry job is removed here. The rest
-> of this README and `docs/` are upstream's and describe upstream's setup.
-> Bromigos operators can find how this fork is deployed and what depends on it
-> in the network systems map, `docs/SYSTEMS.md` in the private
-> `bromigos-org/platform` repository.
+Long-term memory for AI agents, behind a scoped and redacted HTTP API.
 
-**gnosis** is a self-hosted memory service for AI agents. It exposes an
-authenticated, tenant-scoped HTTP gateway backed by a Neo4j graph/vector store and
-an OpenAI-compatible LLM/embedding endpoint. Clients interact over HTTP or the
-optional MCP mount; they never connect to Neo4j or the Python SDK directly.
+**Status:** active. A maintained fork of [nolgiainc/gnosis](https://github.com/nolgiainc/gnosis).
 
-The service maintains long-term recall keyed by `tenant_id` + `user_id`. Every
-stored memory and retrieval request is scope-checked, redacted, and rendered as
-prompt-safe sections for agent consumption.
+[![CI](https://github.com/bromigos-org/gnosis/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/bromigos-org/gnosis/actions/workflows/ci.yml)
+[![Secret Scan](https://github.com/bromigos-org/gnosis/actions/workflows/gitleaks.yml/badge.svg?branch=main)](https://github.com/bromigos-org/gnosis/actions/workflows/gitleaks.yml)
+![Python 3.13](https://img.shields.io/badge/python-3.13-blue)
+![Neo4j 5.26+](https://img.shields.io/badge/neo4j-5.26%2B-008cc1)
 
-## Documentation
+gnosis is a self-hosted memory service for AI agents. Agents send it what they
+learn and ask it for context later. It stores memories in a Neo4j graph and
+vector store. It reaches models through any OpenAI-compatible endpoint, such as
+LiteLLM, OpenAI or a local ollama.
 
-- [Getting started](docs/getting-started.md) — integration walkthrough
-- [Architecture](docs/architecture.md) — request flow and module map
-- [Data model](docs/data-model.md) — graph schema and scope spine
-- [Provider surface](docs/provider-surface.md) — HTTP and MCP contracts
-- [Configuration](docs/configuration.md) — environment variables and YAML keys
-- [Security](docs/security.md) — token classes, scope, redaction, federation
-- [Operations](docs/operations.md) — health, workers, backup, scaling
-- [Capabilities](docs/CAPABILITIES.md) — feature behavior and measured tradeoffs
-- [Development](docs/development.md) — contribution and measurement workflow
-- [Benchmarks](docs/BENCHMARKS.md) — maintained benchmark ledger
+Clients talk to gnosis over HTTP, or over MCP if you turn it on. They never
+connect to Neo4j themselves. Every request carries a scope, which says whose
+memory it is. gnosis checks that scope on every read and write. It redacts what
+it returns, and it renders results as prompt-ready sections.
+
+```mermaid
+flowchart LR
+    clients["Agents and apps<br/>(HTTP, hermes-gnosis, MCP)"]
+    subgraph gnosis["gnosis (FastAPI)"]
+        policy["Auth, scope<br/>and redaction"]
+        read["Read path<br/>routing, retrieval, fusion"]
+        write["Write path<br/>verbatim store"]
+        worker["Extraction worker<br/>(in-process queue)"]
+    end
+    neo4j[("Neo4j<br/>graph + vectors")]
+    llm["OpenAI-compatible<br/>LLM and embeddings"]
+    peers["Federation peers<br/>(optional)"]
+
+    clients --> policy
+    policy --> read
+    policy --> write
+    write --> worker
+    read --> neo4j
+    write --> neo4j
+    worker --> neo4j
+    read --> llm
+    write --> llm
+    worker --> llm
+    read -.-> peers
+```
+
+## Why it exists
+
+An agent forgets everything between sessions. A plain vector store remembers,
+but it has no access model and returns raw rows. gnosis adds the layer in
+between:
+
+- bearer-token auth with separate least-privilege token classes
+- tenant, space and user isolation on every read and write
+- redaction of everything that could reach a prompt
+- measured retrieval features, each behind its own flag
+
+## About this fork
+
+This repository is a fork of [nolgiainc/gnosis](https://github.com/nolgiainc/gnosis).
+It is active, not a stale mirror. Its `main` branch is the source for the
+Bromigos org's own gnosis image, and research done here is synced back
+upstream.
+
+As of 2026-10-05 the fork has every upstream change through `4417d57`. It also
+carries these changes of its own:
+
+- Point-in-time reads (`as_of`), LLM-free requests and append-only adds
+  (`ade7be0`).
+- Fields named like identifiers keep their values under redaction (`f24d1fe`).
+- One Neo4j driver and one LiteLLM client per process (`7d53281`).
+- Graph-QA accepts `neo4j.Record` rows, and its per-row tenant filter checks
+  record keys rather than values.
+- `space_id` scopes every memory read, update, delete and supersession, not
+  only tenant and user. See [Scope enforcement](docs/security.md#scope-enforcement).
+
+The fork's CI publishes its own image, `ghcr.io/bromigos-org/gnosis`.
+Upstream's Artifact Registry job is removed here.
 
 ## Quick start
 
-The tracked [`compose.yaml`](compose.yaml) starts Neo4j 5.26+ and the published
-`ghcr.io/nolgiainc/gnosis:latest` image. You need Docker Compose v2 and an
-OpenAI-compatible chat/embedding endpoint. The default compose points at Ollama on
-the host; set variables (or a `.env` next to the file) for LiteLLM, OpenAI, or
-another endpoint.
+You need Docker with Compose v2 and an OpenAI-compatible chat and embedding
+endpoint. The tracked [`compose.yaml`](compose.yaml) starts Neo4j and gnosis. By
+default it points gnosis at ollama on your host.
+
+`compose.yaml` names the image `ghcr.io/nolgiainc/gnosis:latest`. That image is
+private, so build it from this checkout under the same tag first. Compose then
+uses your local build instead of pulling.
 
 ```bash
-git clone https://github.com/nolgiainc/gnosis.git
+git clone https://github.com/bromigos-org/gnosis.git
 cd gnosis
+docker build -t ghcr.io/nolgiainc/gnosis:latest .
 ollama pull llama3.2:latest
 ollama pull nomic-embed-text
 docker compose up -d
 ```
 
-Check liveness and backend readiness:
+To use LiteLLM, OpenAI or another endpoint instead of ollama, set
+`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `GNOSIS_LLM` and `GNOSIS_EMBEDDING` in
+your shell or in a `.env` file next to `compose.yaml`.
+
+Check that it is up. `/health` answers as soon as the process runs. `/ready`
+answers `503` until Neo4j and the schema are ready.
 
 ```bash
 curl -fsS http://localhost:8080/health
 curl -fsS http://localhost:8080/ready
 ```
 
-The compose file uses development-only placeholder tokens. Replace them with
-secret-backed values before any non-disposable deployment. Tear down with
-`docker compose down -v` (the `-v` removes the named Neo4j volume).
+The compose file uses placeholder dev tokens such as `dev-token`. Replace them
+with real secrets before you keep any data in it. To tear everything down,
+including the Neo4j volume, run `docker compose down -v`.
 
 ### Write and read a memory
+
+This writes one memory verbatim. A verbatim write makes no LLM call.
 
 ```bash
 export GNOSIS_URL=http://localhost:8080
 export GNOSIS_TOKEN=dev-token
 
-# Verbatim write (no extraction LLM call):
 curl -fsS "$GNOSIS_URL/v1/memories" \
   -H "Authorization: Bearer $GNOSIS_TOKEN" \
   -H 'Content-Type: application/json' \
@@ -93,8 +130,11 @@ curl -fsS "$GNOSIS_URL/v1/memories" \
     "content": "Alice moved from Seattle to Austin in March.",
     "infer": false
   }'
+```
 
-# Retrieve context for a follow-up question:
+This asks for context in a later session. Keep the same tenant, space and user.
+
+```bash
 curl -fsS "$GNOSIS_URL/v1/memory/context" \
   -H "Authorization: Bearer $GNOSIS_TOKEN" \
   -H 'Content-Type: application/json' \
@@ -106,70 +146,116 @@ curl -fsS "$GNOSIS_URL/v1/memory/context" \
   }'
 ```
 
-The response contains `sections[]` with scoped, redacted context. To use
-extraction mode, send a `messages` array with `"infer": true` and a capable
-`GNOSIS_LLM` — extraction makes LLM calls.
+The response holds `sections[]`, the scoped and redacted context. The
+`tenant_id` must match the server's `GNOSIS_TENANT_ID`, which defaults to
+`nolgia`. Any other tenant gets a `403`.
+
+To have gnosis extract facts from a conversation, send a `messages` array with
+`"infer": true`. Extraction calls the model in `GNOSIS_LLM`, so set it to a
+capable chat model.
+
+The [getting started guide](docs/getting-started.md) goes further. It wires a
+hermes agent to gnosis through the hermes-gnosis plugin.
+
+## Run from source
+
+gnosis targets Python 3.13 and uses [uv](https://docs.astral.sh/uv/). Export
+the required settings first (see [Configure](#configure)), then start the
+server:
+
+```bash
+uv sync --locked
+uv run uvicorn gnosis.main:app --host localhost --port 8080
+```
+
+## Configure
+
+Every setting is an environment variable or a key in a YAML config file. These
+must be set, or gnosis will not start:
+
+- `GNOSIS_TOKEN`, the service token for normal callers
+- `GNOSIS_READ_OPERATOR_TOKEN`, `GNOSIS_WRITE_OPERATOR_TOKEN`,
+  `GNOSIS_EXPORT_OPERATOR_TOKEN` and `GNOSIS_ADMIN_OPERATOR_TOKEN`
+- `NEO4J_URI` and `NEO4J_PASSWORD`
+- `LITELLM_BASE_URL` and `LITELLM_API_KEY`, for the OpenAI-compatible endpoint
+
+When `GNOSIS_CONFIG_FILE` is unset, gnosis loads
+[`configs/default.yaml`](configs/default.yaml). That file turns on the
+best-measured features: fact extraction, the entity graph, adaptive routing and
+Chain-of-Note. Set `GNOSIS_CONFIG_FILE=""` to start from the minimal defaults
+instead, with every optional feature off. Or point it at one of the
+[run configs](configs/README.md).
+
+Settings resolve in this order, highest first:
+
+1. environment variables
+2. a `.env` file in the working directory
+3. the YAML config file
+4. code defaults
+
+The [configuration reference](docs/configuration.md) lists every setting.
 
 ## Features
 
+Every feature below is a flag. Each one is off by default, and the code path is
+unchanged while it is off.
+
 ### Write path
 
-- **Verbatim storage**: store any content as a dated, scoped memory unit with zero
-  LLM calls.
-- **Fact extraction** (`GNOSIS_FACT_EXTRACTION_ENABLED`): extract self-contained,
-  dated, entity-normalized fact units from conversation turns at ingest. The
-  single largest quality lever measured: +11.7 J on LOCOMO, temporal +42 points.
-- **Entity graph** (`GNOSIS_ENTITY_GRAPH_ENABLED`): materialize a Neo4j knowledge
-  graph of named entities and their relationships alongside extracted facts.
-  Enables graph-based multi-hop retrieval.
-- **Community graph** (`GNOSIS_COMMUNITY_GRAPH_ENABLED`): detect clusters among
-  entity nodes, generate LLM summaries per community, and store them as
-  `:Community` nodes. Closes the open-domain retrieval gap (Zep/Graphiti analysis:
-  ~30 pp vs pure entity retrieval).
-- **Write buffer**: optional async ingestion with configurable concurrency and
-  back-pressure (`GNOSIS_WRITE_MODE=buffered`).
+- **Verbatim storage.** Stores content as a dated, scoped memory with no LLM
+  call.
+- **Fact extraction** (`GNOSIS_FACT_EXTRACTION_ENABLED`). Turns conversation
+  turns into short, dated, self-contained facts at ingest. This is the largest
+  single gain measured, worth +11.7 J on LOCOMO.
+- **Entity graph** (`GNOSIS_ENTITY_GRAPH_ENABLED`). Builds a Neo4j graph of the
+  entities that facts name and how they relate. Graph-based multi-hop
+  retrieval reads it.
+- **Community graph** (`GNOSIS_COMMUNITY_GRAPH_ENABLED`). Clusters related
+  entities and stores an LLM summary of each cluster. It was tested and
+  rejected on LongMemEval_S (run L-27).
+- **Buffered writes** (`GNOSIS_WRITE_MODE=buffered`). Acknowledges writes
+  early and flushes a bounded queue.
 
 ### Read path
 
-- **BM25 + dense fusion** (`GNOSIS_HYBRID_RETRIEVAL_ENABLED`): reciprocal rank
-  fusion of full-text and vector search. On temporal queries: +7.8 J.
-- **Adaptive routing** (`GNOSIS_ADAPTIVE_ROUTING_ENABLED`): one cheap LLM
-  classification call per query selects the measured-best retrieval strategy for
-  that query's category (temporal → BM25+dense; multi-hop → graph-QA + verbatim;
-  etc.). +2.9 J vs any single global strategy.
-- **Scoped dense retrieval** (`GNOSIS_SCOPED_DENSE_RETRIEVAL_ENABLED`): narrows
-  vector search to the request scope in-query, required for correctness in
-  multi-user single-store deployments (e.g., LongMemEval multi-instance runs).
-- **Graph-QA fusion** (`GNOSIS_GRAPHQA_FUSION_ENABLED`): Cypher query planner over
-  the entity graph, fused with vector candidates. Validated, read-only, tenant-scoped.
-  Requires `GNOSIS_GRAPHQA_ENABLED=true` (off by default; see
-  [Security](docs/security.md#graph-qa-safety)).
-- **LLM reranker** (`GNOSIS_RERANK_ENABLED`): listwise reranker over the top-N
-  fused candidates before the item-budget cut. Reranking is the single lever
-  present in all strongest 2026 systems (Mnemis, EverMemOS, agentmemory).
-  Benchmark result pending on LongMemEval_S.
-- **Chain-of-Note** (`GNOSIS_CHAIN_OF_NOTE_ENABLED`): reading instruction that
-  makes the answerer cite evidence and abstain when context is insufficient.
-  Route-aware (skipped on temporal route where it hurts). +8.9 adversarial J.
-- **Sufficiency check** (`GNOSIS_SUFFICIENCY_CHECK_ENABLED`): autorater that
-  judges whether retrieved context fully determines the answer — signal exposed to
-  clients, not used to block responses.
-- **Multi-query rewrite** (`GNOSIS_QUERY_REWRITE_ENABLED`): when the sufficiency
-  check fires, generates 2–3 complementary queries (entity pivot, temporal
-  calculation, concept expansion, HyDE) and RRF-fuses results. Requires
-  `GNOSIS_SUFFICIENCY_CHECK_ENABLED=true`. EverMemOS fires this on 31% of queries.
-- **Read-time supersession** (`GNOSIS_READ_SUPERSESSION_ENABLED`): newest-wins
-  conflict resolution at retrieval time. Evidence-backed: deterministic newest-wins
-  scores 94.8% on FactConsolidation vs LLM-based invalidation at 7%.
+- **BM25 and dense fusion** (`GNOSIS_HYBRID_RETRIEVAL_ENABLED`). Fuses
+  full-text and vector search with reciprocal rank fusion.
+- **Adaptive routing** (`GNOSIS_ADAPTIVE_ROUTING_ENABLED`). One cheap LLM call
+  classifies each query. gnosis then applies the feature set that measured best
+  for that kind of query. This beat every single global setting by 2.9 J.
+- **Scoped dense retrieval** (`GNOSIS_SCOPED_DENSE_RETRIEVAL_ENABLED`). Narrows
+  vector search to the caller's scope inside the query. Turn it on when one
+  store holds many users.
+- **Graph-QA fusion** (`GNOSIS_GRAPHQA_FUSION_ENABLED`). Plans a read-only
+  Cypher query over the entity graph and fuses its results with vector hits. It
+  also needs `GNOSIS_GRAPHQA_ENABLED=true`. Read the
+  [graph-QA safety notes](docs/security.md#graph-qa-safety) first.
+- **LLM reranker** (`GNOSIS_RERANK_ENABLED`). Reorders the top candidates before
+  the budget cut. On LongMemEval_S it helped single-session-user questions but
+  hurt temporal ones, so it stays off.
+- **Chain-of-Note** (`GNOSIS_CHAIN_OF_NOTE_ENABLED`). Adds a reading
+  instruction that makes the answering model cite evidence and abstain when the
+  context falls short. It is skipped on temporal queries, where it hurts.
+- **Sufficiency check** (`GNOSIS_SUFFICIENCY_CHECK_ENABLED`). Judges whether
+  the context answers the query and reports that to the client. It never blocks
+  a response.
+- **Multi-query rewrite** (`GNOSIS_QUERY_REWRITE_ENABLED`). When the
+  sufficiency check fails, it writes two or three extra queries and fuses their
+  results. It needs the sufficiency check on.
+- **Read-time supersession** (`GNOSIS_READ_SUPERSESSION_ENABLED`). When two
+  facts fill the same slot, the newest one wins.
 
 ### Trust and safety
 
-- All operations scoped by `tenant_id`, `space_id`, `agent_id`, `session_id`,
-  `user_id`, and `visibility`. Tenant mismatches rejected before backend access.
-- Separate least-privilege token classes: read, write, export, admin, federation.
-- Prompt-facing output is redacted. Graph-QA never accepts caller-supplied Cypher.
-- Deduplication and consolidation are dry-run-first; federation requires explicit
-  `metadata.shareable: true`.
+- Every operation carries a scope of `tenant_id`, `space_id`, `agent_id`,
+  `session_id`, `user_id` and `visibility`. A tenant mismatch is rejected
+  before the backend runs.
+- Read, write, export, admin and federation access use separate tokens.
+- Everything that can reach a prompt is redacted.
+- Callers never send Cypher. Graph-QA plans its own and validates it.
+- Dedup and consolidation run as dry runs unless you apply them.
+- Federation shares a memory only when its metadata says
+  `"shareable": true`.
 
 ## API surface
 
@@ -179,81 +265,18 @@ extraction mode, send a `messages` array with `"infer": true` and a capable
 | Memory | `POST /v1/memories`, `/v1/memories/search`, `/v1/memories/list`, `/v1/memories/promote` |
 | Context | `POST /v1/memory/context`, `/v1/graph/context`, `/v1/reasoning/context` |
 | Ingestion | `POST /v1/messages`, `/v1/events`, `/v1/events/batch`, `/v1/memory/extraction/preview` |
-| Editing | `PATCH`/`DELETE /v1/memories/{memory_id}` (requires `GNOSIS_MEMORY_EDIT_ENABLED=true`) |
-| MCP | Streamable HTTP at `/mcp` (requires `GNOSIS_MCP_ENABLED=true`) |
+| Editing | `PATCH` and `DELETE /v1/memories/{memory_id}`, when `GNOSIS_MEMORY_EDIT_ENABLED=true` |
+| MCP | Streamable HTTP at `/mcp`, when `GNOSIS_MCP_ENABLED=true` |
 
-`/health` and `/ready` are unauthenticated. All other routes require
-`Authorization: Bearer <token>`. Full schema: FastAPI `/docs` and `/openapi.json`.
+`/health` and `/ready` need no token. Every other route needs
+`Authorization: Bearer <token>`. Operator routes need an operator token. The
+full schema is at `/docs` and `/openapi.json` on a running server. The
+[provider surface](docs/provider-surface.md) explains the contract.
 
-## Configuration
+## Test
 
-Minimum required: `GNOSIS_TOKEN`, `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`,
-`LITELLM_BASE_URL`, `LITELLM_API_KEY`.
-
-**gnosis auto-loads `configs/default.yaml` when `GNOSIS_CONFIG_FILE` is unset**,
-which enables the benchmark-best feature set (fact extraction + entity graph +
-adaptive routing + Chain-of-Note). Set `GNOSIS_CONFIG_FILE=""` to use the minimal
-safe defaults, or point it at a specific run config.
-
-Precedence: explicit environment variables → `.env` → YAML config → code defaults.
-
-See [docs/configuration.md](docs/configuration.md) for the complete variable matrix.
-
-## Source run
-
-```bash
-uv sync --locked
-uv run uvicorn gnosis.main:app --host localhost --port 8080
-```
-
-## Benchmark standing
-
-### LongMemEval_S — L-33 (full 500-Q, 2026-08-10), gpt-4o backbone + judge — **current best**
-
-| Category | gnosis L-33 | gnosis L-25b | Zep | mem0 | Chronos (SOTA) |
-|---|---|---|---|---|---|
-| single-session-assistant | 94.6% (n=56) | **98.2%** | — | — | — |
-| single-session-user | 82.8% (n=64) | 84.4% | — | — | — |
-| knowledge-update | **81.9%** (n=72) | 70.8% | 83.3% | — | **100%** |
-| temporal-reasoning | 69.3% (n=127) | 74.0% | 62.4% | — | 95.5% |
-| multi-session | **60.3%** (n=121) | 58.7% | 57.9% | — | 88.7% |
-| single-session-preference | **66.7%** (n=30) | 60.0% | — | — | — |
-| abstention | **83.3%** (n=30) | 83.3% | — | — | — |
-| **Overall** | **74.2%** (500 Q) | 73.6% | 71.2% | 67.6% | 95.6% |
-
-*L-33 reuses L-31 Neo4j data (no re-ingest). New best overall (74.2%), best KU (81.9%), best MS (60.3%). SSA/temporal remain below L-25b — ingest variation from L-31 fresh reingest.*
-
-**L-33 config (on top of L-32):** extended `_AGGREGATIVE_PATTERN` (added `average|percentage|how long`) + 4 sub-queries (was 2) + set-based dedup in membench answer.py.
-
-**Key remaining gaps (L-33 baseline):**
-- **KU (81.9%):** gap to Zep (83.3%): 1.4pp; gap to Chronos (100%): 18.1pp.
-- **Multi-session (60.3%):** +0.8pp from L-32; 39.7% remaining failure rate (48/121).
-- **Temporal (69.3%):** gap to L-25b (74.0%): 4.7pp — ingest-variation gap, not an L-33 regression.
-
-**L-31 (2026-08-09):** write-time SUPERSEDES edges + `valid_to IS NULL` filter. KU **70.8% → 80.6% (+9.8pp)**. Overall 71.0%; regressions confirmed as ingest variation (not SUPERSEDES logic). See [RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md).
-
-**L-32 (2026-08-10):** enumeration clause fix (`GNOSIS_CON_ENUMERATION_ENABLED=true`) + 2-sub-query expansion for aggregative multi-session questions. MS **54.5% → 59.5% (+5.0pp)**. Overall **72.6%** (+1.6pp vs L-31). No re-ingest.
-
-**L-33 (2026-08-10) — COMPLETE:** extended aggregative pattern + 4 sub-queries (was 2) + set-based dedup in membench answer.py. Overall **74.2%** (+1.6pp vs L-32, **+0.6pp vs previous best L-25b**). MS **59.5% → 60.3%** (+0.8pp). KU flat (81.9%). No re-ingest. See [gnosis-membench RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md).
-
-### LOCOMO — Run 23 (full 10-conversation, 2026-07-04), GPT-5.5 judge
-
-| Category | gnosis | mem0 | mem0-graph | Zep |
-|---|---|---|---|---|
-| single-hop J | **77.0** | 67.13 | 65.71 | 61.70 |
-| temporal J | **73.8** | 55.51 | 58.13 | 49.31 |
-| multi-hop F1 | **34.3** | 28.64 | 24.32 | 19.37 |
-| open-domain J | 29.2 | 72.93 | 75.71 | **76.60** |
-| adversarial J | **83.9** | — | — | — |
-| **excl-adv J** | **66.9–68.9** | 66.88 | 68.44 | 65.99 |
-
-Open-domain is the primary LOCOMO gap (29.2 vs frontier ~74–77). The community graph
-feature (`GNOSIS_COMMUNITY_GRAPH_ENABLED`) targets this gap with cluster-level summaries.
-
-See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) and
-[gnosis-membench RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md) for the full run ledger.
-
-## Development
+CI runs four gates. Run all four before you push. They are separate checks, so
+passing `ruff check` does not mean `ruff format --check` passes.
 
 ```bash
 uv sync --locked
@@ -263,27 +286,72 @@ uv run basedpyright
 uv run pytest -q
 ```
 
-The Docker build runs on `main` push only. For feature work: keep optional flags
-default-off, ensure LLM-backed features degrade gracefully, and measure with
-[gnosis-membench](https://github.com/nolgiainc/gnosis-membench) before making
-quality claims.
+The test suite needs no running Neo4j or model. The
+[development guide](docs/development.md) covers single-file test runs, the
+feature-flag pattern and how to measure a change.
 
-## Deployment
+## Deploy
 
-- [`Dockerfile`](Dockerfile): pinned `uv.lock`, copies `src/` and `configs/`,
-  starts Uvicorn on port 8080.
-- [`compose.yaml`](compose.yaml): minimal Neo4j + service stack for local use.
-  Not a production topology or secret-management system.
-- [`.github/workflows/ci.yml`](.github/workflows/ci.yml): test gate on PRs; push
-  to `main` also builds and publishes `ghcr.io/nolgiainc/gnosis:latest`.
+- The [`Dockerfile`](Dockerfile) installs from the pinned `uv.lock`, copies
+  `src/` and `configs/`, and starts Uvicorn on port 8080.
+- [`compose.yaml`](compose.yaml) is a minimal stack for local use. It is not a
+  production topology and does not manage secrets.
+- [`ci.yml`](.github/workflows/ci.yml) runs the four gates on every pull request
+  and every push to `main`. A push to `main` also builds
+  `ghcr.io/bromigos-org/gnosis:sha-<commit>`, scans it with Trivy, then moves
+  `:latest` to it. The job summary records the image digest.
+- [`gitleaks.yml`](.github/workflows/gitleaks.yml) scans for secrets on every
+  pull request and every push to `main`.
 
-Kubernetes, ingress, secret management, and rollout policy are owned by your
-deployment environment. Keep all credentials and token classes in environment
-secret-backed configuration.
+Your deployment environment owns ingress, secrets and rollout. Keep every token
+in secret-backed configuration, never in git. Pin images by digest rather than
+`:latest`. The [operations guide](docs/operations.md) covers probes, the
+extraction worker and backup.
+
+## Benchmarks
+
+gnosis is measured with [gnosis-membench](https://github.com/nolgiainc/gnosis-membench).
+Its [RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md)
+is the canonical record. [docs/BENCHMARKS.md](docs/BENCHMARKS.md) mirrors it.
+
+**LongMemEval_S, all 500 questions.** The best overall score so far is 75.2%.
+Run L-35 set it on 2026-08-10, and L-37 and L-38 tied it. These runs use gpt-4o
+as both the answering model and the judge. For comparison, Zep scores 71.2% and
+mem0 67.6% with a gpt-4o backbone. Most of the gains from L-32 to L-37 came
+from the harness's answering prompt, not from gnosis itself.
+
+**LOCOMO, all 10 conversations (Run 23).** These scores use `configs/default.yaml`
+and a gpt-5.5 judge.
+
+| Category | gnosis | mem0 | mem0-graph | Zep |
+|---|---|---|---|---|
+| single-hop J | **77.0** | 67.13 | 65.71 | 61.70 |
+| temporal J | **73.8** | 55.51 | 58.13 | 49.31 |
+| multi-hop F1 | **34.3** | 28.64 | 24.32 | 19.37 |
+| open-domain J | 29.2 | 72.93 | 75.71 | **76.60** |
+| adversarial J | **83.9** | — | — | — |
+| J excluding adversarial | **66.9–68.9** | 66.88 | 68.44 | 65.99 |
+
+Open-domain questions are the main LOCOMO gap.
+
+## Documentation
+
+Start with [docs/README.md](docs/README.md), the documentation index.
+
+- [Getting started](docs/getting-started.md): run gnosis and connect an agent
+- [Configuration](docs/configuration.md): every setting and its default
+- [Provider surface](docs/provider-surface.md): the HTTP and MCP contract
+- [Security](docs/security.md): tokens, scope, redaction and federation
+- [Operations](docs/operations.md): probes, workers, backup and scale
+- [Architecture](docs/architecture.md): request flow and module map
+- [Data model](docs/data-model.md): the graph schema and the scope fields
+- [Capabilities](docs/CAPABILITIES.md): each technique and its research basis
+- [Development](docs/development.md): contributing and measuring changes
+- [Benchmarks](docs/BENCHMARKS.md): the run ledger
 
 ## Related projects
 
-- [gnosis-membench](https://github.com/nolgiainc/gnosis-membench) — benchmark
-  harness for LOCOMO and LongMemEval experiments.
-- [hermes-gnosis](https://github.com/nolgiainc/hermes-gnosis) — memory-provider
-  plugin for NousResearch Hermes agents.
+- [gnosis-membench](https://github.com/nolgiainc/gnosis-membench) is the
+  benchmark harness for LOCOMO and LongMemEval.
+- [hermes-gnosis](https://github.com/nolgiainc/hermes-gnosis) is a memory
+  provider plugin that connects NousResearch hermes agents to gnosis.

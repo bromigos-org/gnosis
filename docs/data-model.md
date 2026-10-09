@@ -21,10 +21,13 @@ and write:
 | `user_id` | the subject the memory is about |
 | `visibility` | e.g. `private_user`, `channel` |
 
-**Long-term recall is keyed by `tenant_id` + `user_id`.** Two agents on the same
-deployment asking about the same user see the same memories; `agent_id`,
-`session_id`, and caller metadata are stored for audit and filtered views but do
-**not** partition recall (and are redacted out of prompt-facing content).
+**Long-term recall is keyed by `tenant_id`, `user_id` and `space_id`.** Two
+agents in the same space asking about the same user see the same memories. A
+record stamped with a `space_id` is reachable only from that space. Records with
+no `space_id`, such as event facts and older writes, stay visible to every space
+of their tenant and user. `agent_id`, `session_id` and caller metadata are
+stored for audit and filtered views. They do **not** partition recall, and they
+are redacted out of prompt-facing content.
 Different business entities run separate deployments with separate tenants.
 
 ## Bi-temporal + append-only

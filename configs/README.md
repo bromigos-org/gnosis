@@ -8,9 +8,14 @@ unset** — so out of the box it runs the preferred (best-scoring) config. To
 change that:
 
 ```bash
-GNOSIS_CONFIG_FILE=configs/runs/run11.yaml gnosis   # load a different config
-GNOSIS_CONFIG_FILE="" gnosis                         # opt out: safe minimal defaults
+# load a different config
+GNOSIS_CONFIG_FILE=configs/runs/run11.yaml uv run uvicorn gnosis.main:app --port 8080
+# opt out: safe minimal defaults
+GNOSIS_CONFIG_FILE="" uv run uvicorn gnosis.main:app --port 8080
 ```
+
+Both commands also need the required settings from
+[docs/configuration.md](../docs/configuration.md#required).
 
 Precedence, highest first: explicit `GNOSIS_*` env vars → `.env` → the YAML
 config file → code defaults. So the file sets the baseline and a single env var
@@ -64,26 +69,37 @@ flags. Full per-run detail: [docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
 | 21 | [run21](runs/run21.yaml) | enumeration CoN | 71.7 | rejected |
 | 22 | [run22](runs/run22.yaml) | entity-grouped rendering (GRAVITY) | 71.9 | rejected |
 | 23 | [run23](runs/run23.yaml) | full-LOCOMO re-measure of Run 18 | 66.9–68.9¹ | apples-to-apples |
-| 24 | [run24](runs/run24.yaml) | + LLM reranker (LME_S target) | pending | reranker not yet benchmarked |
-| 25 | [run25](runs/run25.yaml) | + community graph + multi-query rewrite (LME_S) | pending | open-domain + multi-hop target |
+| 24 | [run24](runs/run24.yaml) | + LLM reranker (LME_S target) | — | not run as a set²; reranker mixed on LME_S (L-1, L-4d), stays off |
+| 25 | [run25](runs/run25.yaml) | + community graph + multi-query rewrite (LME_S) | — | not run as a set²; both parts rejected on LME_S (L-7, L-27) |
 
 ¹ Run 23 is the full-10-conversation measurement (excl-adv J, two judges); all
-other rows are the subset-3 dev gate. Runs 24–25 are queued LongMemEval_S
-experiments; ctx J column will be filled after measurement.
+other rows are the subset-3 dev gate.
 
-**Note:** the LOCOMO run numbers above (Runs 1–25) are separate from the LongMemEval_S
-experiment labels (L-0 through L-31+) in gnosis-membench. LME_S experiment history:
+² Runs 24 and 25 were written for LongMemEval_S. Their features were measured
+there one at a time instead, in the L-series below.
+
+**Note:** the LOCOMO run numbers above (Runs 1–25) are separate from the
+LongMemEval_S experiment labels (L-0 onward) in gnosis-membench. LME_S history on
+the full 500 questions, from L-21 on:
 
 | LME_S Label | gnosis-membench | Status | Score | Notes |
 |---|---|---|---|---|
 | L-21 | Run 21 equivalent | Complete | — | Full-500 ingest; gemini-embedding-001 |
 | L-23 | — | Complete (2026-07-31) | 69.8% | Claude-Sonnet-4-6 backbone + judge; established competitive baseline |
 | L-25 | Run 25 partial | Complete (2026-08-05) | 72.4% | edu-v2.0 + relation_slots KU fix |
-| **L-25b** | — | **Complete (2026-08-06)** | **73.6%** | + singleton-only supersession; **current best**; gpt-4o backbone + judge |
+| L-25b | — | Complete (2026-08-06) | 73.6% | + singleton-only supersession; gpt-4o backbone + judge |
 | L-27 | — | Rejected (2026-08-06) | 73.4% | Community graph: -0.2pp overall, SSA -5.3pp |
 | L-28 | — | Rejected (2026-08-06) | 71.8% | Stronger CoN recency clause: over-fires outside KU |
 | L-29 | — | Tied (2026-08-06) | 73.6% | knowledge_update route + recency injection: KU +4.2pp, SSA -5.3pp cancel |
 | L-30 | — | Rejected (2026-08-06) | 73.0% | Tighter KU router guide: temporal -2.4pp from over-restriction |
-| **L-31** | — | **In progress (2026-08-06)** | pending | Write-time SUPERSEDES + valid_to filter; structural KU fix |
+| L-31 | — | Complete (2026-08-09) | 71.0% | Write-time SUPERSEDES + valid_to filter; KU 70.8% → 80.6% |
+| L-32 | — | Complete (2026-08-10) | 72.6% | `GNOSIS_CON_ENUMERATION_ENABLED=true` + harness sub-queries for multi-session counts |
+| L-33 | — | Complete (2026-08-10) | 74.2% | Harness only: wider aggregative pattern, 4 sub-queries |
+| L-34 | — | Complete (2026-08-10) | 74.2% | Harness only: step-by-step math note for counting questions |
+| **L-35** | — | **Complete (2026-08-10)** | **75.2%** | Harness only: conservative math note; **best overall** |
+| L-36 | — | Complete (2026-08-10) | 74.8% | Harness only: refined math note; at the noise floor |
+| L-37 | — | Complete (2026-08-10) | 75.2% | Harness only: fewer supplemental results; ties L-35 |
+| L-38 | — | Complete (2026-08-13) | 75.2% | Fresh re-ingest of all 500; ties L-35; ingest variance about ±6pp per category |
+| L-39 | — | Rejected (2026-08-27) | 74.0% | `GNOSIS_RRF_LEXICAL_WEIGHT=2.0`: preference, abstention and temporal regress |
 
 See [gnosis-membench RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md).

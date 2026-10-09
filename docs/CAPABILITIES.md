@@ -69,7 +69,7 @@ Four principles shape every capability here.
 | Facts→verbatim expansion | `GNOSIS_FACT_VERBATIM_EXPANSION_ENABLED` | EverMemOS facts→episodes | read | routed |
 | Graph-QA fusion (dual-route) | `GNOSIS_GRAPHQA_FUSION_ENABLED` | Mnemis dual-route (2602.15313) | read | routed |
 | Entity / bridge traversal | `GNOSIS_GRAPH_TRAVERSAL_ENABLED`, `GNOSIS_BRIDGE_TRAVERSAL_ENABLED` | Self-Ask (2210.03350), IRCoT (2212.10509), HippoRAG (2405.14831) | read | routed (fires rarely on LOCOMO) |
-| Listwise LLM reranker | `GNOSIS_RERANK_ENABLED` | RankGPT; Mnemis reranker ablation | read | **new**, default-off, unmeasured |
+| Listwise LLM reranker | `GNOSIS_RERANK_ENABLED` | RankGPT; Mnemis reranker ablation | read | measured on the LME_S 100-question subset (L-1, L-4d): mixed, default-off |
 | LLM recall filter | `GNOSIS_RECALL_FILTER_ENABLED` | EMem (2511.17208) | read | rejected on LOCOMO (flat, +6s/read) |
 | Community graph / subgraph summaries | `GNOSIS_COMMUNITY_GRAPH_ENABLED` | GraphRAG (2404.16130), Graphiti/Zep | read | **tried (L-27), rejected** — -0.2pp overall; SSA -5.3pp, MS -5.0pp; temporal +2.8pp, SSP +3.3pp; gains did not outweigh regressions |
 | Multi-query rewrite (query reformulation) | `GNOSIS_QUERY_REWRITE_ENABLED` | Adaptive-RAG | read | **tried (L-7), rejected** — helped T +5.3pp but hurt MS -11.1pp globally; routing may resurrect selectively |
@@ -255,8 +255,10 @@ reranking); a cross-encoder would be cheaper but none is exposed on the
 deployment's LLM router. It never drops a candidate (omitted/out-of-range indices
 fall back to retrieval order) and never blocks a read. Retrieval is the
 long-haystack bottleneck (LongMemEval: full-context 0.606 vs oracle retrieval
-0.870), and a reranker is the lever common to the strongest 2026 systems. New,
-default-off, measurement pending.
+0.870), and a reranker is the lever common to the strongest 2026 systems. On
+the LongMemEval_S 100-question subset (runs L-1 and L-4d) it lifted
+single-session-user questions by 20pp but cost temporal questions 16–21pp, so
+it stays off by default.
 
 **LLM recall filter.** `GNOSIS_RECALL_FILTER_ENABLED` screens the top candidates
 with one LLM call, keeping only those that could help answer the query (can

@@ -13,13 +13,21 @@ YAML config file → code defaults**.
 
 ## Required
 
+gnosis refuses to start until each of these is set to a non-empty value.
+
 | Setting | Purpose |
 |---|---|
 | `GNOSIS_TOKEN` | service bearer token (normal callers) |
 | `GNOSIS_READ_OPERATOR_TOKEN` / `WRITE` / `EXPORT` / `ADMIN` `_OPERATOR_TOKEN` | operator token classes (see [security.md](security.md)) |
-| `NEO4J_URI` / `NEO4J_USERNAME` / `NEO4J_PASSWORD` | graph store |
+| `NEO4J_URI` / `NEO4J_PASSWORD` | graph store |
 | `LITELLM_BASE_URL` / `LITELLM_API_KEY` | OpenAI-compatible LLM + embedding endpoint |
-| `GNOSIS_TENANT_ID` | default tenant (`nolgia`) |
+
+## Identity and connection
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `GNOSIS_TENANT_ID` | `nolgia` | the deployment's tenant; every request's `scope.tenant_id` must match it |
+| `NEO4J_USERNAME` | `neo4j` | graph store user |
 
 ## Models & backends
 
@@ -71,7 +79,11 @@ applied per-route rather than globally.
 | `GNOSIS_CHAIN_OF_NOTE_ENABLED` | `false` | **route-aware hardened Chain-of-Note** |
 | `GNOSIS_CON_SPECULATIVE_INFERENCE_ENABLED` | `false` | CoN speculative-inference widening (tunable) |
 | `GNOSIS_CON_ENUMERATION_ENABLED` | `false` | CoN exhaustive-enumeration clause |
+| `GNOSIS_CON_RECENCY_PREFERENCE_ENABLED` | `false` | CoN clause: prefer the more recently dated of two conflicting memories |
+| `GNOSIS_CON_ABSTENTION_ENABLED` | `false` | CoN clause: an absent memory means "unknown", not zero |
+| `GNOSIS_CON_RECOMMENDATION_ENABLED` | `false` | CoN clause: answer recommendation questions with concrete suggestions |
 | `GNOSIS_HYBRID_RETRIEVAL_ENABLED` | `false` | BM25 + dense RRF fusion |
+| `GNOSIS_RRF_LEXICAL_WEIGHT` | `1.0` | weight of the BM25 leg in RRF (0–10; dense is always 1.0). 2.0 was tried in L-39 and rejected |
 | `GNOSIS_SCOPED_DENSE_RETRIEVAL_ENABLED` | `false` | scope-narrowed dense (multi-user stores) |
 | `GNOSIS_DENSE_SCOPE_POOL` | `4000` | scoped-dense over-fetch pool |
 | `GNOSIS_READ_SUPERSESSION_ENABLED` | `false` | deterministic read-time newest-wins |
@@ -79,7 +91,9 @@ applied per-route rather than globally.
 | `GNOSIS_RERANK_MODEL` / `_CANDIDATE_CAP` | *(→ `GNOSIS_LLM`)* / `50` | reranker model / how many to reorder |
 | `GNOSIS_RECALL_FILTER_ENABLED` / `_CANDIDATES` | `false` / `30` | LLM recall filter (rejected on LOCOMO) |
 | `GNOSIS_COMMUNITY_GRAPH_ENABLED` | `false` | community graph / subgraph summaries for open-domain aggregation (tried L-27, rejected: -0.2pp overall, SSA -5.3pp) |
+| `GNOSIS_COMMUNITY_MIN_ENTITIES` / `_CONTEXT_LIMIT` | `3` / `5` | smallest cluster that gets a summary / most summaries added to a read |
 | `GNOSIS_QUERY_REWRITE_ENABLED` | `false` | multi-query reformulation at retrieval time (tried L-7, rejected globally: MS -11.1pp; may be re-enabled per-route) |
+| `GNOSIS_QUERY_REWRITE_MODEL` | *(→ `GNOSIS_LLM`)* | query-rewrite model |
 | `GNOSIS_SUFFICIENCY_CHECK_ENABLED` / `_MODEL` | `false` | sufficiency autorater signal |
 | `GNOSIS_ABSTENTION_PROMPT_ENABLED` | `false` | abstention grounding instruction |
 | `GNOSIS_FACT_VERBATIM_EXPANSION_ENABLED` / `_MAX` | `false` / `5` | render source turns under top facts |

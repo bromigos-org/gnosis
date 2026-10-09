@@ -50,7 +50,7 @@ Every record carries the six-field scope spine (`tenant_id`, `space_id`,
   facts and a cross-scope record can never reach a prompt.
 
 Different business entities run separate deployments with separate tenants and
-storage (memory is not merged; see [federation](#federation) for consented
+storage (memory is not merged; see [federation safety](#federation-safety) for consented
 sharing).
 
 ## Redaction

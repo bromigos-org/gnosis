@@ -6,7 +6,7 @@ gnosis targets **Python 3.13** and uses [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync                 # install runtime + dev dependencies from uv.lock
-uv run pytest -q        # 500+ tests, ~4s
+uv run pytest -q        # about 600 tests, under half a minute
 ```
 
 There is no Makefile — every task is a `uv run` command.
@@ -51,10 +51,12 @@ config sets `GNOSIS_CONFIG_FILE` itself.
 
 ## Running gnosis locally
 
-gnosis needs Neo4j and an OpenAI-compatible LLM + embedding endpoint. The sibling
+gnosis needs Neo4j and an OpenAI-compatible LLM + embedding endpoint. This
+repo's [`compose.yaml`](../compose.yaml) brings both Neo4j and gnosis up; see
+[getting-started.md](getting-started.md). The sibling
 [`gnosis-membench`](https://github.com/nolgiainc/gnosis-membench) harness ships
-a `stack/compose.yaml` (Neo4j + gnosis, wired to ollama or LiteLLM) — the fastest
-way to bring the whole thing up. Otherwise see [operations.md](operations.md).
+a build-from-source variant in `stack/compose.yaml`. For a production-shaped
+setup, see [operations.md](operations.md).
 
 ## Adding a feature
 

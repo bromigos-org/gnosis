@@ -19,17 +19,23 @@ gnosis is a stateless gateway with two backing services:
   always used; the write/read LLM features (extraction, routing) want a *capable*
   chat model.
 
-The `ghcr.io/nolgiainc/gnosis` image runs uvicorn on `:8080` and bundles
-`configs/`, so it auto-loads the preferred config on start.
+The gnosis image runs uvicorn on `:8080` and bundles `configs/`, so it
+auto-loads the preferred config on start. The published images are private.
+Build the image from this checkout, as shown below.
 
 ## 1 — Run gnosis
 
-The repo ships a minimal [`compose.yaml`](../compose.yaml) (Neo4j + gnosis) — the
-fastest way up. It defaults to ollama on the host; edit the `OPENAI_BASE_URL` /
-`GNOSIS_LLM` / `GNOSIS_EMBEDDING` vars for any other endpoint.
+The repo ships a minimal [`compose.yaml`](../compose.yaml) with Neo4j and
+gnosis. It is the fastest way up. It defaults to ollama on the host. For any
+other endpoint, set `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `GNOSIS_LLM` and
+`GNOSIS_EMBEDDING`.
+
+`compose.yaml` names the image `ghcr.io/nolgiainc/gnosis:latest`. Build it
+locally under that tag, and compose uses your build instead of pulling.
 
 ```bash
-git clone https://github.com/nolgiainc/gnosis && cd gnosis
+git clone https://github.com/bromigos-org/gnosis && cd gnosis
+docker build -t ghcr.io/nolgiainc/gnosis:latest .
 # for the local ollama default, pull the models first:
 #   ollama pull llama3.2:latest && ollama pull nomic-embed-text
 docker compose up -d
@@ -42,6 +48,7 @@ docker compose up -d
 (least-privilege — [security.md](security.md)); generate real secrets:
 
 ```bash
+docker build -t gnosis .
 docker run --rm -p 8080:8080 \
   -e GNOSIS_TOKEN=$(openssl rand -hex 32) \
   -e GNOSIS_READ_OPERATOR_TOKEN=$(openssl rand -hex 32) \
@@ -53,7 +60,7 @@ docker run --rm -p 8080:8080 \
   -e LITELLM_BASE_URL=http://litellm:4000/v1 -e LITELLM_API_KEY=... \
   -e GNOSIS_LLM=openai/<capable-chat-model> \
   -e GNOSIS_EMBEDDING=<embedding-model> -e GNOSIS_EMBEDDING_DIMENSIONS=<dim> \
-  ghcr.io/nolgiainc/gnosis
+  gnosis
 ```
 
 **From source** (Python 3.13 + [uv](https://docs.astral.sh/uv/); see
@@ -95,8 +102,9 @@ Every read and write carries a six-field **scope** — the whole access model:
 | `user_id` | the subject the memory is *about* |
 | `visibility` | `private_user`, `channel`, `guild`, `tenant`, `global`, … |
 
-**Long-term recall is keyed by `tenant_id` + `user_id`.** Two agents on the same
-deployment asking about the same user see the same memories; `agent_id` and
+**Long-term recall is keyed by `tenant_id`, `user_id` and `space_id`.** Two
+agents in the same space asking about the same user see the same memories. A
+memory written in one space is invisible from another space. `agent_id` and
 `session_id` are stored for audit but do not partition recall. Full model:
 [data-model.md](data-model.md).
 
@@ -155,8 +163,8 @@ to empty results, and a circuit breaker pauses calls for two minutes after five
 consecutive errors, so a gnosis blip never takes the agent down.
 
 Have a conversation, start a **new session**, and ask about something from the
-first — recall spans sessions because it's keyed by `tenant_id` + `user_id`, not
-by session.
+first. Recall spans sessions because it is keyed by tenant, user and space,
+not by session.
 
 ## 5 — Or talk to gnosis directly
 
@@ -181,8 +189,8 @@ curl -s $GNOSIS_URL/v1/memories \
 ```
 
 Then read prompt-ready, scope-checked, redacted `sections[]` for a query with
-`POST /v1/memory/context` (use the same `tenant_id` + `user_id`; session/agent
-need not match):
+`POST /v1/memory/context`. Use the same `tenant_id`, `space_id` and
+`user_id`. The session and agent need not match.
 
 ```bash
 curl -s $GNOSIS_URL/v1/memory/context \

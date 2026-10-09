@@ -2,6 +2,13 @@
 
 Mirror of the canonical log in [gnosis-membench/RESULTS.md](https://github.com/nolgiainc/gnosis-membench/blob/main/RESULTS.md); the harness repo is the source of truth for new runs.
 
+> **Latest standing (checked 2026-10-09).** The best LongMemEval_S score on all
+> 500 questions is **75.2%**. Run L-35 set it on 2026-08-10; L-37 and L-38
+> (a fresh re-ingest, 2026-08-13) tied it. All three use gpt-4o as backbone and
+> judge. L-33 to L-37 changed only the harness's answering prompt, not gnosis.
+> L-39 (weighted RRF, 2026-08-27) was rejected. The LongMemEval_S table below
+> lists every run. The dated notes that follow are kept as they were written.
+
 > **LongMemEval_S L-23 (full 500-Q, 2026-07-31).** First full LME_S run.
 > Claude-Sonnet-4-6 as both backbone (queries gnosis `/v1/memory/context`) and judge
 > (official per-type LME judge prompts). All 500 conversations ingested via membench
@@ -54,12 +61,12 @@ Mirror of the canonical log in [gnosis-membench/RESULTS.md](https://github.com/n
 >
 > **LongMemEval_S competitive context (2026-08-06):** SOTA (JordanMcCann) 96.2%,
 > Chronos 95.6% (100% KU), Mastra OM (gpt-5-mini) 94.87%, EMem-G 84.9%.
-> Gnosis **L-25b: 73.6%** (current best overall). L-31: 72.6% overall, KU 81.9% (+11.1pp confirmed).
+> Gnosis **L-25b: 73.6%** (best overall at the time). L-31: 71.0% overall, KU 80.6% (+9.8pp).
 > See gnosis-membench `RESULTS.md` and `docs/frontier-2026.md`.
 
 ---
 
-> **LongMemEval_S L-25b (full 500-Q, 2026-08-06) — current best.**
+> **LongMemEval_S L-25b (full 500-Q, 2026-08-06) — best until L-33.**
 > gpt-4o backbone + gpt-4o judge. edu-v2.0 (Rule 15 assistant extraction) +
 > relation_slots KU fix + singleton-only supersession read-time fix.
 >
@@ -85,15 +92,15 @@ Mirror of the canonical log in [gnosis-membench/RESULTS.md](https://github.com/n
 > Structural fix required.
 >
 > **L-31 (2026-08-09) — COMPLETE:** Write-time SUPERSEDES edges + `valid_to IS NULL` Cypher filter
-> (structural KU fix; implements arXiv 2607.26520 bitemporal pattern). Overall 72.6%.
-> KU **70.8% → 81.9% (+11.1pp)** confirmed; regressions SSA −5.3pp, temporal −6.3pp, SSU −4.7pp
-> (likely `knowledge_update` router misfiring on SSA/temporal questions, same pattern as L-29).
-> Gnosis now at 81.9% KU vs Zep 83.3% — 1.4pp gap. Next: diagnose router false positives.
+> (structural KU fix; implements arXiv 2607.26520 bitemporal pattern). Overall 71.0%.
+> KU **70.8% → 80.6% (+9.8pp)** confirmed; regressions SSA −3.6pp, temporal −7.9pp, SSU −6.3pp,
+> MS −4.2pp. The canonical log traces them to ingest variation, not to the SUPERSEDES logic.
+> L-32 then lifted KU to 81.9%, 1.4pp behind Zep's 83.3%.
 >
 > Competitive leaderboard (LME_S, gpt-4o backbone): SOTA 96.2%, Chronos 95.6%,
 > Mastra OM (gpt-5-mini) 94.87%, EMem-G 84.9%, Mastra OM (gpt-4o) 84.8%,
-> HyMem 75.0%, Nemori 74.6%, **gnosis L-25b 73.6%** (best overall), **gnosis L-31 72.6%**,
-> Zep 71.2%, mem0 67.6%.
+> HyMem 75.0%, Nemori 74.6%, **gnosis L-25b 73.6%**, **gnosis L-31 71.0%**,
+> Zep 71.2%, mem0 67.6%. (Superseded: gnosis reached 75.2% at L-35.)
 
 
 Canonical record of all gnosis memory-quality benchmark runs. Every run uses the
@@ -121,8 +128,8 @@ comparability; verified live through gnosis's config path (3072-dim Fact
 vectors in Neo4j) before any measured run. The LOCOMO gate above KEEPS
 qwen3 embeddings — its entire 19-run history was measured there, and
 changing the embedder would invalidate the comparison. Answering and
-judging stay on the chatgpt-sub gpt-5.5 route; only `/v1/embeddings`
-traffic hits the paid keys (cents at these volumes).
+judging stay on gpt-5.5; only `/v1/embeddings` traffic goes to the paid
+cloud model (cents at these volumes).
 
 ## Trajectory (headline: J excl. adversarial, LOCOMO subset 3)
 
@@ -393,7 +400,7 @@ Retrieval mechanism stats (context condition unless noted):
   tight context budgets or expensive answer models; reconsider with a
   fast/cheap filter model.
 
-### Run 5 — `results/locomo/extraction-20260703/` (measures gnosis PR #14) — CURRENT BEST
+### Run 5 — `results/locomo/extraction-20260703/` (measures gnosis PR #14)
 
 - gnosis main @ `a4a9254` (edu-v1 LLM fact extraction at ingest behind
   `GNOSIS_FACT_EXTRACTION_ENABLED`). Recall filter OFF (Run 4 showed it flat),
@@ -859,12 +866,20 @@ PR #47: extraction re-samples malformed LLM JSON instead of 500ing).
 | **L-23** | L-0 ingest + Claude-Sonnet-4-6 backbone + Claude judge | **69.8%** | complete (2026-07-31); established competitive baseline vs Zep 71.2%, mem0 67.6% |
 | L-24 | relation_slots KU fix (SUPERSEDES-slot metadata) | — | merged into L-25 |
 | L-25 | edu-v2.0 (Rule 15: assistant-turn extraction) + relation_slots; fresh ingest | **72.4%** | complete (2026-08-05); SSA +53.5pp, KU +49.5pp vs L-23 |
-| **L-25b** | + singleton-only relation_slots supersession fix (read-path only, no re-ingest) | **73.6%** | **CURRENT BEST** (2026-08-06); SSA 98.2%, KU 70.8%, gpt-4o backbone + judge |
+| L-25b | + singleton-only relation_slots supersession fix (read-path only, no re-ingest) | 73.6% | complete (2026-08-06); best until L-33; SSA 98.2%, KU 70.8%, gpt-4o backbone + judge |
 | L-27 | + community graph (`GNOSIS_COMMUNITY_GRAPH_ENABLED=true`) | 73.4% | **rejected** — -0.2pp overall; SSA -5.3pp, MS -5.0pp outweigh temporal +2.8pp |
 | L-28 | stronger CoN recency clause ("ONLY most recently-dated value") | 71.8% | **rejected** — clause over-fires outside KU; SSA -5.3pp, SSU -6.3pp |
 | L-29 | + `knowledge_update` router route + recency injection (top-5 newest merged into dense top-20) | 73.6% | **tied** — KU +4.2pp, temporal +4.0pp cancel SSA -5.3pp, SSP -6.7pp |
 | L-30 | tighter knowledge_update guide (explicit SSA/preference exclusions) | 73.0% | **rejected** — SSA partially recovered but temporal -2.4pp; routing precision asymmetric |
-| **L-31** | write-time SUPERSEDES edges + `valid_to IS NULL` filter in Cypher for knowledge_update route | **72.6%** | **complete** (2026-08-09); KU **81.9%** (+11.1pp confirmed); SSA 92.9% (−5.3pp), temporal 67.7% (−6.3pp), SSU 79.7% (−4.7pp) — likely router misclassification of SSA/temporal as knowledge_update |
+| L-31 | write-time SUPERSEDES edges + `valid_to IS NULL` filter in Cypher for knowledge_update route | 71.0% | complete (2026-08-09); KU **80.6%** (+9.8pp); SSA 94.6% (−3.6pp), temporal −7.9pp, SSU −6.3pp, MS −4.2pp — ingest variation, not SUPERSEDES logic |
+| L-32 | `GNOSIS_CON_ENUMERATION_ENABLED=true` + harness sub-queries for aggregative multi-session questions (no re-ingest) | 72.6% | complete (2026-08-10); MS 59.5% (+5.0pp), KU 81.9% |
+| L-33 | harness only: wider aggregative pattern, 4 sub-queries, set-based dedup | 74.2% | complete (2026-08-10); new best at the time |
+| L-34 | harness only: step-by-step math note for aggregative multi-session questions | 74.2% | complete (2026-08-10); MS 66.1% (+5.8pp) |
+| **L-35** | harness only: conservative math note + wider pattern | **75.2%** | **BEST OVERALL** (2026-08-10); temporal 71.7% |
+| L-36 | harness only: refined math note | 74.8% | complete (2026-08-10); answer-prompt tuning at the noise floor |
+| L-37 | harness only: fewer supplemental results | 75.2% | complete (2026-08-10); ties L-35 |
+| L-38 | fresh re-ingest of all 500 conversations | 75.2% | complete (2026-08-13); ties L-35; KU 84.7%, temporal 74.8%; ingest variance about ±6pp per category |
+| L-39 | `GNOSIS_RRF_LEXICAL_WEIGHT=2.0` (weighted RRF) | 74.0% | **rejected** (2026-08-27); preference, abstention and temporal regress |
 
 ## Published comparison targets
 
@@ -881,15 +896,16 @@ mem0 66.9 · mem0-graph 68.4 · full-context 72.9 · Letta (blog) 74.0.
   is the cleanest same-route pair.
 - Runs 1-4 ingest verbatim (no LLM extraction); Run 5 onward ingests with
   edu-v1 fact extraction.
-- Weekly regression runs (subset 2, this same frozen judge) execute in-cluster
-  via the scheduled `membench` CronJob and upload to RustFS `membench/results/`.
+- Weekly regression runs (subset 2, this same frozen judge) run on a schedule
+  from the gnosis-membench harness.
 
 ## Research sources behind the measured changes
 
 The changes tested above were not guesses — each traces to specific literature,
-dissected in this repo's research docs: [docs/extraction-design.md](docs/extraction-design.md),
-[docs/frontier-2026.md](docs/frontier-2026.md),
-[docs/gaps-abstention-maintenance.md](docs/gaps-abstention-maintenance.md).
+dissected in the gnosis-membench research docs:
+[extraction-design.md](https://github.com/nolgiainc/gnosis-membench/blob/main/docs/extraction-design.md),
+[frontier-2026.md](https://github.com/nolgiainc/gnosis-membench/blob/main/docs/frontier-2026.md),
+[gaps-abstention-maintenance.md](https://github.com/nolgiainc/gnosis-membench/blob/main/docs/gaps-abstention-maintenance.md).
 
 **Sources that directly shaped shipped changes:**
 

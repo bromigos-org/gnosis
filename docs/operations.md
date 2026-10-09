@@ -12,10 +12,13 @@ Deploying and running gnosis. For every tunable, see
 
 ## Run
 
-The image (`ghcr.io/nolgiainc/gnosis`) runs `uvicorn gnosis.main:app` on
-`:8080` and **ships `configs/`**, so it auto-loads the preferred config
-(`configs/default.yaml`) unless `GNOSIS_CONFIG_FILE` says otherwise. Minimum
-environment:
+The image runs `uvicorn gnosis.main:app` on `:8080` and **ships `configs/`**,
+so it auto-loads the preferred config (`configs/default.yaml`) unless
+`GNOSIS_CONFIG_FILE` says otherwise. Build it from the [`Dockerfile`](../Dockerfile).
+This fork's CI also publishes `ghcr.io/bromigos-org/gnosis`, tagged
+`sha-<commit>` and `latest`. That package is private. Pin a deployment by digest.
+
+The minimum environment, shown here for a source checkout:
 
 ```bash
 GNOSIS_TOKEN=... GNOSIS_READ_OPERATOR_TOKEN=... GNOSIS_WRITE_OPERATOR_TOKEN=... \
@@ -24,12 +27,12 @@ NEO4J_URI=bolt://neo4j:7687 NEO4J_USERNAME=neo4j NEO4J_PASSWORD=... \
 LITELLM_BASE_URL=http://litellm:4000/v1 LITELLM_API_KEY=... \
 GNOSIS_LLM=openai/<capable-model> \
 GNOSIS_EMBEDDING=<embedding-model> GNOSIS_EMBEDDING_DIMENSIONS=<dim> \
-  gnosis
+  uv run uvicorn gnosis.main:app --host 0.0.0.0 --port 8080
 ```
 
-A local stack (Neo4j + gnosis, wired to ollama or LiteLLM) is in the sibling
-[`gnosis-membench`](https://github.com/nolgiainc/gnosis-membench) harness's
-`stack/compose.yaml`.
+This repo's [`compose.yaml`](../compose.yaml) runs Neo4j and gnosis locally. The
+[`gnosis-membench`](https://github.com/nolgiainc/gnosis-membench) harness has a
+build-from-source variant in `stack/compose.yaml`.
 
 ## Configuration
 
@@ -41,8 +44,10 @@ minimal safe defaults. Full reference: [configuration.md](configuration.md).
 ## Health & readiness
 
 - `GET /health` — liveness.
-- `GET /ready` — readiness (dependencies reachable). Use it as the k8s readiness
-  probe so traffic only arrives once Neo4j and the LLM endpoint are up.
+- `GET /ready` — readiness. It answers `{"status":"ready"}` once the Neo4j
+  graph, its schema and the write buffer are ready, and `503` before that. It
+  does not check the LLM endpoint. Use it as the readiness probe so traffic only
+  arrives once Neo4j is up.
 
 ## Connections and startup
 
