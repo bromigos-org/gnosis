@@ -10,8 +10,8 @@ on:
 # a group per commit instead: GitHub holds at most one pending run per group
 # and a newer run evicts the pending one, so a shared main group would drop
 # intermediate merges along with their post-merge tests and immutable
-# sha-<sha> image. Every main commit therefore runs. The homelab deploys by
-# digest, not :latest, so an out-of-order :latest move cannot roll it back.
+# sha-<sha> image. Every main commit therefore runs. Deployments pin the image
+# by digest, not :latest, so an out-of-order :latest move cannot roll one back.
 concurrency:
   group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -45,14 +45,12 @@ jobs:
       - name: Tests
         run: uv run pytest -q
 
-  # bromigos-org fork: the homelab gnosis Deployment (bromigos-org/homelab
-  # helm/gnosis) pulls ghcr.io/bromigos-org/gnosis pinned by digest. This job
-  # publishes the immutable sha-<sha> tag, gates it on the Trivy scan, then
-  # moves :latest. To roll a build, copy the digest from the job summary into
-  # homelab helm/gnosis/values.yaml image.digest. Upstream's Artifact Registry
-  # job (nolgiainc GCP projects) is dropped here: this fork cannot and must not
-  # push there. Runs on Blacksmith, never the homelab runners: this repo is
-  # public, and a fork PR must not run in a privileged homelab pod.
+  # Publishes ghcr.io/bromigos-org/gnosis: the immutable sha-<sha> tag, gated
+  # on the Trivy scan, then :latest. Deployments pin the image by digest: copy
+  # it from the job summary. Upstream's Artifact Registry job is dropped here:
+  # this fork can't push there. Runs on hosted runners (Blacksmith), never
+  # self-hosted ones: this repo is public, and a fork PR must not run on a
+  # privileged self-hosted runner.
   docker:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test
@@ -77,7 +75,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Push the immutable sha- tag only; :latest moves after the image scan.
-      # linux/amd64: the homelab pins gnosis to an amd64 node.
+      # linux/amd64 only.
       - name: Build and push
         id: build
         uses: docker/build-push-action@v6
@@ -106,5 +104,5 @@ jobs:
             echo "- tag: \`sha-${{ github.sha }}\`"
             echo "- digest: \`${{ steps.build.outputs.digest }}\`"
             echo ""
-            echo "Pin it in bromigos-org/homelab helm/gnosis/values.yaml (image.digest)."
+            echo "Pin this digest where you deploy gnosis."
           } >> "$GITHUB_STEP_SUMMARY"

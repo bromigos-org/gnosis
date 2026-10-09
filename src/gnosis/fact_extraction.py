@@ -413,7 +413,7 @@ class LiteLLMMemoryUnitExtractor:
 
 
 # How many times one add re-samples the extractor when the model emits
-# malformed structured output. The chatgpt-routed gpt-5.5 sporadically appends
+# malformed structured output. One hosted extraction model sporadically appends
 # trailing characters after the JSON document (~2-5% of LongMemEval-sized
 # adds, observed 2026-07-04); a fresh sample almost always parses, so
 # re-sampling preserves the extracted units instead of degrading the add to
